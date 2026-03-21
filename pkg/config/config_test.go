@@ -1057,3 +1057,37 @@ func TestLoadConfig_UsesPassphraseProvider(t *testing.T) {
 		t.Errorf("api_key = %q, want %q", cfg.ModelList[0].APIKey, plainKey)
 	}
 }
+
+func TestConfigParsesLogLevel(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	data := `{"agents":{"defaults":{"log_level":"debug"}}}`
+	if err := os.WriteFile(cfgPath, []byte(data), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Agents.Defaults.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want \"debug\"", cfg.Agents.Defaults.LogLevel)
+	}
+}
+
+func TestConfigLogLevelEmpty(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	data := `{}`
+	if err := os.WriteFile(cfgPath, []byte(data), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Agents.Defaults.LogLevel != "" {
+		t.Errorf("LogLevel = %q, want \"\"", cfg.Agents.Defaults.LogLevel)
+	}
+}
