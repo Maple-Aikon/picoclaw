@@ -10,6 +10,8 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/routing"
+	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -124,8 +126,8 @@ func (h *llmObserverHook) BeforeLLM(
 	ctx context.Context,
 	req *LLMHookRequest,
 ) (*LLMHookRequest, HookDecision, error) {
-	if req.Meta.Context != nil {
-		h.lastInbound = cloneInboundContext(req.Meta.Context.Inbound)
+	if req.Context != nil {
+		h.lastInbound = cloneInboundContext(req.Context.Inbound)
 	}
 	next := req.Clone()
 	next.Model = "hook-model"
@@ -165,6 +167,25 @@ func TestAgentLoop_Hooks_ObserverAndLLMInterceptor(t *testing.T) {
 			ChatType: "direct",
 			SenderID: "hook-user",
 		},
+		RouteResult: &routing.ResolvedRoute{
+			AgentID:   "main",
+			Channel:   "cli",
+			AccountID: routing.DefaultAccountID,
+			SessionPolicy: routing.SessionPolicy{
+				DMScope: routing.DMScopePerPeer,
+			},
+			MatchedBy: "default",
+		},
+		SessionScope: &session.SessionScope{
+			Version:    session.ScopeVersionV1,
+			AgentID:    "main",
+			Channel:    "cli",
+			Account:    routing.DefaultAccountID,
+			Dimensions: []string{"sender"},
+			Values: map[string]string{
+				"sender": "hook-user",
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -185,14 +206,23 @@ func TestAgentLoop_Hooks_ObserverAndLLMInterceptor(t *testing.T) {
 	if hook.lastInbound.Channel != "cli" || hook.lastInbound.SenderID != "hook-user" {
 		t.Fatalf("hook inbound context = %+v", hook.lastInbound)
 	}
+	if hook.lastInbound != nil && hook.lastInbound.ChatID != "direct" {
+		t.Fatalf("hook inbound chat ID = %q, want direct", hook.lastInbound.ChatID)
+	}
 
 	select {
 	case evt := <-hook.eventCh:
 		if evt.Kind != EventKindTurnEnd {
 			t.Fatalf("expected turn end event, got %v", evt.Kind)
 		}
-		if evt.Meta.Context == nil || evt.Meta.Context.Inbound == nil {
+		if evt.Context == nil || evt.Context.Inbound == nil {
 			t.Fatal("expected observer event to carry inbound context")
+		}
+		if evt.Context.Route == nil || evt.Context.Route.AgentID != "main" {
+			t.Fatalf("expected observer event to carry route context, got %+v", evt.Context.Route)
+		}
+		if evt.Context.Scope == nil || evt.Context.Scope.Values["sender"] != "hook-user" {
+			t.Fatalf("expected observer event to carry session scope, got %+v", evt.Context.Scope)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for hook observer event")

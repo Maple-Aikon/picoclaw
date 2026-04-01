@@ -181,6 +181,66 @@ func TestPublishOutboundSubscribe(t *testing.T) {
 	}
 }
 
+func TestPublishOutbound_MirrorsContextToLegacyFields(t *testing.T) {
+	mb := NewMessageBus()
+	defer mb.Close()
+
+	msg := OutboundMessage{
+		Context: InboundContext{
+			Channel:          "telegram",
+			ChatID:           "chat-42",
+			ReplyToMessageID: "msg-9",
+		},
+		Content: "reply",
+	}
+
+	if err := mb.PublishOutbound(context.Background(), msg); err != nil {
+		t.Fatalf("PublishOutbound failed: %v", err)
+	}
+
+	got := <-mb.OutboundChan()
+	if got.Channel != "telegram" {
+		t.Fatalf("expected legacy channel telegram, got %q", got.Channel)
+	}
+	if got.ChatID != "chat-42" {
+		t.Fatalf("expected legacy chat ID chat-42, got %q", got.ChatID)
+	}
+	if got.ReplyToMessageID != "msg-9" {
+		t.Fatalf("expected mirrored reply_to_message_id msg-9, got %q", got.ReplyToMessageID)
+	}
+	if got.Context.Channel != "telegram" || got.Context.ChatID != "chat-42" {
+		t.Fatalf("unexpected outbound context: %+v", got.Context)
+	}
+}
+
+func TestPublishOutboundMedia_MirrorsContextToLegacyFields(t *testing.T) {
+	mb := NewMessageBus()
+	defer mb.Close()
+
+	msg := OutboundMediaMessage{
+		Context: InboundContext{
+			Channel: "slack",
+			ChatID:  "C001",
+		},
+		Parts: []MediaPart{{Type: "image", Ref: "media://1"}},
+	}
+
+	if err := mb.PublishOutboundMedia(context.Background(), msg); err != nil {
+		t.Fatalf("PublishOutboundMedia failed: %v", err)
+	}
+
+	got := <-mb.OutboundMediaChan()
+	if got.Channel != "slack" {
+		t.Fatalf("expected legacy channel slack, got %q", got.Channel)
+	}
+	if got.ChatID != "C001" {
+		t.Fatalf("expected legacy chat ID C001, got %q", got.ChatID)
+	}
+	if got.Context.Channel != "slack" || got.Context.ChatID != "C001" {
+		t.Fatalf("unexpected outbound media context: %+v", got.Context)
+	}
+}
+
 func TestPublishInbound_ContextCancel(t *testing.T) {
 	mb := NewMessageBus()
 	defer mb.Close()

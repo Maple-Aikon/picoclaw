@@ -60,15 +60,7 @@ func BuildAgentPeerSessionKey(params SessionKeyParams) string {
 		if dmScope == "" {
 			dmScope = DMScopeMain
 		}
-		peerID := strings.TrimSpace(peer.ID)
-
-		// Resolve identity links (cross-platform collapse)
-		if dmScope != DMScopeMain && peerID != "" {
-			if linked := resolveLinkedPeerID(params.IdentityLinks, params.Channel, peerID); linked != "" {
-				peerID = linked
-			}
-		}
-		peerID = strings.ToLower(peerID)
+		peerID := CanonicalSessionPeerID(params.Channel, peer.ID, dmScope, params.IdentityLinks)
 
 		switch dmScope {
 		case DMScopePerAccountChannelPeer:
@@ -97,6 +89,27 @@ func BuildAgentPeerSessionKey(params SessionKeyParams) string {
 		peerID = "unknown"
 	}
 	return fmt.Sprintf("agent:%s:%s:%s:%s", agentID, channel, peerKind, peerID)
+}
+
+// CanonicalSessionPeerID applies the current DM session canonicalization rules,
+// including identity-link collapse when enabled.
+func CanonicalSessionPeerID(
+	channel, peerID string,
+	dmScope DMScope,
+	identityLinks map[string][]string,
+) string {
+	normalizedPeerID := strings.TrimSpace(peerID)
+	if normalizedPeerID == "" {
+		return ""
+	}
+
+	if dmScope != DMScopeMain {
+		if linked := resolveLinkedPeerID(identityLinks, channel, normalizedPeerID); linked != "" {
+			normalizedPeerID = linked
+		}
+	}
+
+	return strings.ToLower(normalizedPeerID)
 }
 
 // ParseAgentSessionKey extracts agentId and rest from "agent:<agentId>:<rest>".

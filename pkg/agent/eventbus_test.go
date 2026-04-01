@@ -10,6 +10,8 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/routing"
+	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -142,6 +144,25 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 			ChatType: "direct",
 			SenderID: "tester",
 		},
+		RouteResult: &routing.ResolvedRoute{
+			AgentID:   "main",
+			Channel:   "cli",
+			AccountID: routing.DefaultAccountID,
+			SessionPolicy: routing.SessionPolicy{
+				DMScope: routing.DMScopePerPeer,
+			},
+			MatchedBy: "default",
+		},
+		SessionScope: &session.SessionScope{
+			Version:    session.ScopeVersionV1,
+			AgentID:    "main",
+			Channel:    "cli",
+			Account:    routing.DefaultAccountID,
+			Dimensions: []string{"sender"},
+			Values: map[string]string{
+				"sender": "tester",
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -182,11 +203,17 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 		if evt.Meta.SessionKey != "session-1" {
 			t.Fatalf("event %d has session key %q, want session-1", i, evt.Meta.SessionKey)
 		}
-		if evt.Meta.Context == nil || evt.Meta.Context.Inbound == nil {
+		if evt.Context == nil || evt.Context.Inbound == nil {
 			t.Fatalf("event %d missing inbound turn context", i)
 		}
-		if evt.Meta.Context.Inbound.Channel != "cli" || evt.Meta.Context.Inbound.SenderID != "tester" {
-			t.Fatalf("event %d inbound context = %+v", i, evt.Meta.Context.Inbound)
+		if evt.Context.Inbound.Channel != "cli" || evt.Context.Inbound.SenderID != "tester" {
+			t.Fatalf("event %d inbound context = %+v", i, evt.Context.Inbound)
+		}
+		if evt.Context.Route == nil || evt.Context.Route.AgentID != "main" {
+			t.Fatalf("event %d missing route context: %+v", i, evt.Context.Route)
+		}
+		if evt.Context.Scope == nil || evt.Context.Scope.Values["sender"] != "tester" {
+			t.Fatalf("event %d missing session scope: %+v", i, evt.Context.Scope)
 		}
 	}
 

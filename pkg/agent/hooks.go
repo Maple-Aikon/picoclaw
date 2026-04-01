@@ -89,6 +89,7 @@ type ToolApprover interface {
 
 type LLMHookRequest struct {
 	Meta             EventMeta                  `json:"meta"`
+	Context          *TurnContext               `json:"context,omitempty"`
 	Model            string                     `json:"model"`
 	Messages         []providers.Message        `json:"messages,omitempty"`
 	Tools            []providers.ToolDefinition `json:"tools,omitempty"`
@@ -104,6 +105,7 @@ func (r *LLMHookRequest) Clone() *LLMHookRequest {
 	}
 	cloned := *r
 	cloned.Meta = cloneEventMeta(r.Meta)
+	cloned.Context = cloneTurnContext(r.Context)
 	cloned.Messages = cloneProviderMessages(r.Messages)
 	cloned.Tools = cloneToolDefinitions(r.Tools)
 	cloned.Options = cloneStringAnyMap(r.Options)
@@ -112,6 +114,7 @@ func (r *LLMHookRequest) Clone() *LLMHookRequest {
 
 type LLMHookResponse struct {
 	Meta     EventMeta              `json:"meta"`
+	Context  *TurnContext           `json:"context,omitempty"`
 	Model    string                 `json:"model"`
 	Response *providers.LLMResponse `json:"response,omitempty"`
 	Channel  string                 `json:"channel,omitempty"`
@@ -124,12 +127,14 @@ func (r *LLMHookResponse) Clone() *LLMHookResponse {
 	}
 	cloned := *r
 	cloned.Meta = cloneEventMeta(r.Meta)
+	cloned.Context = cloneTurnContext(r.Context)
 	cloned.Response = cloneLLMResponse(r.Response)
 	return &cloned
 }
 
 type ToolCallHookRequest struct {
 	Meta      EventMeta      `json:"meta"`
+	Context   *TurnContext   `json:"context,omitempty"`
 	Tool      string         `json:"tool"`
 	Arguments map[string]any `json:"arguments,omitempty"`
 	Channel   string         `json:"channel,omitempty"`
@@ -142,12 +147,14 @@ func (r *ToolCallHookRequest) Clone() *ToolCallHookRequest {
 	}
 	cloned := *r
 	cloned.Meta = cloneEventMeta(r.Meta)
+	cloned.Context = cloneTurnContext(r.Context)
 	cloned.Arguments = cloneStringAnyMap(r.Arguments)
 	return &cloned
 }
 
 type ToolApprovalRequest struct {
 	Meta      EventMeta      `json:"meta"`
+	Context   *TurnContext   `json:"context,omitempty"`
 	Tool      string         `json:"tool"`
 	Arguments map[string]any `json:"arguments,omitempty"`
 	Channel   string         `json:"channel,omitempty"`
@@ -160,12 +167,14 @@ func (r *ToolApprovalRequest) Clone() *ToolApprovalRequest {
 	}
 	cloned := *r
 	cloned.Meta = cloneEventMeta(r.Meta)
+	cloned.Context = cloneTurnContext(r.Context)
 	cloned.Arguments = cloneStringAnyMap(r.Arguments)
 	return &cloned
 }
 
 type ToolResultHookResponse struct {
 	Meta      EventMeta         `json:"meta"`
+	Context   *TurnContext      `json:"context,omitempty"`
 	Tool      string            `json:"tool"`
 	Arguments map[string]any    `json:"arguments,omitempty"`
 	Result    *tools.ToolResult `json:"result,omitempty"`
@@ -180,6 +189,7 @@ func (r *ToolResultHookResponse) Clone() *ToolResultHookResponse {
 	}
 	cloned := *r
 	cloned.Meta = cloneEventMeta(r.Meta)
+	cloned.Context = cloneTurnContext(r.Context)
 	cloned.Arguments = cloneStringAnyMap(r.Arguments)
 	cloned.Result = cloneToolResult(r.Result)
 	return &cloned

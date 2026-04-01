@@ -86,6 +86,7 @@ type Event struct {
 	Kind    EventKind
 	Time    time.Time
 	Meta    EventMeta
+	Context *TurnContext
 	Payload any
 }
 
@@ -98,7 +99,7 @@ type EventMeta struct {
 	Iteration    int
 	TracePath    string
 	Source       string
-	Context      *TurnContext `json:"context,omitempty"`
+	turnContext  *TurnContext
 }
 
 // TurnEndStatus describes the terminal state of a turn.

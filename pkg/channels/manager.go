@@ -1130,6 +1130,8 @@ func (m *Manager) UnregisterChannel(name string) {
 // delivered (or all retries are exhausted), which preserves ordering when
 // a subsequent operation depends on the message having been sent.
 func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) error {
+	msg = bus.NormalizeOutboundMessage(msg)
+
 	m.mu.RLock()
 	_, exists := m.channels[msg.Channel]
 	w, wExists := m.workers[msg.Channel]
@@ -1163,6 +1165,8 @@ func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) erro
 // retries are exhausted), which preserves ordering when later agent behavior
 // depends on actual media delivery.
 func (m *Manager) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error {
+	msg = bus.NormalizeOutboundMediaMessage(msg)
+
 	m.mu.RLock()
 	_, exists := m.channels[msg.Channel]
 	w, wExists := m.workers[msg.Channel]

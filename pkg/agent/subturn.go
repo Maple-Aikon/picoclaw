@@ -370,7 +370,11 @@ func spawnSubTurn(
 	}
 
 	// Create event scope for the child turn
-	scope := al.newTurnEventScope(agent.ID, childID, newTurnContext(opts.InboundContext))
+	scope := al.newTurnEventScope(
+		agent.ID,
+		childID,
+		newTurnContext(opts.InboundContext, opts.RouteResult, opts.SessionScope),
+	)
 
 	// Create child turnState using the new API
 	childTS := newTurnState(&agent, opts, scope)

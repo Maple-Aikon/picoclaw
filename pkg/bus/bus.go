@@ -89,6 +89,7 @@ func (mb *MessageBus) InboundChan() <-chan InboundMessage {
 }
 
 func (mb *MessageBus) PublishOutbound(ctx context.Context, msg OutboundMessage) error {
+	msg = NormalizeOutboundMessage(msg)
 	return publish(ctx, mb, mb.outbound, msg)
 }
 
@@ -97,6 +98,7 @@ func (mb *MessageBus) OutboundChan() <-chan OutboundMessage {
 }
 
 func (mb *MessageBus) PublishOutboundMedia(ctx context.Context, msg OutboundMediaMessage) error {
+	msg = NormalizeOutboundMediaMessage(msg)
 	return publish(ctx, mb, mb.outboundMedia, msg)
 }
 

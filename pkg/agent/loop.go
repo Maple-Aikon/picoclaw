@@ -73,25 +73,27 @@ type AgentLoop struct {
 
 // processOptions configures how a message is processed
 type processOptions struct {
-	SessionKey              string              // Session identifier for history/context
-	Channel                 string              // Target channel for tool execution
-	ChatID                  string              // Target chat ID for tool execution
-	MessageID               string              // Current inbound platform message ID
-	ReplyToMessageID        string              // Current inbound reply target message ID
-	SenderID                string              // Current sender ID for dynamic context
-	SenderDisplayName       string              // Current sender display name for dynamic context
-	UserMessage             string              // User message content (may include prefix)
-	ForcedSkills            []string            // Skills explicitly requested for this message
-	SystemPromptOverride    string              // Override the default system prompt (Used by SubTurns)
-	Media                   []string            // media:// refs from inbound message
-	InitialSteeringMessages []providers.Message // Steering messages from refactor/agent
-	DefaultResponse         string              // Response when LLM returns empty
-	EnableSummary           bool                // Whether to trigger summarization
-	SendResponse            bool                // Whether to send response via bus
-	SuppressToolFeedback    bool                // Whether to suppress inline tool feedback messages
-	NoHistory               bool                // If true, don't load session history (for heartbeat)
-	SkipInitialSteeringPoll bool                // If true, skip the steering poll at loop start (used by Continue)
-	InboundContext          *bus.InboundContext // Normalized inbound facts for events/hooks
+	SessionKey              string                 // Session identifier for history/context
+	Channel                 string                 // Target channel for tool execution
+	ChatID                  string                 // Target chat ID for tool execution
+	MessageID               string                 // Current inbound platform message ID
+	ReplyToMessageID        string                 // Current inbound reply target message ID
+	SenderID                string                 // Current sender ID for dynamic context
+	SenderDisplayName       string                 // Current sender display name for dynamic context
+	UserMessage             string                 // User message content (may include prefix)
+	ForcedSkills            []string               // Skills explicitly requested for this message
+	SystemPromptOverride    string                 // Override the default system prompt (Used by SubTurns)
+	Media                   []string               // media:// refs from inbound message
+	InitialSteeringMessages []providers.Message    // Steering messages from refactor/agent
+	DefaultResponse         string                 // Response when LLM returns empty
+	EnableSummary           bool                   // Whether to trigger summarization
+	SendResponse            bool                   // Whether to send response via bus
+	SuppressToolFeedback    bool                   // Whether to suppress inline tool feedback messages
+	NoHistory               bool                   // If true, don't load session history (for heartbeat)
+	SkipInitialSteeringPoll bool                   // If true, skip the steering poll at loop start (used by Continue)
+	InboundContext          *bus.InboundContext    // Normalized inbound facts for events/hooks
+	RouteResult             *routing.ResolvedRoute // Route decision snapshot for events/hooks
+	SessionScope            *session.SessionScope  // Session scope snapshot for events/hooks
 }
 
 type continuationTarget struct {
@@ -705,6 +707,45 @@ func (al *AgentLoop) Close() {
 	}
 }
 
+func outboundContextFromInbound(
+	inbound *bus.InboundContext,
+	channel, chatID, replyToMessageID string,
+) bus.InboundContext {
+	if inbound == nil {
+		return bus.ContextFromLegacyOutbound(bus.OutboundMessage{
+			Channel:          channel,
+			ChatID:           chatID,
+			ReplyToMessageID: replyToMessageID,
+		})
+	}
+
+	outboundCtx := *cloneInboundContext(inbound)
+	if outboundCtx.Channel == "" {
+		outboundCtx.Channel = channel
+	}
+	if outboundCtx.ChatID == "" {
+		outboundCtx.ChatID = chatID
+	}
+	if outboundCtx.ReplyToMessageID == "" {
+		outboundCtx.ReplyToMessageID = replyToMessageID
+	}
+	return outboundCtx
+}
+
+func outboundMessageForTurn(ts *turnState, content string) bus.OutboundMessage {
+	return bus.OutboundMessage{
+		Channel: ts.channel,
+		ChatID:  ts.chatID,
+		Context: outboundContextFromInbound(
+			ts.opts.InboundContext,
+			ts.channel,
+			ts.chatID,
+			ts.opts.ReplyToMessageID,
+		),
+		Content: content,
+	}
+}
+
 // MountHook registers an in-process hook on the agent loop.
 func (al *AgentLoop) MountHook(reg HookRegistration) error {
 	if al == nil || al.hooks == nil {
@@ -766,20 +807,22 @@ func (al *AgentLoop) newTurnEventScope(agentID, sessionKey string, turnCtx *Turn
 
 func (ts turnEventScope) meta(iteration int, source, tracePath string) EventMeta {
 	return EventMeta{
-		AgentID:    ts.agentID,
-		TurnID:     ts.turnID,
-		SessionKey: ts.sessionKey,
-		Iteration:  iteration,
-		Source:     source,
-		TracePath:  tracePath,
-		Context:    cloneTurnContext(ts.context),
+		AgentID:     ts.agentID,
+		TurnID:      ts.turnID,
+		SessionKey:  ts.sessionKey,
+		Iteration:   iteration,
+		Source:      source,
+		TracePath:   tracePath,
+		turnContext: cloneTurnContext(ts.context),
 	}
 }
 
 func (al *AgentLoop) emitEvent(kind EventKind, meta EventMeta, payload any) {
+	clonedMeta := cloneEventMeta(meta)
 	evt := Event{
 		Kind:    kind,
-		Meta:    cloneEventMeta(meta),
+		Meta:    clonedMeta,
+		Context: cloneTurnContext(clonedMeta.turnContext),
 		Payload: payload,
 	}
 
@@ -1361,6 +1404,8 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		EnableSummary:     true,
 		SendResponse:      false,
 		InboundContext:    cloneInboundContext(&msg.Context),
+		RouteResult:       cloneResolvedRoute(&route),
+		SessionScope:      session.CloneScope(&allocation.Scope),
 	}
 
 	// context-dependent commands check their own Runtime fields and report
@@ -1540,7 +1585,11 @@ func (al *AgentLoop) runAgentLoop(
 		}
 	}
 
-	turnScope := al.newTurnEventScope(agent.ID, opts.SessionKey, newTurnContext(opts.InboundContext))
+	turnScope := al.newTurnEventScope(
+		agent.ID,
+		opts.SessionKey,
+		newTurnContext(opts.InboundContext, opts.RouteResult, opts.SessionScope),
+	)
 	ts := newTurnState(agent, opts, turnScope)
 	result, err := al.runTurn(ctx, ts)
 	if err != nil {
@@ -1564,6 +1613,12 @@ func (al *AgentLoop) runAgentLoop(
 		al.bus.PublishOutbound(ctx, bus.OutboundMessage{
 			Channel: opts.Channel,
 			ChatID:  opts.ChatID,
+			Context: outboundContextFromInbound(
+				opts.InboundContext,
+				opts.Channel,
+				opts.ChatID,
+				opts.ReplyToMessageID,
+			),
 			Content: result.finalContent,
 		})
 	}
@@ -1897,6 +1952,7 @@ turnLoop:
 		if al.hooks != nil {
 			llmReq, decision := al.hooks.BeforeLLM(turnCtx, &LLMHookRequest{
 				Meta:             ts.eventMeta("runTurn", "turn.llm.request"),
+				Context:          cloneTurnContext(ts.turnCtx),
 				Model:            llmModel,
 				Messages:         callMessages,
 				Tools:            providerToolDefs,
@@ -2069,11 +2125,10 @@ turnLoop:
 				)
 
 				if retry == 0 && !constants.IsInternalChannel(ts.channel) {
-					al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-						Channel: ts.channel,
-						ChatID:  ts.chatID,
-						Content: "Context window exceeded. Compressing history and retrying...",
-					})
+					al.bus.PublishOutbound(ctx, outboundMessageForTurn(
+						ts,
+						"Context window exceeded. Compressing history and retrying...",
+					))
 				}
 
 				if compression, ok := al.forceCompression(ts.agent, ts.sessionKey); ok {
@@ -2128,6 +2183,7 @@ turnLoop:
 		if al.hooks != nil {
 			llmResp, decision := al.hooks.AfterLLM(turnCtx, &LLMHookResponse{
 				Meta:     ts.eventMeta("runTurn", "turn.llm.response"),
+				Context:  cloneTurnContext(ts.turnCtx),
 				Model:    llmModel,
 				Response: response,
 				Channel:  ts.channel,
@@ -2280,6 +2336,7 @@ turnLoop:
 			if al.hooks != nil {
 				toolReq, decision := al.hooks.BeforeTool(turnCtx, &ToolCallHookRequest{
 					Meta:      ts.eventMeta("runTurn", "turn.tool.before"),
+					Context:   cloneTurnContext(ts.turnCtx),
 					Tool:      toolName,
 					Arguments: toolArgs,
 					Channel:   ts.channel,
@@ -2326,6 +2383,7 @@ turnLoop:
 			if al.hooks != nil {
 				approval := al.hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
 					Meta:      ts.eventMeta("runTurn", "turn.tool.approve"),
+					Context:   cloneTurnContext(ts.turnCtx),
 					Tool:      toolName,
 					Arguments: toolArgs,
 					Channel:   ts.channel,
@@ -2383,11 +2441,7 @@ turnLoop:
 				)
 				feedbackMsg := fmt.Sprintf("\U0001f527 `%s`\n```\n%s\n```", tc.Name, feedbackPreview)
 				fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
-				_ = al.bus.PublishOutbound(fbCtx, bus.OutboundMessage{
-					Channel: ts.channel,
-					ChatID:  ts.chatID,
-					Content: feedbackMsg,
-				})
+				_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurn(ts, feedbackMsg))
 				fbCancel()
 			}
 
@@ -2400,11 +2454,7 @@ turnLoop:
 				if !result.Silent && result.ForUser != "" {
 					outCtx, outCancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer outCancel()
-					_ = al.bus.PublishOutbound(outCtx, bus.OutboundMessage{
-						Channel: ts.channel,
-						ChatID:  ts.chatID,
-						Content: result.ForUser,
-					})
+					_ = al.bus.PublishOutbound(outCtx, outboundMessageForTurn(ts, result.ForUser))
 				}
 
 				// Determine content for the agent loop (ForLLM or error).
@@ -2469,6 +2519,7 @@ turnLoop:
 			if al.hooks != nil {
 				toolResp, decision := al.hooks.AfterTool(turnCtx, &ToolResultHookResponse{
 					Meta:      ts.eventMeta("runTurn", "turn.tool.after"),
+					Context:   cloneTurnContext(ts.turnCtx),
 					Tool:      toolName,
 					Arguments: toolArgs,
 					Result:    toolResult,
@@ -2545,11 +2596,7 @@ turnLoop:
 			}
 
 			if !toolResult.Silent && toolResult.ForUser != "" && ts.opts.SendResponse {
-				al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-					Channel: ts.channel,
-					ChatID:  ts.chatID,
-					Content: toolResult.ForUser,
-				})
+				al.bus.PublishOutbound(ctx, outboundMessageForTurn(ts, toolResult.ForUser))
 				logger.DebugCF("agent", "Sent tool result to user",
 					map[string]any{
 						"tool":        toolName,
