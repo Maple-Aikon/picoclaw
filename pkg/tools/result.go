@@ -12,6 +12,14 @@ const (
 	artifactPathsLLMNote = "Use `send_file` with one of these paths to send it to the user, or use file/exec tools to save it inside the workspace if requested."
 )
 
+type ErrorKind string
+
+const (
+	ErrTransient      ErrorKind = "transient"       // Retryable (e.g. network glitch)
+	ErrInvalidInput   ErrorKind = "invalid_input"   // Do not retry exactly (e.g. bad args)
+	ErrDependencyDown ErrorKind = "dependency_down" // Circuit broken (e.g. API down)
+)
+
 // ToolResult represents the structured return value from tool execution.
 // It provides clear semantics for different types of results and supports
 // async operations, user-facing messages, and error handling.
@@ -32,6 +40,9 @@ type ToolResult struct {
 	// IsError indicates whether the tool execution failed.
 	// When true, the result should be treated as an error.
 	IsError bool `json:"is_error"`
+
+	// ErrKind categorizes the error to guide LLM retry behavior.
+	ErrKind ErrorKind `json:"error_kind,omitempty"`
 
 	// Async indicates whether the tool is running asynchronously.
 	// When true, the tool will complete later and notify via callback.
@@ -71,11 +82,20 @@ func (tr *ToolResult) ContentForLLM() string {
 	if content == "" && tr.Err != nil {
 		content = tr.Err.Error()
 	}
+	
+	if tr.IsError && tr.ErrKind == ErrInvalidInput {
+		invalidInputNote := "System Note: Tool failed due to invalid arguments. DO NOT RETRY this exact call. Think of a different approach."
+		if content == "" {
+			content = invalidInputNote
+		} else if !strings.Contains(content, invalidInputNote) {
+			content += "\n\n" + invalidInputNote
+		}
+	}
+
 	if tr.ResponseHandled {
 		if content == "" {
-			return handledToolLLMNote
-		}
-		if !strings.Contains(content, handledToolLLMNote) {
+			content = handledToolLLMNote
+		} else if !strings.Contains(content, handledToolLLMNote) {
 			content += "\n" + handledToolLLMNote
 		}
 	}
@@ -213,6 +233,12 @@ func (tr *ToolResult) MarshalJSON() ([]byte, error) {
 //	result := ErrorResult("Operation failed").WithError(err)
 func (tr *ToolResult) WithError(err error) *ToolResult {
 	tr.Err = err
+	return tr
+}
+
+// WithErrorKind categorizes the error to guide LLM retry behavior.
+func (tr *ToolResult) WithErrorKind(kind ErrorKind) *ToolResult {
+	tr.ErrKind = kind
 	return tr
 }
 

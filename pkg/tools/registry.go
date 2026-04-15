@@ -21,6 +21,7 @@ type ToolEntry struct {
 
 type ToolRegistry struct {
 	tools      map[string]*ToolEntry
+	breakers   map[string]*CircuitBreaker
 	mu         sync.RWMutex
 	version    atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
 	mediaStore media.MediaStore
@@ -32,7 +33,8 @@ type mediaStoreAware interface {
 
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
-		tools: make(map[string]*ToolEntry),
+		tools:    make(map[string]*ToolEntry),
+		breakers: make(map[string]*CircuitBreaker),
 	}
 }
 
@@ -48,6 +50,9 @@ func (r *ToolRegistry) Register(tool Tool) {
 		Tool:   tool,
 		IsCore: true,
 		TTL:    0, // Core tools do not use TTL
+	}
+	if _, exists := r.breakers[name]; !exists {
+		r.breakers[name] = NewCircuitBreaker()
 	}
 	if aware, ok := tool.(mediaStoreAware); ok && r.mediaStore != nil {
 		aware.SetMediaStore(r.mediaStore)
@@ -69,6 +74,9 @@ func (r *ToolRegistry) RegisterHidden(tool Tool) {
 		Tool:   tool,
 		IsCore: false,
 		TTL:    0,
+	}
+	if _, exists := r.breakers[name]; !exists {
+		r.breakers[name] = NewCircuitBreaker()
 	}
 	if aware, ok := tool.(mediaStoreAware); ok && r.mediaStore != nil {
 		aware.SetMediaStore(r.mediaStore)
@@ -180,6 +188,12 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, args map[string
 	return r.ExecuteWithContext(ctx, name, args, "", "", nil)
 }
 
+func (r *ToolRegistry) getCircuitBreaker(name string) *CircuitBreaker {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.breakers[name]
+}
+
 // ExecuteWithContext executes a tool with channel/chatID context and optional async callback.
 // If the tool implements AsyncExecutor and a non-nil callback is provided,
 // ExecuteAsync is called instead of Execute — the callback is a parameter,
@@ -206,12 +220,32 @@ func (r *ToolRegistry) ExecuteWithContext(
 		return ErrorResult(fmt.Sprintf("tool %q not found", name)).WithError(fmt.Errorf("tool not found"))
 	}
 
+	// Circuit Breaker check
+	cb := r.getCircuitBreaker(name)
+	if cb != nil && !cb.Allow() {
+		logger.WarnCF("tool", "Tool execution blocked by circuit breaker",
+			map[string]any{"tool": name})
+		return ErrorResult(fmt.Sprintf("System: Tool %q is temporarily disabled (Circuit Open) due to consecutive failures. DO NOT attempt to call it again right now.", name)).
+			WithErrorKind(ErrDependencyDown).
+			WithError(fmt.Errorf("circuit breaker open for tool %q", name))
+	}
+
 	// Validate arguments against the tool's declared schema.
 	if err := validateToolArgs(tool.Parameters(), args); err != nil {
 		logger.WarnCF("tool", "Tool argument validation failed",
 			map[string]any{"tool": name, "error": err.Error()})
-		return ErrorResult(fmt.Sprintf("invalid arguments for tool %q: %s", name, err)).
+		
+		// Record validation error against circuit breaker? 
+		// Invalid input is not a dependency issue, but we might want to fail fast if LLM is looping.
+		// For now, let's just return the error.
+		res := ErrorResult(fmt.Sprintf("invalid arguments for tool %q: %s", name, err)).
+			WithErrorKind(ErrInvalidInput).
 			WithError(fmt.Errorf("argument validation failed: %w", err))
+		
+		if cb != nil {
+			cb.RecordResult(true, res.ErrKind)
+		}
+		return res
 	}
 
 	// Inject channel/chatID into ctx so tools read them via ToolChannel(ctx)/ToolChatID(ctx).
@@ -239,6 +273,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 					ForLLM:  errMsg,
 					ForUser: errMsg,
 					IsError: true,
+					ErrKind: ErrTransient,
 					Err:     fmt.Errorf("panic: %v", re),
 				}
 			}
@@ -261,8 +296,15 @@ func (r *ToolRegistry) ExecuteWithContext(
 			ForLLM:  fmt.Sprintf("Tool '%s' returned nil result unexpectedly", name),
 			ForUser: fmt.Sprintf("Tool '%s' returned nil result unexpectedly", name),
 			IsError: true,
+			ErrKind: ErrTransient,
 			Err:     fmt.Errorf("nil result from tool"),
 		}
+	}
+
+	if cb != nil {
+		// Only record synchronous tool executions, async results are handled later/elsewhere
+		// but for now we'll just track if the initial sync execution failed.
+		cb.RecordResult(result.IsError, result.ErrKind)
 	}
 
 	result = normalizeToolResult(result, name, r.mediaStore, channel, chatID)
@@ -384,6 +426,7 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 	defer r.mu.RUnlock()
 	clone := &ToolRegistry{
 		tools:      make(map[string]*ToolEntry, len(r.tools)),
+		breakers:   make(map[string]*CircuitBreaker, len(r.breakers)),
 		mediaStore: r.mediaStore,
 	}
 	for name, entry := range r.tools {
@@ -392,6 +435,12 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 			IsCore: entry.IsCore,
 			TTL:    entry.TTL,
 		}
+	}
+	for name, breaker := range r.breakers {
+		// CircuitBreaker state is not shared; create a new one for the clone
+		// so subagents don't inherit transient failure states from the parent.
+		clone.breakers[name] = NewCircuitBreaker()
+		_ = breaker // ignore unused
 	}
 	return clone
 }
