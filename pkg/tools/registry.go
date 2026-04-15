@@ -243,7 +243,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 			WithError(fmt.Errorf("argument validation failed: %w", err))
 		
 		if cb != nil {
-			cb.RecordResult(true, res.ErrKind)
+			cb.RecordResult(name, true, res.ErrKind)
 		}
 		return res
 	}
@@ -304,7 +304,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 	if cb != nil {
 		// Only record synchronous tool executions, async results are handled later/elsewhere
 		// but for now we'll just track if the initial sync execution failed.
-		cb.RecordResult(result.IsError, result.ErrKind)
+		cb.RecordResult(name, result.IsError, result.ErrKind)
 	}
 
 	result = normalizeToolResult(result, name, r.mediaStore, channel, chatID)

@@ -3,6 +3,8 @@ package tools
 import (
 	"sync"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 type CircuitState int
@@ -48,19 +50,25 @@ func (cb *CircuitBreaker) Allow() bool {
 }
 
 // RecordResult updates the circuit breaker state based on the execution result.
-func (cb *CircuitBreaker) RecordResult(isError bool, kind ErrorKind) {
+func (cb *CircuitBreaker) RecordResult(toolName string, isError bool, kind ErrorKind) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
 	if !isError {
 		// Success resets failures and closes the circuit
 		cb.failures = 0
+		if cb.state != StateClosed {
+			logger.InfoCF("tool", "Circuit breaker closed (recovered)", map[string]any{"tool": toolName})
+		}
 		cb.state = StateClosed
 		return
 	}
 
 	// Dependency down opens the circuit immediately
 	if kind == ErrDependencyDown {
+		if cb.state != StateOpen {
+			logger.WarnCF("tool", "Circuit breaker opened (dependency down)", map[string]any{"tool": toolName})
+		}
 		cb.state = StateOpen
 		cb.openedAt = time.Now()
 		return
@@ -69,10 +77,15 @@ func (cb *CircuitBreaker) RecordResult(isError bool, kind ErrorKind) {
 	// Failure case
 	cb.failures++
 	if cb.state == StateClosed && cb.failures >= cb.failureThreshold {
+		logger.WarnCF("tool", "Circuit breaker opened (consecutive failures)", map[string]any{
+			"tool": toolName,
+			"failures": cb.failures,
+		})
 		cb.state = StateOpen
 		cb.openedAt = time.Now()
 	} else if cb.state == StateHalfOpen {
 		// Failed the test execution, open circuit again
+		logger.WarnCF("tool", "Circuit breaker re-opened (half-open test failed)", map[string]any{"tool": toolName})
 		cb.state = StateOpen
 		cb.openedAt = time.Now()
 	}
