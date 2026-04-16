@@ -30,7 +30,7 @@ func NewCircuitBreaker() *CircuitBreaker {
 	return &CircuitBreaker{
 		state:            StateClosed,
 		failureThreshold: 3,               // Break after 3 consecutive failures
-		recoveryTimeout:  5 * time.Minute, // Wait 5 minutes before retrying
+		recoveryTimeout:  1 * time.Minute, // Wait 1 minute before retrying
 	}
 }
 
@@ -47,6 +47,13 @@ func (cb *CircuitBreaker) Allow() bool {
 		return false // Still open
 	}
 	return true
+}
+
+// Failures returns the current consecutive failure count.
+func (cb *CircuitBreaker) Failures() int {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	return cb.failures
 }
 
 // RecordResult updates the circuit breaker state based on the execution result.

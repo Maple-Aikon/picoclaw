@@ -92,6 +92,7 @@ var (
 		substr("too many tokens"),
 		substr("prompt is too long"),
 		substr("request too large"),
+		substr("litellm.contextwindowexceedederror"),
 	}
 
 	imageDimensionPatterns = []errorPattern{

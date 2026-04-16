@@ -225,7 +225,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 	if cb != nil && !cb.Allow() {
 		logger.WarnCF("tool", "Tool execution blocked by circuit breaker",
 			map[string]any{"tool": name})
-		return ErrorResult(fmt.Sprintf("System: Tool %q is temporarily disabled (Circuit Open) due to consecutive failures. DO NOT attempt to call it again right now.", name)).
+		return ErrorResult(fmt.Sprintf("System: Tool %q is temporarily disabled (Circuit Open) due to 3 consecutive failures. DO NOT attempt to call it again right now. You must inform the user that this tool is locked and explain why, then wait for the user's instructions on how to proceed.", name)).
 			WithErrorKind(ErrDependencyDown).
 			WithError(fmt.Errorf("circuit breaker open for tool %q", name))
 	}
@@ -235,15 +235,21 @@ func (r *ToolRegistry) ExecuteWithContext(
 		logger.WarnCF("tool", "Tool argument validation failed",
 			map[string]any{"tool": name, "error": err.Error()})
 		
-		// Record validation error against circuit breaker? 
-		// Invalid input is not a dependency issue, but we might want to fail fast if LLM is looping.
-		// For now, let's just return the error.
+		// Record validation error against circuit breaker
 		res := ErrorResult(fmt.Sprintf("invalid arguments for tool %q: %s", name, err)).
 			WithErrorKind(ErrInvalidInput).
 			WithError(fmt.Errorf("argument validation failed: %w", err))
 		
 		if cb != nil {
 			cb.RecordResult(name, true, res.ErrKind)
+			
+			// Add warnings for consecutive failures
+			failures := cb.Failures()
+			if failures == 1 {
+				res.ForLLM += "\n\nNote: You used the tool incorrectly. You have 2 more attempts before this tool is temporarily locked."
+			} else if failures == 2 {
+				res.ForLLM += "\n\nWarning: You used the tool incorrectly again. Please double-check the parameters or consider alternative tools. One more failure will lock this tool temporarily to prevent abuse."
+			}
 		}
 		return res
 	}
@@ -305,6 +311,16 @@ func (r *ToolRegistry) ExecuteWithContext(
 		// Only record synchronous tool executions, async results are handled later/elsewhere
 		// but for now we'll just track if the initial sync execution failed.
 		cb.RecordResult(name, result.IsError, result.ErrKind)
+
+		// Add warnings for consecutive failures to prevent tool abuse
+		if result.IsError && result.ErrKind != ErrDependencyDown {
+			failures := cb.Failures()
+			if failures == 1 {
+				result.ForLLM += "\n\nNote: You used the tool incorrectly. You have 2 more attempts before this tool is temporarily locked."
+			} else if failures == 2 {
+				result.ForLLM += "\n\nWarning: You used the tool incorrectly again. Please double-check the parameters or consider alternative tools. One more failure will lock this tool temporarily to prevent abuse."
+			}
+		}
 	}
 
 	result = normalizeToolResult(result, name, r.mediaStore, channel, chatID)
