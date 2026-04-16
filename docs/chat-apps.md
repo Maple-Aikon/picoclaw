@@ -40,9 +40,10 @@ Talk to your picoclaw through Telegram, Discord, WhatsApp, Matrix, QQ, DingTalk,
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "telegram": {
       "enabled": true,
+      "type": "telegram",
       "token": "YOUR_BOT_TOKEN",
       "allow_from": ["YOUR_USER_ID"],
       "use_markdown_v2": false
@@ -61,7 +62,7 @@ picoclaw gateway
 
 **4. Telegram command menu (auto-registered at startup)**
 
-PicoClaw now keeps command definitions in one shared registry. On startup, Telegram will automatically register supported bot commands (for example `/start`, `/help`, `/show`, `/list`, `/use`) so command menu and runtime behavior stay in sync.
+PicoClaw now keeps command definitions in one shared registry. On startup, Telegram will automatically register supported bot commands (for example `/start`, `/help`, `/show`, `/list`, `/use`, `/btw`) so command menu and runtime behavior stay in sync.
 Telegram command menu registration remains channel-local discovery UX; generic command execution is handled centrally in the agent loop via the commands executor.
 
 If command registration fails (network/API transient errors), the channel still starts and PicoClaw retries registration in the background.
@@ -72,6 +73,7 @@ You can also manage installed skills directly from Telegram:
 - `/use <skill> <message>`
 - `/use <skill>` and then send the actual request in the next message
 - `/use clear`
+- `/btw <question>` to ask an immediate side question without changing the active session history; `/btw` is handled as a no-tool query and does not enter the normal tool-execution flow
 
 **4. Advanced Formatting**
 You can set use_markdown_v2: true to enable enhanced formatting options. This allows the bot to utilize the full range of Telegram MarkdownV2 features, including nested styles, spoilers, and custom fixed-width blocks.
@@ -101,9 +103,10 @@ You can set use_markdown_v2: true to enable enhanced formatting options. This al
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "discord": {
       "enabled": true,
+      "type": "discord",
       "token": "YOUR_BOT_TOKEN",
       "allow_from": ["YOUR_USER_ID"]
     }
@@ -124,7 +127,7 @@ By default the bot responds to all messages in a server channel. To restrict res
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "discord": {
       "group_trigger": { "mention_only": true }
     }
@@ -136,7 +139,7 @@ You can also trigger by keyword prefixes (e.g. `!bot`):
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "discord": {
       "group_trigger": { "prefixes": ["!bot"] }
     }
@@ -165,9 +168,10 @@ PicoClaw can connect to WhatsApp in two ways:
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "whatsapp": {
       "enabled": true,
+      "type": "whatsapp",
       "use_native": true,
       "session_store_path": "",
       "allow_from": []
@@ -199,9 +203,10 @@ Scan the printed QR code with your WeChat mobile app. On success, the token is s
 (Optional) Update `allow_from` with your WeChat User ID to restrict who can message the bot:
 ```json
 {
-  "channels": {
+  "channel_list": {
     "weixin": {
       "enabled": true,
+      "type": "weixin",
       "token": "YOUR_TOKEN",
       "allow_from": ["YOUR_USER_ID"]
     }
@@ -230,9 +235,10 @@ QQ Open Platform provides a one-click setup page for OpenClaw-compatible bots:
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "qq": {
       "enabled": true,
+      "type": "qq",
       "app_id": "YOUR_APP_ID",
       "app_secret": "YOUR_APP_SECRET",
       "allow_from": []
@@ -272,9 +278,10 @@ If you prefer to create the bot manually:
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "dingtalk": {
       "enabled": true,
+      "type": "dingtalk",
       "client_id": "YOUR_CLIENT_ID",
       "client_secret": "YOUR_CLIENT_SECRET",
       "allow_from": []
@@ -305,9 +312,10 @@ picoclaw gateway
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "matrix": {
       "enabled": true,
+      "type": "matrix",
       "homeserver": "https://matrix.org",
       "user_id": "@your-bot:matrix.org",
       "access_token": "YOUR_MATRIX_ACCESS_TOKEN",
@@ -341,9 +349,10 @@ For full options (`device_id`, `join_on_invite`, `group_trigger`, `placeholder`,
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "line": {
       "enabled": true,
+      "type": "line",
       "channel_secret": "YOUR_CHANNEL_SECRET",
       "channel_access_token": "YOUR_CHANNEL_ACCESS_TOKEN",
       "webhook_path": "/webhook/line",
@@ -399,9 +408,10 @@ This command shows a QR code, waits for approval in WeCom, and writes `bot_id` +
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "wecom": {
       "enabled": true,
+      "type": "wecom",
       "bot_id": "YOUR_BOT_ID",
       "secret": "YOUR_SECRET",
       "websocket_url": "wss://openws.work.weixin.qq.com",
@@ -440,9 +450,10 @@ PicoClaw connects to Feishu via WebSocket/SDK mode — no public webhook URL or 
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "feishu": {
       "enabled": true,
+      "type": "feishu",
       "app_id": "cli_xxx",
       "app_secret": "YOUR_APP_SECRET",
       "allow_from": []
@@ -480,9 +491,10 @@ For full options, see [Feishu Channel Configuration Guide](channels/feishu/READM
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "slack": {
       "enabled": true,
+      "type": "slack",
       "bot_token": "xoxb-YOUR-BOT-TOKEN",
       "app_token": "xapp-YOUR-APP-TOKEN",
       "allow_from": []
@@ -507,9 +519,10 @@ picoclaw gateway
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "irc": {
       "enabled": true,
+      "type": "irc",
       "server": "irc.libera.chat:6697",
       "tls": true,
       "nick": "picoclaw-bot",
@@ -547,9 +560,10 @@ Install and run a OneBot v11 compatible QQ bot framework. Enable its WebSocket s
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "onebot": {
       "enabled": true,
+      "type": "onebot",
       "ws_url": "ws://127.0.0.1:8080",
       "access_token": "",
       "allow_from": []

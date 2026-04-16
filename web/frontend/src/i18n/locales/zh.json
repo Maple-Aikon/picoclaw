@@ -16,24 +16,41 @@
     "logs": "日志"
   },
   "launcherLogin": {
-    "title": "Launcher 访问验证",
-    "description": "请使用当前 Launcher 进程的访问口令登录（每次重启可能变化，除非用环境变量或 launcher 配置固定）",
-    "tokenLabel": "令牌",
-    "tokenPlaceholder": "输入访问令牌",
-    "submit": "进入 Dashboard",
-    "errorInvalid": "令牌错误，请重试",
-    "errorNetwork": "网络错误，请重试",
-    "helpTitle": "口令在哪里",
-    "helpConsole": "控制台模式：启动时在终端输出",
-    "helpTray": "托盘模式：菜单「复制控制台口令」",
-    "helpConfig": "Launcher 配置文件：{{path}}",
-    "helpLogFile": "日志文件（启动时会写入口令）：{{path}}",
-    "helpEnv": "固定口令：设置环境变量 {{env}}"
+    "title": "登录",
+    "description": "请输入控制台密码以继续。",
+    "passwordLabel": "密码",
+    "passwordPlaceholder": "输入密码",
+    "submit": "登录",
+    "errorInvalid": "密码错误，请重试。",
+    "errorNetwork": "网络错误，请重试。"
+  },
+  "launcherSetup": {
+    "title": "设置控制台密码",
+    "description": "设置一个密码来保护控制台访问权限，登录时需要输入此密码。",
+    "passwordLabel": "密码",
+    "passwordPlaceholder": "至少 8 个字符",
+    "confirmLabel": "确认密码",
+    "confirmPlaceholder": "再次输入密码",
+    "submit": "设置密码",
+    "errorMismatch": "两次输入的密码不一致。",
+    "errorNetwork": "网络错误，请重试。"
   },
   "chat": {
     "welcome": "今天我能为您做些什么？",
     "welcomeDesc": "您可以询问我天气、设置或其他任何任务，我随时为您效劳。",
     "placeholder": "输入新消息...\n按 Enter 发送，Shift + Enter 换行",
+    "disabledPlaceholder": {
+      "gatewayUnknown": "无法对话：网关状态仍在检测中。请稍候重试，如仍无效请刷新页面或重启 Launcher。",
+      "gatewayStarting": "无法对话：网关正在启动。请等待启动完成后重试。",
+      "gatewayRestarting": "无法对话：网关正在重启。请等待重启完成。",
+      "gatewayStopping": "无法对话：网关正在停止。请等待停止完成后重新启动服务。",
+      "gatewayStopped": "无法对话：网关服务未启动。请点击顶部栏的“启动服务”后重试。",
+      "gatewayError": "无法对话：网关处于错误状态。请检查日志后重启网关或 Launcher。",
+      "websocketConnecting": "正在连接聊天服务，请稍候。",
+      "websocketDisconnected": "无法对话：WebSocket 连接已断开。请检查网络与服务状态，然后刷新页面或重启 Launcher。",
+      "websocketError": "无法对话：WebSocket 连接失败。请检查网络与服务状态后重试。",
+      "noDefaultModel": "无法对话：尚未设置默认模型。请前往模型页面设置默认模型。"
+    },
     "newChat": "新建对话",
     "notConnected": "服务未运行，请先启动以进行对话。",
     "thinking": {
@@ -42,6 +59,7 @@
       "step3": "准备回复...",
       "step4": "马上就好..."
     },
+    "reasoningLabel": "思考",
     "history": "历史记录",
     "noHistory": "暂无对话历史",
     "historyLoadFailed": "加载历史记录失败",
@@ -50,6 +68,10 @@
     "deleteSession": "删除会话",
     "messagesCount": "{{count}} 条消息",
     "noModel": "选择模型",
+    "inputDisabled": {
+      "notConnected": "服务未运行，请先启动以进行对话。",
+      "noModel": "未设置默认模型，请前往模型页面进行配置。"
+    },
     "attachImage": "添加图片",
     "removeImage": "移除图片",
     "uploadedImage": "已上传图片",
@@ -72,6 +94,11 @@
     }
   },
   "header": {
+    "logout": {
+      "tooltip": "退出登录",
+      "confirm": "退出登录",
+      "description": "确定要退出仪表盘登录吗？"
+    },
     "gateway": {
       "stopDialog": {
         "title": "停止服务？",
@@ -189,7 +216,16 @@
     "action": {
       "edit": "编辑 API Key",
       "setDefault": "设为默认",
-      "delete": "删除模型"
+      "delete": "删除模型",
+      "setDefaultDisabled": {
+        "setting": "正在设为默认...",
+        "unavailable": "无法将不可用的模型设为默认",
+        "isDefault": "该模型已是默认模型",
+        "isVirtual": "无法将虚拟模型设为默认"
+      },
+      "deleteDisabled": {
+        "isDefault": "无法删除默认模型"
+      }
     },
     "defaultOnSave": {
       "label": "默认模型",
@@ -477,6 +513,11 @@
           "version": "已安装版本",
           "lines": "行数",
           "characters": "字符数"
+        },
+        "marketplace_installDisabled": {
+          "installing": "正在安装...",
+          "installed": "已安装",
+          "cannotInstall": "无法安装：相关工具未启用"
         }
       },
       "tools": {
@@ -492,6 +533,26 @@
         "enable_success": "工具已启用。",
         "disable_success": "工具已禁用。",
         "toggle_error": "更新工具状态失败。",
+        "web_search": {
+          "title": "Web Search 服务",
+          "description": "选择默认网页搜索后端，并配置已支持的搜索服务。",
+          "load_error": "加载 Web Search 配置失败。",
+          "save": "保存 Web Search 配置",
+          "save_success": "Web Search 配置已更新。",
+          "save_error": "更新 Web Search 配置失败。",
+          "current_service": "当前服务",
+          "provider": "首选服务",
+          "proxy": "代理",
+          "prefer_native": "优先使用模型原生搜索",
+          "prefer_native_hint": "如果当前模型支持内建网页搜索，优先使用模型原生能力而不是客户端工具。",
+          "provider_hint": "启用该服务后，可继续填写所需的连接参数。",
+          "max_results": "最大结果数",
+          "base_url": "基础 URL",
+          "base_url_placeholder": "https://api.example.com/search",
+          "api_key": "API Key",
+          "api_key_placeholder": "留空则保留现有密钥",
+          "none": "不可用"
+        },
         "status": {
           "enabled": "已启用",
           "disabled": "已禁用",

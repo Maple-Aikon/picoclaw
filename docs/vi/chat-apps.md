@@ -40,9 +40,10 @@ Trò chuyện với picoclaw của bạn qua Telegram, Discord, WhatsApp, Matrix
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "telegram": {
       "enabled": true,
+      "type": "telegram",
       "token": "YOUR_BOT_TOKEN",
       "allow_from": ["YOUR_USER_ID"]
     }
@@ -60,10 +61,18 @@ picoclaw gateway
 
 **4. Menu lệnh Telegram (tự động đăng ký khi khởi động)**
 
-PicoClaw hiện lưu trữ định nghĩa lệnh trong một registry chung. Khi khởi động, Telegram sẽ tự động đăng ký các lệnh bot được hỗ trợ (ví dụ `/start`, `/help`, `/show`, `/list`) để menu lệnh và hành vi runtime luôn đồng bộ.
+PicoClaw hiện lưu trữ định nghĩa lệnh trong một registry chung. Khi khởi động, Telegram sẽ tự động đăng ký các lệnh bot được hỗ trợ (ví dụ `/start`, `/help`, `/show`, `/list`, `/use`, `/btw`) để menu lệnh và hành vi runtime luôn đồng bộ.
 Đăng ký menu lệnh Telegram vẫn là UX khám phá cục bộ của kênh; thực thi lệnh chung được xử lý tập trung trong vòng lặp agent qua commands executor.
 
 Nếu đăng ký lệnh thất bại (lỗi tạm thời mạng/API), kênh vẫn khởi động và PicoClaw thử lại đăng ký trong nền.
+
+Ban cung co the quan ly skill da cai dat truc tiep tu Telegram:
+
+- `/list skills`
+- `/use <skill> <message>`
+- `/use <skill>` roi gui yeu cau that o tin nhan tiep theo
+- `/use clear`
+- `/btw <question>` de hoi them mot cau ngoai le ngay lap tuc ma khong thay doi lich su phien dang hoat dong; `/btw` duoc xu ly nhu mot truy van truc tiep khong dung cong cu va khong di vao luong thuc thi cong cu thong thuong
 
 </details>
 
@@ -90,9 +99,10 @@ Nếu đăng ký lệnh thất bại (lỗi tạm thời mạng/API), kênh vẫ
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "discord": {
       "enabled": true,
+      "type": "discord",
       "token": "YOUR_BOT_TOKEN",
       "allow_from": ["YOUR_USER_ID"]
     }
@@ -113,7 +123,7 @@ Mặc định bot phản hồi tất cả tin nhắn trong kênh server. Để g
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "discord": {
       "group_trigger": { "mention_only": true }
     }
@@ -125,7 +135,7 @@ Bạn cũng có thể kích hoạt bằng tiền tố từ khóa (ví dụ: `!bo
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "discord": {
       "group_trigger": { "prefixes": ["!bot"] }
     }
@@ -154,9 +164,10 @@ PicoClaw có thể kết nối WhatsApp theo hai cách:
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "whatsapp": {
       "enabled": true,
+      "type": "whatsapp",
       "use_native": true,
       "session_store_path": "",
       "allow_from": []
@@ -188,9 +199,10 @@ Quét mã QR được in ra bằng ứng dụng WeChat trên điện thoại. Sa
 (Tùy chọn) Thêm ID người dùng WeChat vào `allow_from` để giới hạn ai có thể nhắn tin với bot:
 ```json
 {
-  "channels": {
+  "channel_list": {
     "weixin": {
       "enabled": true,
+      "type": "weixin",
       "token": "YOUR_TOKEN",
       "allow_from": ["YOUR_USER_ID"]
     }
@@ -219,9 +231,10 @@ QQ Open Platform cung cấp trang thiết lập một chạm cho bot tương th�
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "qq": {
       "enabled": true,
+      "type": "qq",
       "app_id": "YOUR_APP_ID",
       "app_secret": "YOUR_APP_SECRET",
       "allow_from": []
@@ -261,9 +274,10 @@ Nếu bạn muốn tạo bot thủ công:
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "dingtalk": {
       "enabled": true,
+      "type": "dingtalk",
       "client_id": "YOUR_CLIENT_ID",
       "client_secret": "YOUR_CLIENT_SECRET",
       "allow_from": []
@@ -290,9 +304,10 @@ Kênh tích hợp được thiết kế đặc biệt cho phần cứng camera A
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "maixcam": {
-      "enabled": true
+      "enabled": true,
+      "type": "maixcam"
     }
   }
 }
@@ -318,9 +333,10 @@ picoclaw gateway
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "matrix": {
       "enabled": true,
+      "type": "matrix",
       "homeserver": "https://matrix.org",
       "user_id": "@your-bot:matrix.org",
       "access_token": "YOUR_MATRIX_ACCESS_TOKEN",
@@ -354,9 +370,10 @@ picoclaw gateway
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "line": {
       "enabled": true,
+      "type": "line",
       "channel_secret": "YOUR_CHANNEL_SECRET",
       "channel_access_token": "YOUR_CHANNEL_ACCESS_TOKEN",
       "webhook_path": "/webhook/line",
@@ -412,9 +429,10 @@ Xem [Hướng Dẫn Cấu Hình WeCom AI Bot](../channels/wecom/wecom_aibot/READ
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "wecom": {
       "enabled": true,
+      "type": "wecom",
       "token": "YOUR_TOKEN",
       "encoding_aes_key": "YOUR_ENCODING_AES_KEY",
       "webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY",
@@ -445,7 +463,7 @@ Xem [Hướng Dẫn Cấu Hình WeCom AI Bot](../channels/wecom/wecom_aibot/READ
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "wecom_app": {
       "enabled": true,
       "corp_id": "wwxxxxxxxxxxxxxxxx",
@@ -480,7 +498,7 @@ picoclaw gateway
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "wecom_aibot": {
       "enabled": true,
       "token": "YOUR_TOKEN",
@@ -521,9 +539,10 @@ PicoClaw kết nối với Feishu qua chế độ WebSocket/SDK — không cần
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "feishu": {
       "enabled": true,
+      "type": "feishu",
       "app_id": "cli_xxx",
       "app_secret": "YOUR_APP_SECRET",
       "allow_from": []
@@ -561,9 +580,10 @@ Mở Feishu, tìm tên bot của bạn và bắt đầu trò chuyện. Bạn cũ
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "slack": {
       "enabled": true,
+      "type": "slack",
       "bot_token": "xoxb-YOUR-BOT-TOKEN",
       "app_token": "xapp-YOUR-APP-TOKEN",
       "allow_from": []
@@ -588,9 +608,10 @@ picoclaw gateway
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "irc": {
       "enabled": true,
+      "type": "irc",
       "server": "irc.libera.chat:6697",
       "tls": true,
       "nick": "picoclaw-bot",
@@ -628,9 +649,10 @@ Cài đặt và chạy framework bot QQ tương thích OneBot v11. Bật máy ch
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "onebot": {
       "enabled": true,
+      "type": "onebot",
       "ws_url": "ws://127.0.0.1:8080",
       "access_token": "",
       "allow_from": []
@@ -660,9 +682,10 @@ Kênh tích hợp được thiết kế đặc biệt cho phần cứng camera A
 
 ```json
 {
-  "channels": {
+  "channel_list": {
     "maixcam": {
-      "enabled": true
+      "enabled": true,
+      "type": "maixcam"
     }
   }
 }

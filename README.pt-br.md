@@ -18,7 +18,7 @@
     <a href="https://discord.gg/V4sAZ9XWpN"><img src="https://img.shields.io/badge/Discord-Community-4c60eb?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
   </p>
 
-[中文](README.zh.md) | [日本語](README.ja.md) | **Português** | [Tiếng Việt](README.vi.md) | [Français](README.fr.md) | [Italiano](README.it.md) | [Bahasa Indonesia](README.id.md) | [Malay](README.my.md) | [English](README.md)
+[中文](README.zh.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | **Português** | [Tiếng Việt](README.vi.md) | [Français](README.fr.md) | [Italiano](README.it.md) | [Bahasa Indonesia](README.id.md) | [Malay](README.my.md) | [English](README.md)
 
 </div>
 
@@ -164,11 +164,19 @@ Alternativamente, baixe o binário para sua plataforma na página de [GitHub Rel
 
 ### Compilar a partir do código-fonte (para desenvolvimento)
 
+Pré-requisitos:
+
+- Go 1.25+
+- Node.js 22+ e pnpm 10.33.0+ para builds do Web UI / launcher
+
 ```bash
 git clone https://github.com/sipeed/picoclaw.git
 
 cd picoclaw
 make deps
+
+# Instalar dependências do frontend
+(cd web/frontend && pnpm install --frozen-lockfile)
 
 # Compilar o binário principal
 make build
@@ -176,7 +184,7 @@ make build
 # Compilar o Web UI Launcher (necessário para o modo WebUI)
 make build-launcher
 
-# Compilar para múltiplas plataformas
+# Compilar os binários core para todas as plataformas gerenciadas pelo Makefile
 make build-all
 
 # Compilar para Raspberry Pi Zero 2 W (32-bit: make build-linux-arm; 64-bit: make build-linux-arm64)

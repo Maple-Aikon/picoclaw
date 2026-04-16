@@ -4,8 +4,18 @@ import { useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 
-import { type ToolSupportItem, getTools, setToolEnabled } from "@/api/tools"
+import {
+  type ToolSupportItem,
+  type WebSearchConfigResponse,
+  getTools,
+  getWebSearchConfig,
+  setToolEnabled,
+  updateWebSearchConfig,
+} from "@/api/tools"
 import { PageHeader } from "@/components/page-header"
+import { maskedSecretPlaceholder } from "@/components/secret-placeholder"
+import { KeyInput } from "@/components/shared-form"
+import { Button } from "@/components/ui/button"
 import {
   Card,
   CardContent,
@@ -33,9 +43,20 @@ export function ToolsPage() {
     queryKey: ["tools"],
     queryFn: getTools,
   })
+  const {
+    data: webSearchData,
+    isLoading: isWebSearchLoading,
+    error: webSearchError,
+  } = useQuery({
+    queryKey: ["tools", "web-search-config"],
+    queryFn: getWebSearchConfig,
+  })
 
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState("all")
+  const [webSearchDraftOverride, setWebSearchDraftOverride] =
+    useState<WebSearchConfigResponse | null>(null)
+  const webSearchDraft = webSearchDraftOverride ?? webSearchData ?? null
 
   const toggleMutation = useMutation({
     mutationFn: async ({ name, enabled }: { name: string; enabled: boolean }) =>
@@ -54,6 +75,27 @@ export function ToolsPage() {
         err instanceof Error
           ? err.message
           : t("pages.agent.tools.toggle_error"),
+      )
+    },
+  })
+
+  const webSearchMutation = useMutation({
+    mutationFn: updateWebSearchConfig,
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["tools", "web-search-config"], updated)
+      setWebSearchDraftOverride(null)
+      toast.success(t("pages.agent.tools.web_search.save_success"))
+      void queryClient.invalidateQueries({
+        queryKey: ["tools", "web-search-config"],
+      })
+      void queryClient.invalidateQueries({ queryKey: ["tools"] })
+      void refreshGatewayState({ force: true })
+    },
+    onError: (err) => {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : t("pages.agent.tools.web_search.save_error"),
       )
     },
   })
@@ -91,12 +133,275 @@ export function ToolsPage() {
     }
   }, [data, searchQuery, statusFilter])
 
+  const providerLabelMap = useMemo(() => {
+    const entries = webSearchDraft?.providers ?? []
+    return new Map(entries.map((item) => [item.id, item.label]))
+  }, [webSearchDraft])
+
+  const currentProviderLabel = webSearchDraft?.current_service
+    ? (providerLabelMap.get(webSearchDraft.current_service) ??
+      webSearchDraft.current_service)
+    : t("pages.agent.tools.web_search.none")
+
+  const updateDraft = (
+    updater: (current: WebSearchConfigResponse) => WebSearchConfigResponse,
+  ) => {
+    setWebSearchDraftOverride((current) => {
+      const draft = current ?? webSearchData
+      return draft ? updater(draft) : current
+    })
+  }
+
   return (
     <div className="bg-background flex h-full flex-col">
       <PageHeader title={t("navigation.tools")} />
 
       <div className="flex-1 overflow-auto px-6 py-6">
         <div className="mx-auto w-full max-w-6xl space-y-8">
+          {webSearchError ? (
+            <Card className="border-destructive/50 bg-destructive/10 cursor-default">
+              <CardHeader>
+                <CardTitle>{t("pages.agent.tools.web_search.title")}</CardTitle>
+                <CardDescription>
+                  {t("pages.agent.tools.web_search.load_error")}
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          ) : isWebSearchLoading || !webSearchDraft ? (
+            <Card className="border-border/60 shadow-none">
+              <CardHeader>
+                <Skeleton className="h-5 w-48" />
+                <Skeleton className="h-4 w-80" />
+              </CardHeader>
+              <CardContent className="grid gap-4 lg:grid-cols-2">
+                <Skeleton className="h-9 w-full" />
+                <Skeleton className="h-9 w-full" />
+                <Skeleton className="h-24 w-full lg:col-span-2" />
+              </CardContent>
+            </Card>
+          ) : (
+            <Card className="border-border/60 shadow-none">
+              <CardHeader>
+                <CardTitle>{t("pages.agent.tools.web_search.title")}</CardTitle>
+                <CardDescription>
+                  {t("pages.agent.tools.web_search.description")}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="grid gap-4 lg:grid-cols-3">
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">
+                      {t("pages.agent.tools.web_search.current_service")}
+                    </div>
+                    <div className="text-muted-foreground rounded-md border px-3 py-2 text-sm">
+                      {currentProviderLabel}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">
+                      {t("pages.agent.tools.web_search.provider")}
+                    </div>
+                    <Select
+                      value={webSearchDraft.provider}
+                      onValueChange={(value) =>
+                        updateDraft((current) => ({
+                          ...current,
+                          provider: value,
+                        }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {webSearchDraft.providers.map((provider) => (
+                          <SelectItem key={provider.id} value={provider.id}>
+                            {provider.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">
+                      {t("pages.agent.tools.web_search.proxy")}
+                    </div>
+                    <Input
+                      value={webSearchDraft.proxy ?? ""}
+                      onChange={(e) =>
+                        updateDraft((current) => ({
+                          ...current,
+                          proxy: e.target.value,
+                        }))
+                      }
+                      placeholder="http://127.0.0.1:7890"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between rounded-md border px-4 py-3">
+                  <div>
+                    <div className="text-sm font-medium">
+                      {t("pages.agent.tools.web_search.prefer_native")}
+                    </div>
+                    <div className="text-muted-foreground text-xs">
+                      {t("pages.agent.tools.web_search.prefer_native_hint")}
+                    </div>
+                  </div>
+                  <Switch
+                    checked={webSearchDraft.prefer_native}
+                    onCheckedChange={(checked) =>
+                      updateDraft((current) => ({
+                        ...current,
+                        prefer_native: checked,
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  {Object.entries(webSearchDraft.settings).map(
+                    ([providerId, settings]) => {
+                      const providerLabel =
+                        providerLabelMap.get(providerId) ?? providerId
+                      const apiKeyPlaceholder = maskedSecretPlaceholder(
+                        settings.api_key_set ? `${providerId}-configured` : "",
+                        t("pages.agent.tools.web_search.api_key_placeholder"),
+                      )
+
+                      return (
+                        <Card
+                          key={providerId}
+                          className="border-border/60 shadow-none"
+                        >
+                          <CardHeader className="pb-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <CardTitle className="text-base">
+                                  {providerLabel}
+                                </CardTitle>
+                                <CardDescription className="mt-1 text-xs">
+                                  {t(
+                                    "pages.agent.tools.web_search.provider_hint",
+                                  )}
+                                </CardDescription>
+                              </div>
+                              <Switch
+                                checked={settings.enabled}
+                                onCheckedChange={(checked) =>
+                                  updateDraft((current) => ({
+                                    ...current,
+                                    settings: {
+                                      ...current.settings,
+                                      [providerId]: {
+                                        ...current.settings[providerId],
+                                        enabled: checked,
+                                      },
+                                    },
+                                  }))
+                                }
+                              />
+                            </div>
+                          </CardHeader>
+                          <CardContent className="space-y-3">
+                            <div className="space-y-2">
+                              <div className="text-sm font-medium">
+                                {t("pages.agent.tools.web_search.max_results")}
+                              </div>
+                              <Input
+                                type="number"
+                                min={1}
+                                max={10}
+                                value={settings.max_results || 5}
+                                onChange={(e) =>
+                                  updateDraft((current) => ({
+                                    ...current,
+                                    settings: {
+                                      ...current.settings,
+                                      [providerId]: {
+                                        ...current.settings[providerId],
+                                        max_results:
+                                          Number(e.target.value) || 0,
+                                      },
+                                    },
+                                  }))
+                                }
+                              />
+                            </div>
+                            {(providerId === "tavily" ||
+                              providerId === "searxng" ||
+                              providerId === "glm_search" ||
+                              providerId === "baidu_search") && (
+                              <div className="space-y-2">
+                                <div className="text-sm font-medium">
+                                  {t("pages.agent.tools.web_search.base_url")}
+                                </div>
+                                <Input
+                                  value={settings.base_url ?? ""}
+                                  onChange={(e) =>
+                                    updateDraft((current) => ({
+                                      ...current,
+                                      settings: {
+                                        ...current.settings,
+                                        [providerId]: {
+                                          ...current.settings[providerId],
+                                          base_url: e.target.value,
+                                        },
+                                      },
+                                    }))
+                                  }
+                                  placeholder={t(
+                                    "pages.agent.tools.web_search.base_url_placeholder",
+                                  )}
+                                />
+                              </div>
+                            )}
+                            {(providerId === "brave" ||
+                              providerId === "tavily" ||
+                              providerId === "perplexity" ||
+                              providerId === "glm_search" ||
+                              providerId === "baidu_search") && (
+                              <div className="space-y-2">
+                                <div className="text-sm font-medium">
+                                  {t("pages.agent.tools.web_search.api_key")}
+                                </div>
+                                <KeyInput
+                                  value={settings.api_key ?? ""}
+                                  onChange={(value) =>
+                                    updateDraft((current) => ({
+                                      ...current,
+                                      settings: {
+                                        ...current.settings,
+                                        [providerId]: {
+                                          ...current.settings[providerId],
+                                          api_key: value,
+                                        },
+                                      },
+                                    }))
+                                  }
+                                  placeholder={apiKeyPlaceholder}
+                                />
+                              </div>
+                            )}
+                          </CardContent>
+                        </Card>
+                      )
+                    },
+                  )}
+                </div>
+
+                <div className="flex justify-end">
+                  <Button
+                    onClick={() => webSearchMutation.mutate(webSearchDraft)}
+                    disabled={webSearchMutation.isPending}
+                  >
+                    {t("pages.agent.tools.web_search.save")}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Header & Description */}
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-end">
             {/* Filters Toolbar */}

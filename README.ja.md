@@ -18,7 +18,7 @@
     <a href="https://discord.gg/V4sAZ9XWpN"><img src="https://img.shields.io/badge/Discord-Community-4c60eb?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
   </p>
 
-[中文](README.zh.md) | **日本語** | [Português](README.pt-br.md) | [Tiếng Việt](README.vi.md) | [Français](README.fr.md) | [Italiano](README.it.md) | [Bahasa Indonesia](README.id.md) | [Malay](README.my.md) | [English](README.md)
+[中文](README.zh.md) | **日本語** | [한국어](README.ko.md) | [Português](README.pt-br.md) | [Tiếng Việt](README.vi.md) | [Français](README.fr.md) | [Italiano](README.it.md) | [Bahasa Indonesia](README.id.md) | [Malay](README.my.md) | [English](README.md)
 
 </div>
 
@@ -164,11 +164,19 @@ PicoClaw はほぼすべての Linux デバイスにデプロイできます！
 
 ### ソースからビルド（開発用）
 
+前提条件:
+
+- Go 1.25+
+- Web UI / launcher のビルドには Node.js 22+ と pnpm 10.33.0+ が必要
+
 ```bash
 git clone https://github.com/sipeed/picoclaw.git
 
 cd picoclaw
 make deps
+
+# フロントエンド依存関係をインストール
+(cd web/frontend && pnpm install --frozen-lockfile)
 
 # コアバイナリをビルド
 make build
@@ -176,7 +184,7 @@ make build
 # Web UI Launcher をビルド（WebUI モードに必要）
 make build-launcher
 
-# 複数プラットフォーム向けビルド
+# Makefile が管理するすべてのプラットフォーム向けにコアバイナリをビルド
 make build-all
 
 # Raspberry Pi Zero 2 W 向けビルド（32-bit: make build-linux-arm; 64-bit: make build-linux-arm64）

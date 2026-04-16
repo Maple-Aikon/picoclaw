@@ -18,7 +18,7 @@
     <a href="https://discord.gg/V4sAZ9XWpN"><img src="https://img.shields.io/badge/Discord-Community-4c60eb?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
   </p>
 
-[中文](README.zh.md) | [日本語](README.ja.md) | [Português](README.pt-br.md) | **Tiếng Việt** | [Français](README.fr.md) | [Italiano](README.it.md) | [Bahasa Indonesia](README.id.md) | [Malay](README.my.md) | [English](README.md)
+[中文](README.zh.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Português](README.pt-br.md) | **Tiếng Việt** | [Français](README.fr.md) | [Italiano](README.it.md) | [Bahasa Indonesia](README.id.md) | [Malay](README.my.md) | [English](README.md)
 
 </div>
 
@@ -164,19 +164,27 @@ Ngoài ra, tải binary cho nền tảng của bạn từ trang [GitHub Releases
 
 ### Xây dựng từ mã nguồn (để phát triển)
 
+Yêu cầu:
+
+- Go 1.25+
+- Node.js 22+ và pnpm 10.33.0+ cho các bản build Web UI / launcher
+
 ```bash
 git clone https://github.com/sipeed/picoclaw.git
 
 cd picoclaw
 make deps
 
-# Build core binary
+# Cài đặt dependencies frontend
+(cd web/frontend && pnpm install --frozen-lockfile)
+
+# Build binary lõi
 make build
 
-# Build Web UI Launcher (required for WebUI mode)
+# Build Web UI Launcher (cần cho chế độ WebUI)
 make build-launcher
 
-# Build for multiple platforms
+# Build các binary lõi cho mọi nền tảng do Makefile quản lý
 make build-all
 
 # Build for Raspberry Pi Zero 2 W (32-bit: make build-linux-arm; 64-bit: make build-linux-arm64)

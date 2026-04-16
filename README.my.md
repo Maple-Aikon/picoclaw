@@ -18,7 +18,7 @@
     <a href="https://discord.gg/V4sAZ9XWpN"><img src="https://img.shields.io/badge/Discord-Community-4c60eb?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
   </p>
 
-[中文](README.zh.md) | [日本語](README.ja.md) | [Português](README.pt-br.md) | [Tiếng Việt](README.vi.md) | [Français](README.fr.md) | [Italiano](README.it.md) | [Bahasa Indonesia](README.id.md) | **Malay** | [English](README.md)
+[中文](README.zh.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Português](README.pt-br.md) | [Tiếng Việt](README.vi.md) | [Français](README.fr.md) | [Italiano](README.it.md) | [Bahasa Indonesia](README.id.md) | **Malay** | [English](README.md)
 
 </div>
 
@@ -165,10 +165,18 @@ Muat turun binari untuk platform anda dari halaman [GitHub Releases](https://git
 
 ### Bina dari sumber (untuk pembangunan)
 
+Prasyarat:
+
+- Go 1.25+
+- Node.js 22+ dan pnpm 10.33.0+ untuk binaan Web UI / launcher
+
 ```bash
 git clone https://github.com/sipeed/picoclaw.git
 cd picoclaw
 make deps
+
+# Pasang dependensi frontend
+(cd web/frontend && pnpm install --frozen-lockfile)
 
 # Bina binari teras
 make build
@@ -176,7 +184,7 @@ make build
 # Bina Pelancar Web UI (diperlukan untuk mod WebUI)
 make build-launcher
 
-# Bina untuk pelbagai platform
+# Bina binari teras untuk semua platform yang diuruskan oleh Makefile
 make build-all
 
 # Bina untuk Raspberry Pi Zero 2 W (32-bit: make build-linux-arm; 64-bit: make build-linux-arm64)
