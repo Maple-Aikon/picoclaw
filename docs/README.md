@@ -6,6 +6,19 @@ This file describes the recommended documentation layout, how translated files s
 
 These conventions are intended as contributor guidance for new or moved docs. Existing docs may still have historical exceptions, and `make lint-docs` only checks a common subset of the patterns described here.
 
+## Reader Navigation
+
+If you are browsing docs rather than reorganizing them, start with these directory indexes:
+
+- [Guides](guides/README.md): setup, configuration, provider, and workflow guides.
+- [Reference](reference/README.md): precise configuration and behavior reference.
+- [Operations](operations/README.md): debugging and troubleshooting material.
+- [Security](security/README.md): security-focused guides and controls.
+- [Architecture](architecture/README.md): implementation notes and internal design docs.
+- [Migration](migration/README.md): upgrade and migration notes.
+
+For channel-specific setup, start with [Chat Apps Configuration](guides/chat-apps.md) and then drill into `docs/channels/<name>/README.md` as needed.
+
 ## Principles
 
 - Choose the document type directory first. Do not create language buckets such as `docs/zh/` or `docs/fr/`.
