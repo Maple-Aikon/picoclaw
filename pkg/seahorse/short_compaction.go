@@ -3,6 +3,7 @@ package seahorse
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"sort"
 	"time"
 
@@ -284,6 +285,9 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 		return nil, err
 	}
 
+	// Remember in Signet (async)
+	go rememberInSignet(content)
+
 	// Link to source messages
 	msgIDs := make([]int64, len(messages))
 	for i, m := range messages {
@@ -388,6 +392,9 @@ func (e *CompactionEngine) compactCondensed(ctx context.Context, convID int64) (
 	if err != nil {
 		return nil, err
 	}
+
+	// Remember in Signet (async)
+	go rememberInSignet(content)
 
 	// Find the ordinal range for the candidate summaries in context
 	items, err := e.store.GetContextItems(ctx, convID)
@@ -895,4 +902,11 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func rememberInSignet(content string) {
+	cmd := exec.Command("signet", "remember", content)
+	if err := cmd.Run(); err != nil {
+		logger.ErrorCF("seahorse", "signet remember failed", map[string]any{"error": err.Error()})
+	}
 }
