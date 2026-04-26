@@ -799,8 +799,12 @@ type ToolsConfig struct {
 	// FilterMinLength is the minimum content length required for filtering.
 	// Content shorter than this will be returned unchanged for performance.
 	// Default: 8
-	FilterMinLength int                `json:"filter_min_length" yaml:"-"                env:"PICOCLAW_TOOLS_FILTER_MIN_LENGTH"`
-	Web             WebToolsConfig     `json:"web"               yaml:"web,omitempty"`
+	FilterMinLength int `json:"filter_min_length" yaml:"-" env:"PICOCLAW_TOOLS_FILTER_MIN_LENGTH"`
+	// MaxToolResultLength is the maximum length of a tool result sent to the LLM.
+	// If exceeded, the result is truncated and a warning is appended.
+	// Default: 10000
+	MaxToolResultLength int            `json:"max_tool_result_length" yaml:"max_tool_result_length,omitempty" env:"PICOCLAW_TOOLS_MAX_TOOL_RESULT_LENGTH"`
+	Web                 WebToolsConfig `json:"web"                    yaml:"web,omitempty"`
 	Cron            CronToolsConfig    `json:"cron"              yaml:"-"`
 	Exec            ExecConfig         `json:"exec"              yaml:"-"`
 	Skills          SkillsToolsConfig  `json:"skills"            yaml:"skills,omitempty"`
@@ -835,6 +839,14 @@ func (c *ToolsConfig) GetFilterMinLength() int {
 		return 8
 	}
 	return c.FilterMinLength
+}
+
+// GetMaxToolResultLength returns the maximum tool result length (default: 10000)
+func (c *ToolsConfig) GetMaxToolResultLength() int {
+	if c.MaxToolResultLength <= 0 {
+		return 10000
+	}
+	return c.MaxToolResultLength
 }
 
 type SearchCacheConfig struct {

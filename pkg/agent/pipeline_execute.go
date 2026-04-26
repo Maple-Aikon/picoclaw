@@ -156,6 +156,9 @@ toolLoop:
 					}
 
 					contentForLLM := hookResult.ContentForLLM()
+					if limit := al.cfg.Tools.GetMaxToolResultLength(); limit > 0 {
+						contentForLLM = truncateToolResult(contentForLLM, limit)
+					}
 					if al.cfg.Tools.IsFilterSensitiveDataEnabled() {
 						contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
 					}
@@ -374,6 +377,10 @@ toolLoop:
 				return
 			}
 
+			if limit := al.cfg.Tools.GetMaxToolResultLength(); limit > 0 {
+				content = truncateToolResult(content, limit)
+			}
+
 			content = al.cfg.FilterSensitiveData(content)
 
 			logger.InfoCF("agent", "Async tool completed, publishing result",
@@ -530,6 +537,9 @@ toolLoop:
 				})
 		}
 		contentForLLM := toolResult.ContentForLLM()
+		if limit := al.cfg.Tools.GetMaxToolResultLength(); limit > 0 {
+			contentForLLM = truncateToolResult(contentForLLM, limit)
+		}
 
 		if al.cfg.Tools.IsFilterSensitiveDataEnabled() {
 			contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)

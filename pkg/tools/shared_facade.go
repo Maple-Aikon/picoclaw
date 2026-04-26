@@ -23,11 +23,16 @@ type (
 	AsyncCallback          = toolshared.AsyncCallback
 	AsyncExecutor          = toolshared.AsyncExecutor
 	ToolResult             = toolshared.ToolResult
+	ErrorKind              = toolshared.ErrorKind
 )
 
 const (
 	handledToolLLMNote   = toolshared.HandledToolLLMNote
 	artifactPathsLLMNote = toolshared.ArtifactPathsLLMNote
+
+	ErrTransient      = toolshared.ErrTransient
+	ErrInvalidInput   = toolshared.ErrInvalidInput
+	ErrDependencyDown = toolshared.ErrDependencyDown
 )
 
 func WithToolContext(ctx context.Context, channel, chatID string) context.Context {

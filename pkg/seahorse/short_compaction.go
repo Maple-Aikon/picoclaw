@@ -1,9 +1,11 @@
 package seahorse
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"os/exec"
+	"net/http"
 	"sort"
 	"time"
 
@@ -905,8 +907,31 @@ func minInt(a, b int) int {
 }
 
 func rememberInSignet(content string) {
-	cmd := exec.Command("signet", "remember", content)
-	if err := cmd.Run(); err != nil {
+	payload, err := json.Marshal(map[string]string{
+		"harness": "picoclaw",
+		"summary": content,
+	})
+	if err != nil {
+		logger.ErrorCF("seahorse", "signet remember marshal failed", map[string]any{"error": err.Error()})
+		return
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest("POST", "http://127.0.0.1:3850/api/hooks/compaction-complete", bytes.NewBuffer(payload))
+	if err != nil {
+		logger.ErrorCF("seahorse", "signet remember request init failed", map[string]any{"error": err.Error()})
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
 		logger.ErrorCF("seahorse", "signet remember failed", map[string]any{"error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		logger.ErrorCF("seahorse", "signet remember bad status", map[string]any{"status": resp.StatusCode})
 	}
 }
