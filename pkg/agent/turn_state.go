@@ -533,6 +533,15 @@ func (ts *turnState) interruptHintMessage() providers.Message {
 	}
 }
 
+func (ts *turnState) toolLimitHintMessage() providers.Message {
+	content := "SYSTEM DIRECTIVE: Tool call limit reached. CEASE ALL TOOL CALLS IMMEDIATELY. " +
+		"YOU MUST NOW PROVIDE A FINAL STATUS REPORT ON THE ASSIGNED MISSION, SUMMARIZING COMPLETED ACTIONS AND OUTLINING THE REMAINING STEPS TO COMPLETION."
+	return providers.Message{
+		Role:    "user",
+		Content: content,
+	}
+}
+
 // =============================================================================
 // SubTurn-related methods
 // =============================================================================

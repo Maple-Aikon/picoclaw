@@ -63,6 +63,9 @@ func (p *Pipeline) CallLLM(
 		exec.callMessages = append(append([]providers.Message(nil), exec.messages...), ts.interruptHintMessage())
 		exec.providerToolDefs = nil
 		ts.markGracefulTerminalUsed()
+	} else if iteration == ts.agent.MaxIterations && ts.agent.MaxIterations > 0 {
+		exec.callMessages = append(append([]providers.Message(nil), exec.messages...), ts.toolLimitHintMessage())
+		exec.providerToolDefs = nil
 	}
 
 	exec.llmOpts = map[string]any{

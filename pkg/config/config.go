@@ -275,6 +275,7 @@ type AgentDefaults struct {
 	SplitOnMarker             bool               `json:"split_on_marker"                  env:"PICOCLAW_AGENTS_DEFAULTS_SPLIT_ON_MARKER"` // split messages on <|[SPLIT]|> marker
 	ContextManager            string             `json:"context_manager,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_MANAGER"`
 	ContextManagerConfig      json.RawMessage    `json:"context_manager_config,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_MANAGER_CONFIG"`
+	MaxChatSizeWhenCompact    int                `json:"max_chat_size_when_compact"       env:"PICOCLAW_AGENTS_DEFAULTS_MAX_CHAT_SIZE_WHEN_COMPACT"`
 }
 
 const DefaultMaxMediaSize = 20 * 1024 * 1024 // 20 MB

@@ -38,7 +38,8 @@ func DefaultConfig() *Config {
 					Enabled:       false,
 					MaxArgsLength: 300,
 				},
-				SplitOnMarker: false,
+				SplitOnMarker:          false,
+				MaxChatSizeWhenCompact: 8000,
 			},
 		},
 		Session: SessionConfig{

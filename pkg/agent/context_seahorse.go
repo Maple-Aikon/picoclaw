@@ -19,6 +19,7 @@ import (
 type seahorseContextManager struct {
 	engine   *seahorse.Engine
 	sessions session.SessionStore // for startup bootstrap
+	agent    *AgentInstance
 }
 
 // newSeahorseContextManager creates a seahorse-backed ContextManager.
@@ -37,7 +38,9 @@ func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager
 
 	// Create engine
 	engine, err := seahorse.NewEngine(seahorse.Config{
-		DBPath: dbPath,
+		DBPath:           dbPath,
+		FreshTailCount:   agent.SummarizeMessageThreshold,
+		ContextThreshold: float64(agent.SummarizeTokenPercent) / 100.0,
 	}, completeFn)
 	if err != nil {
 		return nil, fmt.Errorf("seahorse: create engine: %w", err)
@@ -46,6 +49,7 @@ func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager
 	mgr := &seahorseContextManager{
 		engine:   engine,
 		sessions: agent.Sessions,
+		agent:    agent,
 	}
 
 	// Register seahorse tools with the agent's tool registry
@@ -107,7 +111,8 @@ func (m *seahorseContextManager) Assemble(ctx context.Context, req *AssembleRequ
 	}
 
 	result, err := m.engine.Assemble(ctx, req.SessionKey, seahorse.AssembleInput{
-		Budget: effectiveBudget,
+		Budget:                 effectiveBudget,
+		MaxChatSizeWhenCompact: m.agent.MaxChatSizeWhenCompact,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("seahorse assemble: %w", err)

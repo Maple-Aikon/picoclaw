@@ -34,7 +34,7 @@ func (e *CompactionEngine) NeedsCompaction(ctx context.Context, convID int64, co
 	if err != nil {
 		return false, fmt.Errorf("get token count: %w", err)
 	}
-	threshold := int(float64(contextWindow) * ContextThreshold)
+	threshold := int(float64(contextWindow) * e.config.ContextThreshold)
 	return tokens >= threshold, nil
 }
 
@@ -74,7 +74,7 @@ func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input Comp
 			})
 		}
 	} else {
-		budget = int(float64(tokensBefore) * ContextThreshold)
+		budget = int(float64(tokensBefore) * e.config.ContextThreshold)
 	}
 
 	if input.Force || (tokensBefore > budget && budget > 0) {
@@ -194,7 +194,7 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 
 	// Calculate fresh tail boundary (bypass when forced)
 	useForce := len(force) > 0 && force[0]
-	tailStartIdx := len(items) - FreshTailCount
+	tailStartIdx := len(items) - e.config.FreshTailCount
 	if useForce {
 		tailStartIdx = len(items) // allow compacting everything
 	}
@@ -474,7 +474,7 @@ func (e *CompactionEngine) selectShallowestCondensationCandidate(
 	}
 
 	// Group by depth, find consecutive runs
-	tailStartIdx := len(items) - FreshTailCount
+	tailStartIdx := len(items) - e.config.FreshTailCount
 	if tailStartIdx < 0 {
 		tailStartIdx = 0
 	}
@@ -536,7 +536,7 @@ func (e *CompactionEngine) selectOldestChunkAtDepth(
 		return nil, err
 	}
 
-	tailStartIdx := len(items) - FreshTailCount
+	tailStartIdx := len(items) - e.config.FreshTailCount
 	if tailStartIdx < 0 {
 		tailStartIdx = 0
 	}

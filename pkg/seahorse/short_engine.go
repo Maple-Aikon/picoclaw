@@ -17,7 +17,9 @@ import (
 
 // Config holds engine configuration.
 type Config struct {
-	DBPath                   string   `json:"dbPath"`
+	DBPath                   string   `json:"dbPath"` 
+	FreshTailCount           int      `json:"freshTailCount"` 
+	ContextThreshold         float64  `json:"contextThreshold"`
 	IgnoreSessionPatterns    []string `json:"ignoreSessionPatterns,omitempty"`
 	StatelessSessionPatterns []string `json:"statelessSessionPatterns,omitempty"`
 }
@@ -40,8 +42,9 @@ type IngestResult struct {
 
 // AssembleInput controls context assembly.
 type AssembleInput struct {
-	Budget int    `json:"budget"`
-	Query  string `json:"query,omitempty"`
+	Budget                 int    `json:"budget"`
+	MaxChatSizeWhenCompact int    `json:"maxChatSizeWhenCompact,omitempty"`
+	Query                  string `json:"query,omitempty"`
 }
 
 // AssembleResult contains assembled context.
@@ -127,6 +130,13 @@ func NewEngine(config Config, completeFn CompleteFn) (*Engine, error) {
 	if err := runSchema(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrations: %w", err)
+	}
+
+	if config.FreshTailCount <= 0 {
+		config.FreshTailCount = 32
+	}
+	if config.ContextThreshold <= 0 {
+		config.ContextThreshold = ContextThreshold
 	}
 
 	store := &Store{db: db}

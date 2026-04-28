@@ -55,12 +55,44 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 	}
 
 	// Split into evictable prefix and protected fresh tail
-	tailStart := len(resolved) - FreshTailCount
+	tailStart := len(resolved) - a.config.FreshTailCount
 	if tailStart < 0 {
 		tailStart = 0
 	}
 	evictable := resolved[:tailStart]
 	freshTail := resolved[tailStart:]
+
+	// Phase 1: Truncate individual messages in the older half of the fresh tail if they exceed character limit.
+	// This prevents massive messages from causing context overflow while preserving full detail
+	// for the most recent messages (newer half).
+	maxChars := input.MaxChatSizeWhenCompact
+	if maxChars <= 0 {
+		maxChars = 8000
+	}
+
+	numToTruncate := (len(freshTail) + 1) / 2
+	for i := 0; i < numToTruncate; i++ {
+		r := &freshTail[i]
+		if r.itemType == "message" && r.message != nil {
+			truncated := false
+			if len(r.message.Content) > maxChars {
+				originalLen := len(r.message.Content)
+				r.message.Content = r.message.Content[:maxChars] + fmt.Sprintf("\n\n[... content truncated from %d to %d characters ...]", originalLen, maxChars)
+				truncated = true
+			}
+			for j := range r.message.Parts {
+				p := &r.message.Parts[j]
+				if len(p.Text) > maxChars {
+					originalLen := len(p.Text)
+					p.Text = p.Text[:maxChars] + fmt.Sprintf("\n\n[... content truncated from %d to %d characters ...]", originalLen, maxChars)
+					truncated = true
+				}
+			}
+			if truncated {
+				r.tokenCount = EstimateMessageTokens(*r.message)
+			}
+		}
+	}
 
 	// Calculate fresh tail tokens
 	freshTailTokens := 0

@@ -34,6 +34,7 @@ type AgentInstance struct {
 	ContextWindow             int
 	SummarizeMessageThreshold int
 	SummarizeTokenPercent     int
+	MaxChatSizeWhenCompact    int
 	Provider                  providers.LLMProvider
 	Sessions                  session.SessionStore
 	ContextBuilder            *ContextBuilder
@@ -183,6 +184,11 @@ func NewAgentInstance(
 		summarizeTokenPercent = 75
 	}
 
+	maxChatSizeWhenCompact := defaults.MaxChatSizeWhenCompact
+	if maxChatSizeWhenCompact == 0 {
+		maxChatSizeWhenCompact = 8000
+	}
+
 	// Resolve fallback candidates
 	candidates := resolveModelCandidates(cfg, defaults.Provider, model, fallbacks)
 
@@ -235,6 +241,7 @@ func NewAgentInstance(
 		ContextWindow:             contextWindow,
 		SummarizeMessageThreshold: summarizeMessageThreshold,
 		SummarizeTokenPercent:     summarizeTokenPercent,
+		MaxChatSizeWhenCompact:    maxChatSizeWhenCompact,
 		Provider:                  provider,
 		Sessions:                  sessions,
 		ContextBuilder:            contextBuilder,
