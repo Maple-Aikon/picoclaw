@@ -128,12 +128,19 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 		agentCount := len(agentIDs)
 
 		for serverName, conn := range servers {
-			uniqueTools += len(conn.Tools)
-
 			// Determine whether this server's tools should be deferred (hidden).
 			// Per-server "deferred" field takes precedence over the global Discovery.Enabled.
 			serverCfg := al.cfg.Tools.MCP.Servers[serverName]
 			registerAsHidden := serverIsDeferred(al.cfg.Tools.MCP.Discovery.Enabled, serverCfg)
+
+			// Calculate how many tools will actually be registered for this server
+			registeredCount := 0
+			for _, tool := range conn.Tools {
+				if shouldRegisterTool(tool.Name, serverCfg) {
+					registeredCount++
+				}
+			}
+			uniqueTools += registeredCount
 
 			for _, agentID := range agentIDs {
 				agent, ok := al.registry.GetAgent(agentID)
@@ -142,7 +149,7 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 				}
 				if err := agent.ContextBuilder.RegisterPromptContributor(mcpServerPromptContributor{
 					serverName: serverName,
-					toolCount:  len(conn.Tools),
+					toolCount:  registeredCount,
 					deferred:   registerAsHidden,
 				}); err != nil {
 					logger.WarnCF("agent", "Failed to register MCP prompt contributor",
