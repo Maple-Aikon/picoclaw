@@ -129,6 +129,15 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 			registerAsHidden := serverIsDeferred(al.cfg.Tools.MCP.Discovery.Enabled, serverCfg)
 
 			for _, tool := range conn.Tools {
+				if !shouldRegisterTool(tool.Name, serverCfg) {
+					logger.DebugCF("agent", "Skipping MCP tool due to filter",
+						map[string]any{
+							"server": serverName,
+							"tool":   tool.Name,
+						})
+					continue
+				}
+
 				for _, agentID := range agentIDs {
 					agent, ok := al.registry.GetAgent(agentID)
 					if !ok {
@@ -231,5 +240,31 @@ func serverIsDeferred(discoveryEnabled bool, serverCfg config.MCPServerConfig) b
 	if serverCfg.Deferred != nil {
 		return *serverCfg.Deferred
 	}
+	return true
+}
+
+// shouldRegisterTool checks if a tool should be registered based on IncludeTools and ExcludeTools filters.
+func shouldRegisterTool(toolName string, serverCfg config.MCPServerConfig) bool {
+	// Exclude has higher priority
+	for _, exclude := range serverCfg.ExcludeTools {
+		if exclude == toolName {
+			return false
+		}
+	}
+
+	// If IncludeTools is not empty, tool must be in it
+	if len(serverCfg.IncludeTools) > 0 {
+		found := false
+		for _, include := range serverCfg.IncludeTools {
+			if include == toolName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
 	return true
 }

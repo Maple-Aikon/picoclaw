@@ -1,0 +1,97 @@
+Building picoclaw-launcher for linux/arm64...
+make[1]: Entering directory '/home/maple/.picoclaw/workspace/sources/picoclaw/web'
+Building frontend...
+
+> picoclaw-web@0.0.0 build:backend /home/maple/.picoclaw/workspace/sources/picoclaw/web/frontend
+> tsc -b && vite build --outDir ../backend/dist --emptyOutDir && node ./scripts/ensure-backend-gitkeep.cjs
+
+vite v8.0.8 building client environment for production...
+[2Ktransforming...✓ 7071 modules transformed.
+rendering chunks...
+computing gzip size...
+../backend/dist/index.html                                              3.06 kB │ gzip:   0.83 kB
+../backend/dist/assets/inter-vietnamese-wght-normal-CBcvBZtf.woff2     10.25 kB
+../backend/dist/assets/inter-greek-ext-wght-normal-DlzME5K_.woff2      11.23 kB
+../backend/dist/assets/inter-cyrillic-wght-normal-DqGufNeO.woff2       18.74 kB
+../backend/dist/assets/inter-greek-wght-normal-CkhJZR-_.woff2          18.99 kB
+../backend/dist/assets/inter-cyrillic-ext-wght-normal-BOeWTOD4.woff2   25.96 kB
+../backend/dist/assets/inter-latin-wght-normal-Dx4kXJAl.woff2          48.25 kB
+../backend/dist/assets/inter-latin-ext-wght-normal-DO1Apj_S.woff2      85.06 kB
+../backend/dist/assets/index-VoNBg7Lu.css                             161.67 kB │ gzip:  24.28 kB
+../backend/dist/assets/IconCheck-BCJ20tQq.js                            0.13 kB │ gzip:   0.14 kB
+../backend/dist/assets/IconLoader2-DxIxAiSR.js                          0.13 kB │ gzip:   0.14 kB
+../backend/dist/assets/IconPlus-CgPAjXb0.js                             0.16 kB │ gzip:   0.15 kB
+../backend/dist/assets/IconSearch-swaHL9Pj.js                           0.19 kB │ gzip:   0.16 kB
+../backend/dist/assets/secret-placeholder-DpV4pvbm.js                   0.20 kB │ gzip:   0.16 kB
+../backend/dist/assets/IconRefresh-D9uCof8W.js                          0.22 kB │ gzip:   0.18 kB
+../backend/dist/assets/agent-BzhLkuqV.js                                0.28 kB │ gzip:   0.22 kB
+../backend/dist/assets/route-BJMZ0EBZ.js                                0.31 kB │ gzip:   0.23 kB
+../backend/dist/assets/IconSparkles-Bb61jzcP.js                         0.31 kB │ gzip:   0.18 kB
+../backend/dist/assets/IconTrash-CNIBYsKp.js                            0.34 kB │ gzip:   0.20 kB
+../backend/dist/assets/useNavigate-DAmzSoII.js                          0.34 kB │ gzip:   0.24 kB
+../backend/dist/assets/dist-C1iHtUPV.js                                 0.38 kB │ gzip:   0.27 kB
+../backend/dist/assets/IconKey-B0zS7rj-.js                              0.48 kB │ gzip:   0.29 kB
+../backend/dist/assets/matchContext-DKNWN2os.js                         0.62 kB │ gzip:   0.38 kB
+../backend/dist/assets/label-nsdJ-W5L.js                                0.66 kB │ gzip:   0.43 kB
+../backend/dist/assets/useRouter-C8nhL_ga.js                            0.68 kB │ gzip:   0.38 kB
+../backend/dist/assets/textarea-C0lgr9Ay.js                             0.73 kB │ gzip:   0.41 kB
+../backend/dist/assets/page-header-YM-AhBjf.js                          0.76 kB │ gzip:   0.42 kB
+../backend/dist/assets/tools-DkWaaKvx.js                                0.77 kB │ gzip:   0.40 kB
+../backend/dist/assets/launcher-auth-BwMtoTPw.js                        0.97 kB │ gzip:   0.39 kB
+../backend/dist/assets/channels-BX1ZlDXx.js                             0.98 kB │ gzip:   0.45 kB
+../backend/dist/assets/models-CDvMzL2L.js                               1.03 kB │ gzip:   0.52 kB
+../backend/dist/assets/use-theme-7Tmw4tAT.js                            1.18 kB │ gzip:   0.63 kB
+../backend/dist/assets/dist-D9z-FmUh.js                                 1.30 kB │ gzip:   0.65 kB
+../backend/dist/assets/card-CLB5Pu8f.js                                 1.39 kB │ gzip:   0.56 kB
+../backend/dist/assets/infiniteQueryBehavior-CiZ8Ys2p.js                1.40 kB │ gzip:   0.67 kB
+../backend/dist/assets/skills-Bt67ZY_i.js                               1.47 kB │ gzip:   0.69 kB
+../backend/dist/assets/react-9N0utTZ2.js                                1.96 kB │ gzip:   1.01 kB
+../backend/dist/assets/useMutation-C4vB2MuC.js                          2.29 kB │ gzip:   0.95 kB
+../backend/dist/assets/launcher-login-BNN0O2oy.js                       2.74 kB │ gzip:   1.20 kB
+../backend/dist/assets/launcher-setup-mE7GimtR.js                       2.88 kB │ gzip:   1.17 kB
+../backend/dist/assets/mutation-CPOescOo.js                             3.38 kB │ gzip:   1.13 kB
+../backend/dist/assets/use-gateway-DTShuDC1.js                          3.93 kB │ gzip:   1.67 kB
+../backend/dist/assets/config.raw-DY2vjLYx.js                           4.29 kB │ gzip:   1.68 kB
+../backend/dist/assets/link-BKL5i-Xq.js                                 4.40 kB │ gzip:   2.16 kB
+../backend/dist/assets/alert-dialog-DJ7zNr6a.js                         5.76 kB │ gzip:   1.96 kB
+../backend/dist/assets/_name-B2FjSwDR.js                                6.62 kB │ gzip:   2.62 kB
+../backend/dist/assets/gateway-CPEHyFWE.js                              8.23 kB │ gzip:   3.37 kB
+../backend/dist/assets/useQuery-BJq6hVp6.js                             8.79 kB │ gzip:   3.21 kB
+../backend/dist/assets/shim-wAY9LwA-.js                                 9.28 kB │ gzip:   3.51 kB
+../backend/dist/assets/shared-form-BjaOvZ9z.js                          9.53 kB │ gzip:   3.18 kB
+../backend/dist/assets/scroll-area-CwMi6uLt.js                         12.71 kB │ gzip:   3.95 kB
+../backend/dist/assets/QueryClientProvider-B2zbFOIT.js                 13.80 kB │ gzip:   4.75 kB
+../backend/dist/assets/hub-BNeMb4Er.js                                 14.43 kB │ gzip:   4.30 kB
+../backend/dist/assets/useStore-CG7AE_lF.js                            18.14 kB │ gzip:   6.45 kB
+../backend/dist/assets/credentials-C7zz9oT5.js                         18.92 kB │ gzip:   5.19 kB
+../backend/dist/assets/logs-BH3NmIlH.js                                19.52 kB │ gzip:   8.38 kB
+../backend/dist/assets/tools-viR-8YgC.js                               19.75 kB │ gzip:   5.43 kB
+../backend/dist/assets/select-BXk9G89B.js                              22.31 kB │ gzip:   7.52 kB
+../backend/dist/assets/dropdown-menu-B_QOwUUV.js                       22.44 kB │ gzip:   6.68 kB
+../backend/dist/assets/models-D9kpxgKt.js                              22.73 kB │ gzip:   6.13 kB
+../backend/dist/assets/config-Dkv7SFY4.js                              24.03 kB │ gzip:   6.42 kB
+../backend/dist/assets/sidebar-DsPdTeNt.js                             26.82 kB │ gzip:   8.34 kB
+../backend/dist/assets/skills-BtUdbWS0.js                              27.27 kB │ gzip:   7.42 kB
+../backend/dist/assets/routes-C7NsUEVn.js                              29.21 kB │ gzip:   9.43 kB
+../backend/dist/assets/dist-CMIwFrC3.js                                32.56 kB │ gzip:   9.12 kB
+../backend/dist/assets/_name-Bs1Lp6xE.js                               40.12 kB │ gzip:   8.61 kB
+../backend/dist/assets/useRouterState-BoLOmEYR.js                      49.04 kB │ gzip:  15.79 kB
+../backend/dist/assets/input-DwuUVNVe.js                               92.70 kB │ gzip:  31.95 kB
+../backend/dist/assets/controller-CV84DLnT.js                         123.33 kB │ gzip:  41.01 kB
+../backend/dist/assets/index-ISQgrksR.js                              227.93 kB │ gzip:  72.51 kB
+../backend/dist/assets/lib-CoazEmNn.js                                495.66 kB │ gzip: 151.75 kB
+
+✓ built in 833ms
+CGO_ENABLED=0 go build -v -tags goolm,stdjson -ldflags "-X github.com/sipeed/picoclaw/pkg/config.Version=v0.2.7-7-gae7c9124 -X github.com/sipeed/picoclaw/pkg/config.GitCommit=ae7c9124 -X github.com/sipeed/picoclaw/pkg/config.BuildTime=2026-04-23T02:54:11+0700 -X github.com/sipeed/picoclaw/pkg/config.GoVersion=go1.25.9 -s -w" -o "/home/maple/.picoclaw/workspace/sources/picoclaw/build/picoclaw-launcher-linux-arm64" ./backend/
+github.com/sipeed/picoclaw/pkg/tools
+# github.com/sipeed/picoclaw/pkg/tools
+../pkg/tools/circuit_breaker.go:60:76: undefined: ErrorKind
+../pkg/tools/circuit_breaker.go:75:13: undefined: ErrDependencyDown
+../pkg/tools/registry.go:229:18: undefined: ErrDependencyDown
+../pkg/tools/registry.go:240:18: undefined: ErrInvalidInput
+../pkg/tools/registry.go:282:15: undefined: ErrTransient
+../pkg/tools/registry.go:305:13: undefined: ErrTransient
+../pkg/tools/registry.go:316:42: undefined: ErrDependencyDown
+make[1]: *** [Makefile:95: build] Error 1
+make[1]: Leaving directory '/home/maple/.picoclaw/workspace/sources/picoclaw/web'
+make: *** [Makefile:149: build-launcher] Error 2

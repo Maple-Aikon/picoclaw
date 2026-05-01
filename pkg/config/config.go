@@ -805,6 +805,8 @@ type ToolsConfig struct {
 	// If exceeded, the result is truncated and a warning is appended.
 	// Default: 10000
 	MaxToolResultLength int            `json:"max_tool_result_length" yaml:"max_tool_result_length,omitempty" env:"PICOCLAW_TOOLS_MAX_TOOL_RESULT_LENGTH"`
+	// AltToolSuggest is an alternative suggestion message shown when a tool result is truncated.
+	AltToolSuggest string `json:"alt_tool_suggest" yaml:"alt_tool_suggest,omitempty" env:"PICOCLAW_TOOLS_ALT_TOOL_SUGGEST"`
 	Web                 WebToolsConfig `json:"web"                    yaml:"web,omitempty"`
 	Cron            CronToolsConfig    `json:"cron"              yaml:"-"`
 	Exec            ExecConfig         `json:"exec"              yaml:"-"`
@@ -848,6 +850,14 @@ func (c *ToolsConfig) GetMaxToolResultLength() int {
 		return 10000
 	}
 	return c.MaxToolResultLength
+}
+
+// GetAltToolSuggest returns the alternative suggestion message for truncated results
+func (c *ToolsConfig) GetAltToolSuggest() string {
+	if c.AltToolSuggest == "" {
+		return "head, tail, or pagination"
+	}
+	return c.AltToolSuggest
 }
 
 type SearchCacheConfig struct {
@@ -959,6 +969,10 @@ type MCPServerConfig struct {
 	URL string `json:"url,omitempty"`
 	// Headers are HTTP headers to send with requests (sse/http only)
 	Headers map[string]string `json:"headers,omitempty"`
+	// IncludeTools is a list of tools to include (if empty, all are included)
+	IncludeTools []string `json:"include_tools,omitempty"`
+	// ExcludeTools is a list of tools to exclude (takes precedence over include)
+	ExcludeTools []string `json:"exclude_tools,omitempty"`
 }
 
 // MCPConfig defines configuration for all MCP servers

@@ -157,7 +157,7 @@ toolLoop:
 
 					contentForLLM := hookResult.ContentForLLM()
 					if limit := al.cfg.Tools.GetMaxToolResultLength(); limit > 0 {
-						contentForLLM = truncateToolResult(contentForLLM, limit)
+						contentForLLM = truncateToolResult(contentForLLM, limit, al.cfg.Tools.GetAltToolSuggest())
 					}
 					if al.cfg.Tools.IsFilterSensitiveDataEnabled() {
 						contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
@@ -378,7 +378,7 @@ toolLoop:
 			}
 
 			if limit := al.cfg.Tools.GetMaxToolResultLength(); limit > 0 {
-				content = truncateToolResult(content, limit)
+				content = truncateToolResult(content, limit, al.cfg.Tools.GetAltToolSuggest())
 			}
 
 			content = al.cfg.FilterSensitiveData(content)
@@ -538,7 +538,7 @@ toolLoop:
 		}
 		contentForLLM := toolResult.ContentForLLM()
 		if limit := al.cfg.Tools.GetMaxToolResultLength(); limit > 0 {
-			contentForLLM = truncateToolResult(contentForLLM, limit)
+			contentForLLM = truncateToolResult(contentForLLM, limit, al.cfg.Tools.GetAltToolSuggest())
 		}
 
 		if al.cfg.Tools.IsFilterSensitiveDataEnabled() {
