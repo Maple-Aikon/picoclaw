@@ -14,7 +14,25 @@ export interface SessionDetail {
   messages: {
     role: "user" | "assistant"
     content: string
+    kind?: "normal" | "thought" | "tool_calls"
     media?: string[]
+    attachments?: {
+      type?: "image" | "audio" | "video" | "file"
+      url: string
+      filename?: string
+      content_type?: string
+    }[]
+    tool_calls?: {
+      id?: string
+      type?: string
+      function?: {
+        name?: string
+        arguments?: string
+      }
+      extra_content?: {
+        tool_feedback_explanation?: string
+      }
+    }[]
   }[]
   summary: string
   created: string

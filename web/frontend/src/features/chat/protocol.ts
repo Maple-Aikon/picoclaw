@@ -1,8 +1,12 @@
 import { toast } from "sonner"
 
+import {
+  parseAssistantMessageCreateState,
+  parseAssistantMessageUpdateState,
+} from "@/features/chat/assistant-message-state"
 import { normalizeUnixTimestamp } from "@/features/chat/state"
 import {
-  type AssistantMessageKind,
+  type ChatAttachment,
   type ContextUsage,
   updateChatStore,
 } from "@/store/chat"
@@ -15,14 +19,50 @@ export interface PicoMessage {
   payload?: Record<string, unknown>
 }
 
-function parseAssistantMessageKind(
+function parseAttachments(
   payload: Record<string, unknown>,
-): AssistantMessageKind {
-  return payload.thought === true ? "thought" : "normal"
-}
+): ChatAttachment[] | undefined {
+  const raw = payload.attachments
+  if (!Array.isArray(raw)) {
+    return undefined
+  }
 
-function hasAssistantKindPayload(payload: Record<string, unknown>): boolean {
-  return typeof payload.thought === "boolean"
+  const attachments: ChatAttachment[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== "object") {
+      continue
+    }
+
+    const attachment = item as Record<string, unknown>
+    const url = typeof attachment.url === "string" ? attachment.url : ""
+    if (!url) {
+      continue
+    }
+
+    const type =
+      attachment.type === "audio" ||
+      attachment.type === "video" ||
+      attachment.type === "file" ||
+      attachment.type === "image"
+        ? attachment.type
+        : "file"
+
+    const filename =
+      typeof attachment.filename === "string" ? attachment.filename : undefined
+    const contentType =
+      typeof attachment.content_type === "string"
+        ? attachment.content_type
+        : undefined
+
+    attachments.push({
+      type,
+      url,
+      ...(filename ? { filename } : {}),
+      ...(contentType ? { contentType } : {}),
+    })
+  }
+
+  return attachments.length > 0 ? attachments : undefined
 }
 
 function parseContextUsage(
@@ -54,10 +94,12 @@ export function handlePicoMessage(
   const payload = message.payload || {}
 
   switch (message.type) {
-    case "message.create": {
-      const content = (payload.content as string) || ""
+    case "message.create":
+    case "media.create": {
       const messageId = (payload.message_id as string) || `pico-${Date.now()}`
-      const kind = parseAssistantMessageKind(payload)
+      const { content, kind, toolCalls } =
+        parseAssistantMessageCreateState(payload)
+      const attachments = parseAttachments(payload)
       const contextUsage = parseContextUsage(payload)
       const timestamp =
         message.timestamp !== undefined &&
@@ -73,6 +115,8 @@ export function handlePicoMessage(
             role: "assistant",
             content,
             kind,
+            ...(toolCalls ? { toolCalls } : {}),
+            attachments,
             timestamp,
           },
         ],
@@ -83,24 +127,70 @@ export function handlePicoMessage(
     }
 
     case "message.update": {
-      const content = (payload.content as string) || ""
       const messageId = payload.message_id as string
-      const hasKind = hasAssistantKindPayload(payload)
-      const kind = parseAssistantMessageKind(payload)
+      const attachments = parseAttachments(payload)
+      const contextUsage = parseContextUsage(payload)
+      const timestamp =
+        message.timestamp !== undefined &&
+        Number.isFinite(Number(message.timestamp))
+          ? normalizeUnixTimestamp(Number(message.timestamp))
+          : Date.now()
       if (!messageId) {
         break
       }
 
       updateChatStore((prev) => ({
-        messages: prev.messages.map((msg) =>
-          msg.id === messageId
-            ? {
-                ...msg,
-                content,
-                ...(hasKind ? { kind } : {}),
-              }
-            : msg,
-        ),
+        messages: (() => {
+          let found = false
+          const messages = prev.messages.map((msg) => {
+            if (msg.id !== messageId) {
+              return msg
+            }
+            found = true
+            const { content, kind, toolCalls } =
+              parseAssistantMessageUpdateState(payload, msg)
+            return {
+              ...msg,
+              id: messageId,
+              content,
+              kind,
+              toolCalls,
+              ...(attachments ? { attachments } : {}),
+            }
+          })
+          if (found) {
+            return messages
+          }
+
+          const { content, kind, toolCalls } =
+            parseAssistantMessageUpdateState(payload)
+
+          return [
+            ...messages,
+            {
+              id: messageId,
+              role: "assistant" as const,
+              content,
+              kind,
+              toolCalls,
+              ...(attachments ? { attachments } : {}),
+              timestamp,
+            },
+          ]
+        })(),
+        ...(contextUsage ? { contextUsage } : {}),
+      }))
+      break
+    }
+
+    case "message.delete": {
+      const messageId = payload.message_id as string
+      if (!messageId) {
+        break
+      }
+
+      updateChatStore((prev) => ({
+        messages: prev.messages.filter((msg) => msg.id !== messageId),
       }))
       break
     }

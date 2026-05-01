@@ -36,6 +36,35 @@ func (p *simpleConvProvider) GetDefaultModel() string {
 	return "simple-model"
 }
 
+type nativeSearchCaptureProvider struct {
+	lastOpts map[string]any
+}
+
+func (p *nativeSearchCaptureProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	p.lastOpts = make(map[string]any, len(opts))
+	for k, v := range opts {
+		p.lastOpts[k] = v
+	}
+	return &providers.LLMResponse{
+		Content:      "Using native search",
+		FinishReason: "stop",
+	}, nil
+}
+
+func (p *nativeSearchCaptureProvider) GetDefaultModel() string {
+	return "native-search-model"
+}
+
+func (p *nativeSearchCaptureProvider) SupportsNativeSearch() bool {
+	return true
+}
+
 // toolCallRespProvider returns a tool call response
 type toolCallRespProvider struct {
 	toolName  string
@@ -254,6 +283,41 @@ func TestPipeline_CallLLM_WithToolCall(t *testing.T) {
 	}
 	if exec.normalizedToolCalls[0].Name != "web_search" {
 		t.Errorf("expected tool name 'web_search', got %q", exec.normalizedToolCalls[0].Name)
+	}
+}
+
+func TestPipeline_CallLLM_UsesNativeSearchWithoutClientWebSearchTool(t *testing.T) {
+	provider := &nativeSearchCaptureProvider{}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	if _, ok := agent.Tools.Get("web_search"); ok {
+		t.Fatal("expected no client-side web_search tool to be registered")
+	}
+
+	al.cfg.Tools.Web.Enabled = true
+	al.cfg.Tools.Web.PreferNative = true
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+	if ctrl != ControlBreak {
+		t.Fatalf("expected ControlBreak, got %v", ctrl)
+	}
+	if got, _ := provider.lastOpts["native_search"].(bool); !got {
+		t.Fatalf("expected native_search=true, got %#v", provider.lastOpts["native_search"])
 	}
 }
 

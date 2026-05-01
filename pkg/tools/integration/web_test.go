@@ -385,24 +385,14 @@ func TestWebFetchTool_PayloadTooLarge(t *testing.T) {
 	}
 }
 
-// TestWebTool_WebSearch_NoApiKey verifies missing credentials are surfaced at execution time.
+// TestWebTool_WebSearch_NoApiKey verifies providers without required credentials are not registered.
 func TestWebTool_WebSearch_NoApiKey(t *testing.T) {
 	tool, err := NewWebSearchTool(WebSearchToolOptions{BraveEnabled: true, BraveAPIKeys: nil})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if tool == nil {
-		t.Fatalf("Expected tool when Brave is enabled, even without API keys")
-	}
-
-	result := tool.Execute(context.Background(), map[string]any{
-		"query": "test query",
-	})
-	if !result.IsError {
-		t.Fatalf("Expected missing Brave API key to return error")
-	}
-	if !strings.Contains(result.ForLLM, "no API key provided") {
-		t.Fatalf("Unexpected error message: %s", result.ForLLM)
+	if tool != nil {
+		t.Fatalf("Expected nil tool when only enabled provider is missing credentials")
 	}
 
 	// Also nil when nothing is enabled
@@ -1788,11 +1778,6 @@ func TestApplySogouRangeHint(t *testing.T) {
 }
 
 func TestPrefersDuckDuckGoQuery(t *testing.T) {
-	SetPreferredWebSearchLanguage("")
-	t.Cleanup(func() {
-		SetPreferredWebSearchLanguage("")
-	})
-
 	tests := []struct {
 		name  string
 		query string
@@ -1815,19 +1800,9 @@ func TestPrefersDuckDuckGoQuery(t *testing.T) {
 	}
 }
 
-func TestPrefersDuckDuckGoQuery_FallsBackToPreferredLanguage(t *testing.T) {
-	SetPreferredWebSearchLanguage("en")
-	t.Cleanup(func() {
-		SetPreferredWebSearchLanguage("")
-	})
-
-	if !prefersDuckDuckGoQuery("2026 04 15") {
-		t.Fatal("numeric query should prefer DuckDuckGo when preferred language is English")
-	}
-
-	SetPreferredWebSearchLanguage("zh")
+func TestPrefersDuckDuckGoQuery_DoesNotUseGlobalLanguageFallback(t *testing.T) {
 	if prefersDuckDuckGoQuery("2026 04 15") {
-		t.Fatal("numeric query should prefer Sogou when preferred language is Chinese")
+		t.Fatal("numeric query should default to Sogou when no script-specific hint is present")
 	}
 }
 
@@ -1875,6 +1850,94 @@ func TestWebTool_AutoProviderPrefersConfiguredProvidersBeforeSogou(t *testing.T)
 	}
 	if _, ok := tool.provider.(*BraveSearchProvider); !ok {
 		t.Fatalf("expected BraveSearchProvider, got %T", tool.provider)
+	}
+}
+
+func TestWebTool_ExplicitProviderFallsBackWhenMissingCredentials(t *testing.T) {
+	tool, err := NewWebSearchTool(WebSearchToolOptions{
+		Provider:        "brave",
+		BraveEnabled:    true,
+		SogouEnabled:    true,
+		SogouMaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("NewWebSearchTool() error: %v", err)
+	}
+	if _, ok := tool.provider.(*SogouSearchProvider); !ok {
+		t.Fatalf("expected SogouSearchProvider after fallback, got %T", tool.provider)
+	}
+}
+
+func TestWebTool_ExplicitProviderFallsBackWhenMissingBaseURL(t *testing.T) {
+	tool, err := NewWebSearchTool(WebSearchToolOptions{
+		Provider:        "searxng",
+		SearXNGEnabled:  true,
+		SogouEnabled:    true,
+		SogouMaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("NewWebSearchTool() error: %v", err)
+	}
+	if _, ok := tool.provider.(*SogouSearchProvider); !ok {
+		t.Fatalf("expected SogouSearchProvider after fallback, got %T", tool.provider)
+	}
+}
+
+func TestWebTool_AutoProviderSkipsEnabledButUnreadyProviders(t *testing.T) {
+	tool, err := NewWebSearchTool(WebSearchToolOptions{
+		Provider:        "auto",
+		BraveEnabled:    true,
+		SogouEnabled:    true,
+		SogouMaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("NewWebSearchTool() error: %v", err)
+	}
+	if _, ok := tool.provider.(*SogouSearchProvider); !ok {
+		t.Fatalf("expected SogouSearchProvider when Brave has no API key, got %T", tool.provider)
+	}
+}
+
+func TestResolveWebSearchProviderName_FallsBackFromExplicitUnavailableProvider(t *testing.T) {
+	got, err := ResolveWebSearchProviderName(WebSearchToolOptions{
+		Provider:        "brave",
+		BraveEnabled:    true,
+		SogouEnabled:    true,
+		SogouMaxResults: 5,
+	}, "")
+	if err != nil {
+		t.Fatalf("ResolveWebSearchProviderName() error: %v", err)
+	}
+	if got != "sogou" {
+		t.Fatalf("ResolveWebSearchProviderName() = %q, want sogou", got)
+	}
+}
+
+func TestWebTool_UnknownExplicitProviderFallsBackToAuto(t *testing.T) {
+	tool, err := NewWebSearchTool(WebSearchToolOptions{
+		Provider:        "totally_unknown",
+		SogouEnabled:    true,
+		SogouMaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("NewWebSearchTool() error: %v", err)
+	}
+	if _, ok := tool.provider.(*SogouSearchProvider); !ok {
+		t.Fatalf("expected SogouSearchProvider after fallback, got %T", tool.provider)
+	}
+}
+
+func TestResolveWebSearchProviderName_FallsBackFromUnknownProvider(t *testing.T) {
+	got, err := ResolveWebSearchProviderName(WebSearchToolOptions{
+		Provider:        "totally_unknown",
+		SogouEnabled:    true,
+		SogouMaxResults: 5,
+	}, "")
+	if err != nil {
+		t.Fatalf("ResolveWebSearchProviderName() error: %v", err)
+	}
+	if got != "sogou" {
+		t.Fatalf("ResolveWebSearchProviderName() = %q, want sogou", got)
 	}
 }
 

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { addModel, setDefaultModel } from "@/api/models"
+import { ConfigChangeNotice } from "@/components/config-change-notice"
 import { maskedSecretPlaceholder } from "@/components/secret-placeholder"
 import {
   AdvancedSection,
@@ -21,9 +22,12 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
+import { showSaveSuccessOrRestartToast } from "@/lib/restart-required"
+import { refreshGatewayState } from "@/store/gateway"
 
 interface AddForm {
   modelName: string
+  provider: string
   model: string
   apiBase: string
   apiKey: string
@@ -41,6 +45,7 @@ interface AddForm {
 
 const EMPTY_ADD_FORM: AddForm = {
   modelName: "",
+  provider: "",
   model: "",
   apiBase: "",
   apiKey: "",
@@ -81,6 +86,8 @@ export function AddModelSheet({
     form.apiKey,
     t("models.field.apiKeyPlaceholder"),
   )
+  const isDirty =
+    JSON.stringify(form) !== JSON.stringify(EMPTY_ADD_FORM) || setAsDefault
 
   useEffect(() => {
     if (open) {
@@ -119,9 +126,11 @@ export function AddModelSheet({
     setServerError("")
     try {
       const modelName = form.modelName.trim()
+      const provider = form.provider.trim()
       const modelId = form.model.trim()
       await addModel({
         model_name: modelName,
+        provider: provider || undefined,
         model: modelId,
         api_base: form.apiBase.trim() || undefined,
         api_key: form.apiKey.trim() || undefined,
@@ -145,6 +154,13 @@ export function AddModelSheet({
       if (setAsDefault) {
         await setDefaultModel(modelName)
       }
+      const gateway = await refreshGatewayState({ force: true })
+      showSaveSuccessOrRestartToast(
+        t,
+        t("models.add.saveSuccess"),
+        modelName,
+        gateway?.restartRequired === true,
+      )
       onSaved()
       onClose()
     } catch (e) {
@@ -184,6 +200,17 @@ export function AddModelSheet({
                   {fieldErrors.modelName}
                 </p>
               )}
+            </Field>
+
+            <Field
+              label={t("models.field.provider")}
+              hint={t("models.field.providerHint")}
+            >
+              <Input
+                value={form.provider}
+                onChange={setField("provider")}
+                placeholder={t("models.field.providerPlaceholder")}
+              />
             </Field>
 
             <Field
@@ -352,10 +379,17 @@ export function AddModelSheet({
         </div>
 
         <SheetFooter className="border-t-muted border-t px-6 py-4">
+          {isDirty && (
+            <ConfigChangeNotice
+              kind="save"
+              title={t("common.saveChangesTitle")}
+              description={t("models.unsavedPrompt")}
+            />
+          )}
           <Button variant="ghost" onClick={onClose} disabled={saving}>
             {t("common.cancel")}
           </Button>
-          <Button onClick={handleSave} disabled={saving}>
+          <Button onClick={handleSave} disabled={!isDirty || saving}>
             {saving && <IconLoader2 className="size-4 animate-spin" />}
             {t("models.add.confirm")}
           </Button>

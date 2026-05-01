@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/config"
-	picotools "github.com/sipeed/picoclaw/pkg/tools"
 )
 
 func TestHandleListTools(t *testing.T) {
@@ -93,9 +92,36 @@ func TestHandleListTools(t *testing.T) {
 		if gotTools["i2c"].Status != "disabled" {
 			t.Fatalf("i2c status = %q, want disabled on linux when config is off", gotTools["i2c"].Status)
 		}
+		if gotTools["serial"].Status != "disabled" {
+			t.Fatalf("serial status = %q, want disabled when config is off", gotTools["serial"].Status)
+		}
+
+		cfg.Tools.Serial.Enabled = true
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			t.Fatalf("SaveConfig() error = %v", err)
+		}
+
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("Unmarshal() error = %v", err)
+		}
+		gotTools = make(map[string]toolSupportItem, len(resp.Tools))
+		for _, tool := range resp.Tools {
+			gotTools[tool.Name] = tool
+		}
+		if gotTools["serial"].Status != "enabled" {
+			t.Fatalf("serial = %#v, want enabled on linux when config is on", gotTools["serial"])
+		}
 	} else {
 		cfg.Tools.I2C.Enabled = true
 		cfg.Tools.SPI.Enabled = true
+		cfg.Tools.Serial.Enabled = true
 		if err := config.SaveConfig(configPath, cfg); err != nil {
 			t.Fatalf("SaveConfig() error = %v", err)
 		}
@@ -120,6 +146,16 @@ func TestHandleListTools(t *testing.T) {
 		}
 		if gotTools["spi"].Status != "blocked" || gotTools["spi"].ReasonCode != "requires_linux" {
 			t.Fatalf("spi = %#v, want blocked/requires_linux", gotTools["spi"])
+		}
+		switch runtime.GOOS {
+		case "darwin", "windows":
+			if gotTools["serial"].Status != "enabled" {
+				t.Fatalf("serial = %#v, want enabled on supported host", gotTools["serial"])
+			}
+		default:
+			if gotTools["serial"].Status != "blocked" || gotTools["serial"].ReasonCode != "requires_serial_platform" {
+				t.Fatalf("serial = %#v, want blocked/requires_serial_platform", gotTools["serial"])
+			}
 		}
 	}
 }
@@ -196,6 +232,86 @@ func TestHandleUpdateToolState(t *testing.T) {
 	if !updated.Tools.Cron.Enabled {
 		t.Fatalf("cron should be enabled: %#v", updated.Tools.Cron)
 	}
+
+	rec4 := httptest.NewRecorder()
+	req4 := httptest.NewRequest(
+		http.MethodPut,
+		"/api/tools/serial/state",
+		bytes.NewBufferString(`{"enabled":true}`),
+	)
+	req4.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec4, req4)
+	if rec4.Code != http.StatusOK {
+		t.Fatalf("serial status = %d, want %d, body=%s", rec4.Code, http.StatusOK, rec4.Body.String())
+	}
+
+	updated, err = config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig(updated serial) error = %v", err)
+	}
+	if !updated.Tools.Serial.Enabled {
+		t.Fatalf("serial should be enabled: %#v", updated.Tools.Serial)
+	}
+}
+
+func TestHandleListTools_ReportsWebSearchEnabledWhenToolIsOn(t *testing.T) {
+	tests := []struct {
+		name         string
+		preferNative bool
+	}{
+		{name: "without prefer_native", preferNative: false},
+		{name: "with prefer_native", preferNative: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath, cleanup := setupOAuthTestEnv(t)
+			defer cleanup()
+
+			cfg, err := config.LoadConfig(configPath)
+			if err != nil {
+				t.Fatalf("LoadConfig() error = %v", err)
+			}
+			cfg.Tools.Web.PreferNative = tt.preferNative
+			cfg.Tools.Web.Provider = "brave"
+			cfg.Tools.Web.Sogou.Enabled = false
+			cfg.Tools.Web.DuckDuckGo.Enabled = false
+			cfg.Tools.Web.Brave.Enabled = true
+			cfg.Tools.Web.Brave.SetAPIKeys(nil)
+			if err := config.SaveConfig(configPath, cfg); err != nil {
+				t.Fatalf("SaveConfig() error = %v", err)
+			}
+
+			h := NewHandler(configPath)
+			mux := http.NewServeMux()
+			h.RegisterRoutes(mux)
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			var resp toolSupportResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+
+			for _, tool := range resp.Tools {
+				if tool.Name != "web_search" {
+					continue
+				}
+				if tool.Status != "enabled" || tool.ReasonCode != "" {
+					t.Fatalf("web_search = %#v, want enabled with no reason code", tool)
+				}
+				return
+			}
+
+			t.Fatal("expected web_search in response")
+		})
+	}
 }
 
 func TestHandleGetWebSearchConfig(t *testing.T) {
@@ -206,6 +322,7 @@ func TestHandleGetWebSearchConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	cfg.Tools.Web.PreferNative = false
 	cfg.Tools.Web.Provider = "sogou"
 	cfg.Tools.Web.Sogou.Enabled = true
 	cfg.Tools.Web.Sogou.MaxResults = 6
@@ -239,6 +356,48 @@ func TestHandleGetWebSearchConfig(t *testing.T) {
 	}
 	if !resp.Settings["brave"].APIKeySet {
 		t.Fatalf("brave api_key_set should be true: %#v", resp.Settings["brave"])
+	}
+}
+
+func TestHandleGetWebSearchConfig_DoesNotExposeNativeAsCurrentService(t *testing.T) {
+	configPath, cleanup := setupOAuthTestEnv(t)
+	defer cleanup()
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.Tools.Web.PreferNative = true
+	cfg.Tools.Web.Provider = "brave"
+	cfg.Tools.Web.Sogou.Enabled = false
+	cfg.Tools.Web.DuckDuckGo.Enabled = false
+	cfg.Tools.Web.Brave.Enabled = true
+	cfg.Tools.Web.Brave.SetAPIKeys(nil)
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	h := NewHandler(configPath)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/tools/web-search-config", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp webSearchConfigResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if !resp.PreferNative {
+		t.Fatal("prefer_native should remain true in response")
+	}
+	if resp.CurrentService != "" {
+		t.Fatalf("current_service = %q, want empty when no external provider is ready", resp.CurrentService)
 	}
 }
 
@@ -393,23 +552,53 @@ func TestResolveCurrentWebSearchProvider_PrefersConfiguredProvidersBeforeSogou(t
 	}
 }
 
-func TestResolveCurrentWebSearchProvider_UsesPreferredLanguageForSogouAndDuckDuckGo(t *testing.T) {
+func TestResolveCurrentWebSearchProvider_FallsBackWhenExplicitProviderUnavailable(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Web.Provider = "brave"
+	cfg.Tools.Web.Brave.Enabled = true
+	cfg.Tools.Web.Sogou.Enabled = true
+
+	if got := resolveCurrentWebSearchProvider(cfg); got != "sogou" {
+		t.Fatalf("resolveCurrentWebSearchProvider() = %q, want sogou", got)
+	}
+}
+
+func TestResolveCurrentWebSearchProvider_FallsBackWhenProviderIsUnknown(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Web.Provider = "totally_unknown"
+	cfg.Tools.Web.Sogou.Enabled = true
+
+	if got := resolveCurrentWebSearchProvider(cfg); got != "sogou" {
+		t.Fatalf("resolveCurrentWebSearchProvider() = %q, want sogou", got)
+	}
+}
+
+func TestResolveCurrentWebSearchProvider_PrefersStableDefaultForSogouAndDuckDuckGo(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Tools.Web.Provider = "auto"
 	cfg.Tools.Web.Sogou.Enabled = true
 	cfg.Tools.Web.DuckDuckGo.Enabled = true
 
-	picotools.SetPreferredWebSearchLanguage("en")
-	t.Cleanup(func() {
-		picotools.SetPreferredWebSearchLanguage("")
-	})
-
-	if got := resolveCurrentWebSearchProvider(cfg); got != "duckduckgo" {
-		t.Fatalf("resolveCurrentWebSearchProvider() = %q, want duckduckgo", got)
-	}
-
-	picotools.SetPreferredWebSearchLanguage("zh")
 	if got := resolveCurrentWebSearchProvider(cfg); got != "sogou" {
 		t.Fatalf("resolveCurrentWebSearchProvider() = %q, want sogou", got)
+	}
+}
+
+func TestResolveCurrentWebSearchProvider_IgnoresPreferNativeInConfigView(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ModelList = []*config.ModelConfig{{
+		ModelName: "custom-default",
+		Model:     "openai/gpt-4o",
+		APIKeys:   config.SimpleSecureStrings("sk-default"),
+	}}
+	cfg.Agents.Defaults.ModelName = "custom-default"
+	cfg.Tools.Web.PreferNative = true
+	cfg.Tools.Web.Provider = "brave"
+	cfg.Tools.Web.Sogou.Enabled = false
+	cfg.Tools.Web.DuckDuckGo.Enabled = false
+	cfg.Tools.Web.Brave.Enabled = true
+
+	if got := resolveCurrentWebSearchProvider(cfg); got != "" {
+		t.Fatalf("resolveCurrentWebSearchProvider() = %q, want empty when only native search would be available", got)
 	}
 }

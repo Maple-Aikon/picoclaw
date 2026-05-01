@@ -22,6 +22,8 @@ type (
 	Tool                   = toolshared.Tool
 	AsyncCallback          = toolshared.AsyncCallback
 	AsyncExecutor          = toolshared.AsyncExecutor
+	PromptMetadata         = toolshared.PromptMetadata
+	PromptMetadataProvider = toolshared.PromptMetadataProvider
 	ToolResult             = toolshared.ToolResult
 	ErrorKind              = toolshared.ErrorKind
 )
@@ -33,6 +35,12 @@ const (
 	ErrTransient      = toolshared.ErrTransient
 	ErrInvalidInput   = toolshared.ErrInvalidInput
 	ErrDependencyDown = toolshared.ErrDependencyDown
+
+	ToolPromptLayerCapability = toolshared.ToolPromptLayerCapability
+	ToolPromptSlotTooling     = toolshared.ToolPromptSlotTooling
+	ToolPromptSlotMCP         = toolshared.ToolPromptSlotMCP
+	ToolPromptSourceRegistry  = toolshared.ToolPromptSourceRegistry
+	ToolPromptSourceDiscovery = toolshared.ToolPromptSourceDiscovery
 )
 
 func WithToolContext(ctx context.Context, channel, chatID string) context.Context {

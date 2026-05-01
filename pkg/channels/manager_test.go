@@ -13,6 +13,8 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 // mockChannel is a test double that delegates Send to a configurable function.
@@ -76,8 +78,9 @@ func (m *mockMediaChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaM
 
 type mockDeletingMediaChannel struct {
 	mockMediaChannel
-	deleteCalls int
-	lastDeleted struct {
+	deleteCalls     int
+	dismissedChatID string
+	lastDeleted     struct {
 		chatID    string
 		messageID string
 	}
@@ -92,6 +95,48 @@ func (m *mockDeletingMediaChannel) DeleteMessage(
 	m.lastDeleted.chatID = chatID
 	m.lastDeleted.messageID = messageID
 	return nil
+}
+
+func (m *mockDeletingMediaChannel) DismissToolFeedbackMessage(_ context.Context, chatID string) {
+	m.dismissedChatID = chatID
+}
+
+type mockStreamer struct {
+	finalizeFn func(context.Context, string) error
+}
+
+func (m *mockStreamer) Update(context.Context, string) error { return nil }
+
+func (m *mockStreamer) Finalize(ctx context.Context, content string) error {
+	if m.finalizeFn != nil {
+		return m.finalizeFn(ctx, content)
+	}
+	return nil
+}
+
+func (m *mockStreamer) Cancel(context.Context) {}
+
+type mockStreamingChannel struct {
+	mockMessageEditor
+	streamer        Streamer
+	resolveChatIDFn func(chatID string, outboundCtx *bus.InboundContext) string
+}
+
+func (m *mockStreamingChannel) BeginStream(context.Context, string) (Streamer, error) {
+	if m.streamer == nil {
+		return nil, errors.New("missing streamer")
+	}
+	return m.streamer, nil
+}
+
+func (m *mockStreamingChannel) ToolFeedbackMessageChatID(
+	chatID string,
+	outboundCtx *bus.InboundContext,
+) string {
+	if m.resolveChatIDFn != nil {
+		return m.resolveChatIDFn(chatID, outboundCtx)
+	}
+	return chatID
 }
 
 // newTestManager creates a minimal Manager suitable for unit tests.
@@ -715,11 +760,84 @@ func TestSendWithRetry_ExponentialBackoff(t *testing.T) {
 // mockMessageEditor is a channel that supports MessageEditor.
 type mockMessageEditor struct {
 	mockChannel
-	editFn func(ctx context.Context, chatID, messageID, content string) error
+	editFn            func(ctx context.Context, chatID, messageID, content string) error
+	finalizeFn        func(ctx context.Context, msg bus.OutboundMessage) ([]string, bool)
+	finalizeCalled    bool
+	recordedChatID    string
+	recordedMessageID string
+	recordedContent   string
+	clearedChatID     string
+	dismissedChatID   string
 }
 
 func (m *mockMessageEditor) EditMessage(ctx context.Context, chatID, messageID, content string) error {
 	return m.editFn(ctx, chatID, messageID, content)
+}
+
+func (m *mockMessageEditor) RecordToolFeedbackMessage(chatID, messageID, content string) {
+	m.recordedChatID = chatID
+	m.recordedMessageID = messageID
+	m.recordedContent = content
+}
+
+func (m *mockMessageEditor) ClearToolFeedbackMessage(chatID string) {
+	m.clearedChatID = chatID
+}
+
+func (m *mockMessageEditor) DismissToolFeedbackMessage(_ context.Context, chatID string) {
+	m.dismissedChatID = chatID
+}
+
+func (m *mockMessageEditor) FinalizeToolFeedbackMessage(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) ([]string, bool) {
+	m.finalizeCalled = true
+	if m.finalizeFn == nil {
+		return nil, false
+	}
+	return m.finalizeFn(ctx, msg)
+}
+
+type mockResolvedToolFeedbackEditor struct {
+	mockMessageEditor
+	resolveChatIDFn func(chatID string, outboundCtx *bus.InboundContext) string
+}
+
+type mockDeletingMessageEditor struct {
+	mockMessageEditor
+	deleteCalls      int
+	deletedChatID    string
+	deletedMessageID string
+}
+
+func (m *mockDeletingMessageEditor) DeleteMessage(_ context.Context, chatID, messageID string) error {
+	m.deleteCalls++
+	m.deletedChatID = chatID
+	m.deletedMessageID = messageID
+	return nil
+}
+
+func (m *mockResolvedToolFeedbackEditor) ToolFeedbackMessageChatID(
+	chatID string,
+	outboundCtx *bus.InboundContext,
+) string {
+	if m.resolveChatIDFn != nil {
+		return m.resolveChatIDFn(chatID, outboundCtx)
+	}
+	return chatID
+}
+
+type mockPreparedToolFeedbackEditor struct {
+	mockMessageEditor
+	prepareFn func(content string) string
+}
+
+func (m *mockPreparedToolFeedbackEditor) PrepareToolFeedbackMessageContent(content string) string {
+	if m.prepareFn != nil {
+		return m.prepareFn(content)
+	}
+	return content
 }
 
 func TestPreSend_PlaceholderEditSuccess(t *testing.T) {
@@ -763,6 +881,810 @@ func TestPreSend_PlaceholderEditSuccess(t *testing.T) {
 	}
 	if sendCalled {
 		t.Fatal("expected Send to NOT be called when placeholder edited")
+	}
+}
+
+func TestPreSend_ToolFeedbackPlaceholderEditRecordsTrackedMessage(t *testing.T) {
+	m := newTestManager()
+
+	ch := &mockMessageEditor{
+		editFn: func(_ context.Context, chatID, messageID, content string) error {
+			if chatID != "123" || messageID != "456" || content != "hello" {
+				t.Fatalf("unexpected edit args: %s %s %s", chatID, messageID, content)
+			}
+			return nil
+		},
+	}
+
+	m.RecordPlaceholder("test", "123", "456")
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "hello",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"message_kind": "tool_feedback",
+			},
+		},
+	})
+	_, edited := m.preSend(context.Background(), "test", msg, ch)
+	if !edited {
+		t.Fatal("expected preSend to edit placeholder")
+	}
+	if ch.recordedChatID != "123" || ch.recordedMessageID != "456" {
+		t.Fatalf("expected tracked message 123/456, got %q/%q", ch.recordedChatID, ch.recordedMessageID)
+	}
+}
+
+func TestPreSend_ToolFeedbackPlaceholderEditUsesResolvedTrackedChatID(t *testing.T) {
+	m := newTestManager()
+
+	ch := &mockResolvedToolFeedbackEditor{
+		mockMessageEditor: mockMessageEditor{
+			editFn: func(_ context.Context, chatID, messageID, content string) error {
+				if chatID != "-100123" || messageID != "456" || content != "hello" {
+					t.Fatalf("unexpected edit args: %s %s %s", chatID, messageID, content)
+				}
+				return nil
+			},
+		},
+		resolveChatIDFn: func(chatID string, outboundCtx *bus.InboundContext) string {
+			if chatID != "-100123" {
+				t.Fatalf("expected raw chat ID, got %q", chatID)
+			}
+			if outboundCtx == nil || outboundCtx.TopicID != "42" {
+				t.Fatalf("expected topic-aware outbound context, got %+v", outboundCtx)
+			}
+			return chatID + "/" + outboundCtx.TopicID
+		},
+	}
+
+	m.RecordPlaceholder("test", "-100123", "456")
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "-100123",
+		Content: "hello",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "-100123",
+			TopicID: "42",
+			Raw: map[string]string{
+				"message_kind": "tool_feedback",
+			},
+		},
+	})
+	_, edited := m.preSend(context.Background(), "test", msg, ch)
+	if !edited {
+		t.Fatal("expected preSend to edit placeholder")
+	}
+	if ch.recordedChatID != "-100123/42" || ch.recordedMessageID != "456" {
+		t.Fatalf("expected resolved tracked message -100123/42/456, got %q/%q",
+			ch.recordedChatID, ch.recordedMessageID)
+	}
+}
+
+func TestPreSend_ToolFeedbackPlaceholderEditUsesPreparedContent(t *testing.T) {
+	m := newTestManager()
+
+	const rawContent = "🔧 `read_file`\n" + "<raw>"
+	const preparedContent = "🔧 `read_file`\n&lt;raw&gt;"
+
+	ch := &mockPreparedToolFeedbackEditor{
+		mockMessageEditor: mockMessageEditor{
+			editFn: func(_ context.Context, chatID, messageID, content string) error {
+				if chatID != "123" || messageID != "456" {
+					t.Fatalf("unexpected edit target: %s/%s", chatID, messageID)
+				}
+				if content != InitialAnimatedToolFeedbackContent(preparedContent) {
+					t.Fatalf("unexpected prepared content: %q", content)
+				}
+				return nil
+			},
+		},
+		prepareFn: func(content string) string {
+			if content != rawContent {
+				t.Fatalf("unexpected raw tool feedback: %q", content)
+			}
+			return preparedContent
+		},
+	}
+
+	m.RecordPlaceholder("test", "123", "456")
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: rawContent,
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"message_kind": "tool_feedback",
+			},
+		},
+	})
+
+	_, edited := m.preSend(context.Background(), "test", msg, ch)
+	if !edited {
+		t.Fatal("expected preSend to edit placeholder")
+	}
+	if ch.recordedContent != preparedContent {
+		t.Fatalf("expected tracked content %q, got %q", preparedContent, ch.recordedContent)
+	}
+}
+
+func TestPreSend_NonToolFeedbackLeavesTrackedMessageForChannelSend(t *testing.T) {
+	m := newTestManager()
+	ch := &mockMessageEditor{}
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "final reply",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+		},
+	})
+
+	_, edited := m.preSend(context.Background(), "test", msg, ch)
+	if edited {
+		t.Fatal("expected preSend to fall through when no placeholder exists")
+	}
+	if ch.dismissedChatID != "" {
+		t.Fatalf("expected tracked tool feedback cleanup to be deferred to channel send, got %q", ch.dismissedChatID)
+	}
+}
+
+func TestPreSend_NonToolFeedbackDefersTrackedMessageFinalizationToChannelSend(t *testing.T) {
+	m := newTestManager()
+	ch := &mockMessageEditor{
+		finalizeFn: func(_ context.Context, msg bus.OutboundMessage) ([]string, bool) {
+			if msg.ChatID != "123" || msg.Content != "final reply" {
+				t.Fatalf("unexpected finalize msg: %+v", msg)
+			}
+			return []string{"tool-msg-1"}, true
+		},
+	}
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "final reply",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+		},
+	})
+
+	msgIDs, handled := m.preSend(context.Background(), "test", msg, ch)
+	if handled {
+		t.Fatalf("expected preSend to defer to channel Send, got msgIDs=%v", msgIDs)
+	}
+	if len(msgIDs) != 0 {
+		t.Fatalf("expected no msgIDs from preSend, got %v", msgIDs)
+	}
+	if ch.dismissedChatID != "" {
+		t.Fatalf("expected tracked cleanup to remain in channel Send, got %q", ch.dismissedChatID)
+	}
+	if ch.finalizeCalled {
+		t.Fatal("expected preSend to skip channel tool feedback finalization")
+	}
+}
+
+func TestPreSend_ToolFeedbackSeparateMessagesDeletesPlaceholderAndSkipsEdit(t *testing.T) {
+	m := newTestManager()
+	m.config = &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				ToolFeedback: config.ToolFeedbackConfig{
+					Enabled:          true,
+					SeparateMessages: true,
+				},
+			},
+		},
+	}
+
+	ch := &mockDeletingMessageEditor{
+		mockMessageEditor: mockMessageEditor{
+			editFn: func(_ context.Context, _, _, _ string) error {
+				t.Fatal("expected placeholder edit to be skipped in separate message mode")
+				return nil
+			},
+		},
+	}
+
+	m.RecordPlaceholder("test", "123", "456")
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "hello",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"message_kind": "tool_feedback",
+			},
+		},
+	})
+
+	msgIDs, handled := m.preSend(context.Background(), "test", msg, ch)
+	if handled {
+		t.Fatalf("expected preSend to fall through so the channel can send a new message, got %v", msgIDs)
+	}
+	if ch.deleteCalls != 1 {
+		t.Fatalf("expected placeholder deletion, got %d delete calls", ch.deleteCalls)
+	}
+	if ch.deletedChatID != "123" || ch.deletedMessageID != "456" {
+		t.Fatalf("unexpected placeholder deletion target: %s/%s", ch.deletedChatID, ch.deletedMessageID)
+	}
+	if ch.recordedMessageID != "" {
+		t.Fatalf("expected no tracked placeholder record, got %q", ch.recordedMessageID)
+	}
+	if ch.clearedChatID != "123" {
+		t.Fatalf("expected tracked tool feedback state to be cleared before sending, got %q", ch.clearedChatID)
+	}
+}
+
+func TestPreSend_ThoughtPlaceholderDeleteAndSkipsEdit(t *testing.T) {
+	m := newTestManager()
+
+	ch := &mockDeletingMessageEditor{
+		mockMessageEditor: mockMessageEditor{
+			editFn: func(_ context.Context, _, _, _ string) error {
+				t.Fatal("expected thought message to bypass placeholder edit")
+				return nil
+			},
+		},
+	}
+
+	m.RecordPlaceholder("test", "123", "456")
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "thinking trace",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"message_kind": "thought",
+			},
+		},
+	})
+
+	msgIDs, handled := m.preSend(context.Background(), "test", msg, ch)
+	if handled {
+		t.Fatalf(
+			"expected thought message to fall through so the channel can send a structured message, got %v",
+			msgIDs,
+		)
+	}
+	if ch.deleteCalls != 1 {
+		t.Fatalf("expected placeholder deletion, got %d delete calls", ch.deleteCalls)
+	}
+	if ch.deletedChatID != "123" || ch.deletedMessageID != "456" {
+		t.Fatalf("unexpected placeholder deletion target: %s/%s", ch.deletedChatID, ch.deletedMessageID)
+	}
+	if _, ok := m.placeholders.Load("test:123"); ok {
+		t.Fatal("expected placeholder to be consumed before structured thought send")
+	}
+}
+
+func TestSendWithRetry_ToolCallsPlaceholderDeleteAndFallsThroughToSend(t *testing.T) {
+	m := newTestManager()
+
+	ch := &mockDeletingMessageEditor{
+		mockMessageEditor: mockMessageEditor{
+			mockChannel: mockChannel{
+				sendFn: func(_ context.Context, msg bus.OutboundMessage) error {
+					if got := msg.Context.Raw["message_kind"]; got != "tool_calls" {
+						t.Fatalf("expected tool_calls message kind, got %q", got)
+					}
+					if msg.Content != "" {
+						t.Fatalf("expected empty tool_calls content, got %q", msg.Content)
+					}
+					return nil
+				},
+			},
+			editFn: func(_ context.Context, _, _, _ string) error {
+				t.Fatal("expected tool_calls message to bypass placeholder edit")
+				return nil
+			},
+		},
+	}
+
+	m.RecordPlaceholder("test", "123", "456")
+
+	w := &channelWorker{
+		ch:      ch,
+		limiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"message_kind": "tool_calls",
+				"tool_calls":   `[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"},"extra_content":{"tool_feedback_explanation":"Looking up config"}}]`,
+			},
+		},
+	})
+
+	m.sendWithRetry(context.Background(), "test", w, msg)
+
+	if ch.deleteCalls != 1 {
+		t.Fatalf("expected placeholder deletion, got %d delete calls", ch.deleteCalls)
+	}
+	if ch.deletedChatID != "123" || ch.deletedMessageID != "456" {
+		t.Fatalf("unexpected placeholder deletion target: %s/%s", ch.deletedChatID, ch.deletedMessageID)
+	}
+	if len(ch.sentMessages) != 1 {
+		t.Fatalf("expected structured tool_calls message to be sent once, got %d", len(ch.sentMessages))
+	}
+}
+
+func TestPreSend_NonToolFeedbackSeparateMessagesClearsTrackedMessageWithoutDismiss(t *testing.T) {
+	m := newTestManager()
+	m.config = &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				ToolFeedback: config.ToolFeedbackConfig{
+					Enabled:          true,
+					SeparateMessages: true,
+				},
+			},
+		},
+	}
+
+	ch := &mockMessageEditor{}
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "final reply",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+		},
+	})
+
+	_, handled := m.preSend(context.Background(), "test", msg, ch)
+	if handled {
+		t.Fatal("expected preSend to leave final delivery to the channel")
+	}
+	if ch.clearedChatID != "123" {
+		t.Fatalf("expected tracked tool feedback state to be cleared, got %q", ch.clearedChatID)
+	}
+	if ch.dismissedChatID != "" {
+		t.Fatalf("expected tracked tool feedback message to be preserved, got dismissal for %q", ch.dismissedChatID)
+	}
+	if ch.finalizeCalled {
+		t.Fatal("expected separate message mode to skip in-place finalization")
+	}
+}
+
+func TestPreSend_StaleToolFeedbackDoesNotConsumeStreamActiveMarker(t *testing.T) {
+	m := newTestManager()
+	m.streamActive.Store("test:123", true)
+	m.RecordPlaceholder("test", "123", "placeholder-1")
+
+	var editedContent string
+	ch := &mockMessageEditor{
+		editFn: func(_ context.Context, chatID, messageID, content string) error {
+			if chatID != "123" || messageID != "placeholder-1" {
+				t.Fatalf("unexpected edit target: %s/%s", chatID, messageID)
+			}
+			editedContent = content
+			return nil
+		},
+	}
+
+	toolFeedback := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "🔧 `read_file`\nReading config",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"message_kind": "tool_feedback",
+			},
+		},
+	})
+
+	msgIDs, handled := m.preSend(context.Background(), "test", toolFeedback, ch)
+	if !handled {
+		t.Fatal("expected stale tool feedback to be dropped after stream finalize")
+	}
+	if len(msgIDs) != 0 {
+		t.Fatalf("expected no delivered message IDs for stale feedback, got %v", msgIDs)
+	}
+	if _, ok := m.streamActive.Load("test:123"); !ok {
+		t.Fatal("expected streamActive marker to remain for the final outbound message")
+	}
+	if _, ok := m.placeholders.Load("test:123"); !ok {
+		t.Fatal("expected placeholder cleanup to remain deferred to the final outbound message")
+	}
+	if ch.editedMessages != 0 {
+		t.Fatalf("expected no placeholder edit for stale feedback, got %d edits", ch.editedMessages)
+	}
+
+	finalMsg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "final streamed reply",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+		},
+	})
+
+	_, handled = m.preSend(context.Background(), "test", finalMsg, ch)
+	if !handled {
+		t.Fatal("expected final outbound message to consume streamActive marker")
+	}
+	if _, ok := m.streamActive.Load("test:123"); ok {
+		t.Fatal("expected streamActive marker to be cleared by final outbound message")
+	}
+	if _, ok := m.placeholders.Load("test:123"); ok {
+		t.Fatal("expected placeholder to be cleaned up by final outbound message")
+	}
+	if editedContent != "final streamed reply" {
+		t.Fatalf("editedContent = %q, want final streamed reply", editedContent)
+	}
+}
+
+func TestPreSendMedia_LeavesTrackedMessageForChannelSend(t *testing.T) {
+	m := newTestManager()
+	ch := &mockDeletingMediaChannel{}
+
+	m.preSendMedia(context.Background(), "test", bus.OutboundMediaMessage{
+		ChatID: "123",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+		},
+	}, ch)
+
+	if ch.dismissedChatID != "" {
+		t.Fatalf(
+			"expected tracked tool feedback cleanup to be deferred to channel media send, got %q",
+			ch.dismissedChatID,
+		)
+	}
+}
+
+func TestPreSendMedia_SeparateMessagesClearsTrackedMessageWithoutDismiss(t *testing.T) {
+	m := newTestManager()
+	m.config = &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				ToolFeedback: config.ToolFeedbackConfig{
+					Enabled:          true,
+					SeparateMessages: true,
+				},
+			},
+		},
+	}
+
+	ch := &mockMessageEditor{}
+
+	m.preSendMedia(context.Background(), "test", bus.OutboundMediaMessage{
+		ChatID: "123",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+		},
+	}, ch)
+
+	if ch.clearedChatID != "123" {
+		t.Fatalf("expected tracked tool feedback state to be cleared before media delivery, got %q", ch.clearedChatID)
+	}
+	if ch.dismissedChatID != "" {
+		t.Fatalf("expected tracked tool feedback message to be preserved"+
+			" for media delivery, got %q", ch.dismissedChatID)
+	}
+}
+
+func TestSplitOutboundMessageContent_ToolFeedbackTruncatesInsteadOfSplitting(t *testing.T) {
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "\U0001f527 `read_file`\nRead README.md first to confirm the current project structure before editing the config example.",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"message_kind": "tool_feedback",
+			},
+		},
+	})
+
+	chunks := splitOutboundMessageContent(msg, 40)
+	if len(chunks) != 1 {
+		t.Fatalf("len(chunks) = %d, want 1", len(chunks))
+	}
+	want := utils.FitToolFeedbackMessage(msg.Content, 40-MaxToolFeedbackAnimationFrameLength())
+	if chunks[0] != want {
+		t.Fatalf("chunk = %q, want %q", chunks[0], want)
+	}
+}
+
+func TestSplitOutboundMessageContent_ToolFeedbackReservesAnimationFrame(t *testing.T) {
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "🔧 `read_file`\n1234567890",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"message_kind": "tool_feedback",
+			},
+		},
+	})
+
+	chunks := splitOutboundMessageContent(msg, len([]rune(msg.Content)))
+	if len(chunks) != 1 {
+		t.Fatalf("len(chunks) = %d, want 1", len(chunks))
+	}
+
+	animated := formatAnimatedToolFeedbackContent(chunks[0], strings.Repeat(".", MaxToolFeedbackAnimationFrameLength()))
+	if got, maxLen := len([]rune(animated)), len([]rune(msg.Content)); got > maxLen {
+		t.Fatalf("animated len = %d, want <= %d; content=%q", got, maxLen, animated)
+	}
+}
+
+func TestGetStreamer_FinalizeDismissesTrackedToolFeedback(t *testing.T) {
+	m := newTestManager()
+	ch := &mockStreamingChannel{
+		mockMessageEditor: mockMessageEditor{},
+		streamer: &mockStreamer{
+			finalizeFn: func(_ context.Context, content string) error {
+				if content != "final reply" {
+					t.Fatalf("unexpected finalize content: %q", content)
+				}
+				return nil
+			},
+		},
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123")
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	if err := streamer.Finalize(context.Background(), "final reply"); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+	if ch.dismissedChatID != "123" {
+		t.Fatalf("expected tracked tool feedback to be dismissed for chat 123, got %q", ch.dismissedChatID)
+	}
+	if _, ok := m.streamActive.Load("test:123"); !ok {
+		t.Fatal("expected streamActive marker to be recorded after finalize")
+	}
+}
+
+func TestGetStreamer_FinalizeSeparateMessagesClearsTrackedToolFeedback(t *testing.T) {
+	m := newTestManager()
+	m.config = &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				ToolFeedback: config.ToolFeedbackConfig{
+					Enabled:          true,
+					SeparateMessages: true,
+				},
+			},
+		},
+	}
+	ch := &mockStreamingChannel{
+		mockMessageEditor: mockMessageEditor{},
+		streamer: &mockStreamer{
+			finalizeFn: func(_ context.Context, content string) error {
+				if content != "final reply" {
+					t.Fatalf("unexpected finalize content: %q", content)
+				}
+				return nil
+			},
+		},
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123")
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	if err := streamer.Finalize(context.Background(), "final reply"); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+	if ch.clearedChatID != "123" {
+		t.Fatalf("expected tracked tool feedback to be cleared for chat 123, got %q", ch.clearedChatID)
+	}
+	if ch.dismissedChatID != "" {
+		t.Fatalf("expected tracked tool feedback message to be preserved, got dismissal for %q", ch.dismissedChatID)
+	}
+	if _, ok := m.streamActive.Load("test:123"); !ok {
+		t.Fatal("expected streamActive marker to be recorded after finalize")
+	}
+}
+
+func TestGetStreamer_FinalizeDismissesResolvedTrackedToolFeedback(t *testing.T) {
+	m := newTestManager()
+	ch := &mockStreamingChannel{
+		mockMessageEditor: mockMessageEditor{},
+		streamer: &mockStreamer{
+			finalizeFn: func(_ context.Context, content string) error {
+				if content != "final reply" {
+					t.Fatalf("unexpected finalize content: %q", content)
+				}
+				return nil
+			},
+		},
+		resolveChatIDFn: func(chatID string, outboundCtx *bus.InboundContext) string {
+			if outboundCtx == nil {
+				t.Fatal("expected outbound context during stream finalize")
+			}
+			if outboundCtx.ChatID != "-100123/42" {
+				t.Fatalf("unexpected outbound context: %+v", outboundCtx)
+			}
+			return outboundCtx.ChatID
+		},
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "-100123/42")
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	if err := streamer.Finalize(context.Background(), "final reply"); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+	if ch.dismissedChatID != "-100123/42" {
+		t.Fatalf("expected resolved tracked tool feedback dismissal, got %q", ch.dismissedChatID)
+	}
+	if _, ok := m.streamActive.Load("test:-100123/42"); !ok {
+		t.Fatal("expected streamActive marker to be recorded after finalize")
+	}
+}
+
+func TestPreSend_PlaceholderEditSuccessDismissesResolvedTrackedToolFeedback(t *testing.T) {
+	m := newTestManager()
+
+	ch := &mockResolvedToolFeedbackEditor{
+		mockMessageEditor: mockMessageEditor{
+			editFn: func(_ context.Context, chatID, messageID, content string) error {
+				if chatID != "-100123" || messageID != "456" || content != "done" {
+					t.Fatalf("unexpected edit args: %s %s %s", chatID, messageID, content)
+				}
+				return nil
+			},
+		},
+		resolveChatIDFn: func(chatID string, outboundCtx *bus.InboundContext) string {
+			if outboundCtx == nil || outboundCtx.TopicID != "42" {
+				t.Fatalf("expected topic-aware outbound context, got %+v", outboundCtx)
+			}
+			return chatID + "/" + outboundCtx.TopicID
+		},
+	}
+
+	m.RecordPlaceholder("test", "-100123", "456")
+
+	msg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "-100123",
+		Content: "done",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "-100123",
+			TopicID: "42",
+		},
+	})
+
+	_, edited := m.preSend(context.Background(), "test", msg, ch)
+	if !edited {
+		t.Fatal("expected preSend to edit placeholder")
+	}
+	if ch.dismissedChatID != "-100123/42" {
+		t.Fatalf("expected resolved tracked dismissal, got %q", ch.dismissedChatID)
+	}
+}
+
+func TestGetStreamer_FinalizeFailureDoesNotDismissTrackedToolFeedback(t *testing.T) {
+	m := newTestManager()
+	ch := &mockStreamingChannel{
+		mockMessageEditor: mockMessageEditor{},
+		streamer: &mockStreamer{
+			finalizeFn: func(context.Context, string) error {
+				return errors.New("finalize failed")
+			},
+		},
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123")
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	if err := streamer.Finalize(context.Background(), "final reply"); err == nil {
+		t.Fatal("expected Finalize() to fail")
+	}
+	if ch.dismissedChatID != "" {
+		t.Fatalf("expected no tool feedback dismissal on finalize failure, got %q", ch.dismissedChatID)
+	}
+	if _, ok := m.streamActive.Load("test:123"); ok {
+		t.Fatal("expected no streamActive marker after finalize failure")
+	}
+}
+
+func TestRunWorker_ToolFeedbackSkipsMarkerSplitting(t *testing.T) {
+	m := newTestManager()
+	m.config = &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				SplitOnMarker: true,
+			},
+		},
+	}
+
+	var (
+		mu       sync.Mutex
+		received []string
+	)
+	ch := &mockChannelWithLength{
+		mockChannel: mockChannel{
+			sendFn: func(_ context.Context, msg bus.OutboundMessage) error {
+				mu.Lock()
+				received = append(received, msg.Content)
+				mu.Unlock()
+				return nil
+			},
+		},
+		maxLen: 200,
+	}
+
+	w := &channelWorker{
+		ch:      ch,
+		queue:   make(chan bus.OutboundMessage, 1),
+		done:    make(chan struct{}),
+		limiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.runWorker(ctx, "test", w)
+
+	content := "🔧 `read_file`\nRead current config first.<|[SPLIT]|>Then update the example."
+	w.queue <- testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: content,
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"message_kind": "tool_feedback",
+			},
+		},
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 {
+		t.Fatalf("len(received) = %d, want 1", len(received))
+	}
+	if received[0] != content {
+		t.Fatalf("received[0] = %q, want %q", received[0], content)
 	}
 }
 

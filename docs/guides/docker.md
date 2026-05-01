@@ -39,7 +39,7 @@ docker compose -f docker/docker-compose.yml --profile gateway down
 
 ### Launcher Mode (Web Console)
 
-The `launcher` image includes all three binaries (`picoclaw`, `picoclaw-launcher`, `picoclaw-launcher-tui`) and starts the web console by default, which provides a browser-based UI for configuration and chat.
+The `launcher` image includes both binaries (`picoclaw`, `picoclaw-launcher`) and starts the web console by default, which provides a browser-based UI for configuration and chat.
 
 ```bash
 docker compose -f docker/docker-compose.yml --profile launcher up -d
@@ -94,19 +94,22 @@ picoclaw onboard
   "model_list": [
     {
       "model_name": "ark-code-latest",
-      "model": "volcengine/ark-code-latest",
+      "provider": "volcengine",
+      "model": "ark-code-latest",
       "api_keys": ["sk-your-api-key"],
       "api_base":"https://ark.cn-beijing.volces.com/api/coding/v3"
     },
     {
       "model_name": "gpt-5.4",
-      "model": "openai/gpt-5.4",
+      "provider": "openai",
+      "model": "gpt-5.4",
       "api_keys": ["your-api-key"],
       "request_timeout": 300
     },
     {
       "model_name": "claude-sonnet-4.6",
-      "model": "anthropic/claude-sonnet-4.6",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4.6",
       "api_keys": ["your-anthropic-key"]
     }
   ],

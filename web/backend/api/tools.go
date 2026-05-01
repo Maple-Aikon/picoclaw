@@ -172,6 +172,12 @@ var toolCatalog = []toolCatalogEntry{
 		ConfigKey:   "spi",
 	},
 	{
+		Name:        "serial",
+		Description: "Interact with serial ports exposed on the host.",
+		Category:    "hardware",
+		ConfigKey:   "serial",
+	},
+	{
 		Name:        "tool_search_tool_regex",
 		Description: "Discover hidden MCP tools by regex search when tool discovery is enabled.",
 		Category:    "discovery",
@@ -261,8 +267,12 @@ func buildToolSupport(cfg *config.Config) []toolSupportItem {
 			status, reasonCode = resolveDiscoveryToolSupport(cfg, cfg.Tools.MCP.Discovery.UseRegex)
 		case "tool_search_tool_bm25":
 			status, reasonCode = resolveDiscoveryToolSupport(cfg, cfg.Tools.MCP.Discovery.UseBM25)
+		case "web_search":
+			status, reasonCode = resolveWebSearchToolSupport(cfg)
 		case "i2c", "spi":
 			status, reasonCode = resolveHardwareToolSupport(cfg.Tools.IsToolEnabled(entry.ConfigKey))
+		case "serial":
+			status, reasonCode = resolveSerialToolSupport(cfg.Tools.IsToolEnabled(entry.ConfigKey))
 		default:
 			if cfg.Tools.IsToolEnabled(entry.ConfigKey) {
 				status = "enabled"
@@ -291,6 +301,18 @@ func resolveHardwareToolSupport(enabled bool) (string, string) {
 	return "enabled", ""
 }
 
+func resolveSerialToolSupport(enabled bool) (string, string) {
+	if !enabled {
+		return "disabled", ""
+	}
+	switch runtime.GOOS {
+	case "linux", "darwin", "windows":
+		return "enabled", ""
+	default:
+		return "blocked", "requires_serial_platform"
+	}
+}
+
 func resolveDiscoveryToolSupport(cfg *config.Config, methodEnabled bool) (string, string) {
 	if !cfg.Tools.IsToolEnabled("mcp") {
 		return "disabled", ""
@@ -299,6 +321,13 @@ func resolveDiscoveryToolSupport(cfg *config.Config, methodEnabled bool) (string
 		return "blocked", "requires_mcp_discovery"
 	}
 	if !methodEnabled {
+		return "disabled", ""
+	}
+	return "enabled", ""
+}
+
+func resolveWebSearchToolSupport(cfg *config.Config) (string, string) {
+	if !cfg.Tools.IsToolEnabled("web") {
 		return "disabled", ""
 	}
 	return "enabled", ""
@@ -353,6 +382,8 @@ func applyToolState(cfg *config.Config, toolName string, enabled bool) error {
 		cfg.Tools.I2C.Enabled = enabled
 	case "spi":
 		cfg.Tools.SPI.Enabled = enabled
+	case "serial":
+		cfg.Tools.Serial.Enabled = enabled
 	case "tool_search_tool_regex":
 		cfg.Tools.MCP.Discovery.UseRegex = enabled
 		if enabled {
@@ -507,6 +538,7 @@ func normalizeWebSearchAPIKeys(apiKeys []string, apiKey string) ([]string, bool)
 }
 
 func buildWebSearchConfigResponse(cfg *config.Config) webSearchConfigResponse {
+	opts := picotools.WebSearchToolOptionsFromConfig(cfg)
 	current := resolveCurrentWebSearchProvider(cfg)
 	settings := map[string]webSearchProviderConfig{
 		"sogou": {
@@ -563,59 +595,53 @@ func buildWebSearchConfigResponse(cfg *config.Config) webSearchConfigResponse {
 		{
 			ID:         "sogou",
 			Label:      "Sogou",
-			Configured: cfg.Tools.Web.Sogou.Enabled,
+			Configured: picotools.WebSearchProviderReady(opts, "sogou"),
 			Current:    current == "sogou",
 		},
 		{
 			ID:         "duckduckgo",
 			Label:      "DuckDuckGo",
-			Configured: cfg.Tools.Web.DuckDuckGo.Enabled,
+			Configured: picotools.WebSearchProviderReady(opts, "duckduckgo"),
 			Current:    current == "duckduckgo",
 		},
 		{
-			ID:    "brave",
-			Label: "Brave Search",
-			Configured: cfg.Tools.Web.Brave.Enabled &&
-				len(cfg.Tools.Web.Brave.APIKeys.Values()) > 0,
+			ID:           "brave",
+			Label:        "Brave Search",
+			Configured:   picotools.WebSearchProviderReady(opts, "brave"),
 			Current:      current == "brave",
 			RequiresAuth: true,
 		},
 		{
-			ID:    "tavily",
-			Label: "Tavily",
-			Configured: cfg.Tools.Web.Tavily.Enabled &&
-				len(cfg.Tools.Web.Tavily.APIKeys.Values()) > 0,
+			ID:           "tavily",
+			Label:        "Tavily",
+			Configured:   picotools.WebSearchProviderReady(opts, "tavily"),
 			Current:      current == "tavily",
 			RequiresAuth: true,
 		},
 		{
-			ID:    "perplexity",
-			Label: "Perplexity",
-			Configured: cfg.Tools.Web.Perplexity.Enabled &&
-				len(cfg.Tools.Web.Perplexity.APIKeys.Values()) > 0,
+			ID:           "perplexity",
+			Label:        "Perplexity",
+			Configured:   picotools.WebSearchProviderReady(opts, "perplexity"),
 			Current:      current == "perplexity",
 			RequiresAuth: true,
 		},
 		{
-			ID:    "searxng",
-			Label: "SearXNG",
-			Configured: cfg.Tools.Web.SearXNG.Enabled &&
-				strings.TrimSpace(cfg.Tools.Web.SearXNG.BaseURL) != "",
-			Current: current == "searxng",
+			ID:         "searxng",
+			Label:      "SearXNG",
+			Configured: picotools.WebSearchProviderReady(opts, "searxng"),
+			Current:    current == "searxng",
 		},
 		{
-			ID:    "glm_search",
-			Label: "GLM Search",
-			Configured: cfg.Tools.Web.GLMSearch.Enabled &&
-				cfg.Tools.Web.GLMSearch.APIKey.String() != "",
+			ID:           "glm_search",
+			Label:        "GLM Search",
+			Configured:   picotools.WebSearchProviderReady(opts, "glm_search"),
 			Current:      current == "glm_search",
 			RequiresAuth: true,
 		},
 		{
-			ID:    "baidu_search",
-			Label: "Baidu Search",
-			Configured: cfg.Tools.Web.BaiduSearch.Enabled &&
-				cfg.Tools.Web.BaiduSearch.APIKey.String() != "",
+			ID:           "baidu_search",
+			Label:        "Baidu Search",
+			Configured:   picotools.WebSearchProviderReady(opts, "baidu_search"),
 			Current:      current == "baidu_search",
 			RequiresAuth: true,
 		},
@@ -637,57 +663,12 @@ func buildWebSearchConfigResponse(cfg *config.Config) webSearchConfigResponse {
 }
 
 func resolveCurrentWebSearchProvider(cfg *config.Config) string {
-	selected := normalizeWebSearchProvider(cfg.Tools.Web.Provider)
-	if selected != "" && selected != "auto" && webSearchProviderConfigured(cfg, selected) {
-		return selected
+	if cfg == nil || !cfg.Tools.IsToolEnabled("web") {
+		return ""
 	}
-
-	for _, name := range []string{"perplexity", "brave", "searxng", "tavily"} {
-		if webSearchProviderConfigured(cfg, name) {
-			return name
-		}
+	selected, err := picotools.ResolveWebSearchProviderName(picotools.WebSearchToolOptionsFromConfig(cfg), "")
+	if err != nil {
+		return ""
 	}
-
-	if webSearchProviderConfigured(cfg, "sogou") && webSearchProviderConfigured(cfg, "duckduckgo") {
-		if picotools.GetPreferredWebSearchLanguage() == "en" {
-			return "duckduckgo"
-		}
-		return "sogou"
-	}
-	if webSearchProviderConfigured(cfg, "sogou") {
-		return "sogou"
-	}
-	if webSearchProviderConfigured(cfg, "duckduckgo") {
-		return "duckduckgo"
-	}
-
-	for _, name := range []string{"baidu_search", "glm_search"} {
-		if webSearchProviderConfigured(cfg, name) {
-			return name
-		}
-	}
-	return ""
-}
-
-func webSearchProviderConfigured(cfg *config.Config, name string) bool {
-	switch name {
-	case "sogou":
-		return cfg.Tools.Web.Sogou.Enabled
-	case "duckduckgo":
-		return cfg.Tools.Web.DuckDuckGo.Enabled
-	case "brave":
-		return cfg.Tools.Web.Brave.Enabled && len(cfg.Tools.Web.Brave.APIKeys.Values()) > 0
-	case "tavily":
-		return cfg.Tools.Web.Tavily.Enabled && len(cfg.Tools.Web.Tavily.APIKeys.Values()) > 0
-	case "perplexity":
-		return cfg.Tools.Web.Perplexity.Enabled && len(cfg.Tools.Web.Perplexity.APIKeys.Values()) > 0
-	case "searxng":
-		return cfg.Tools.Web.SearXNG.Enabled && strings.TrimSpace(cfg.Tools.Web.SearXNG.BaseURL) != ""
-	case "glm_search":
-		return cfg.Tools.Web.GLMSearch.Enabled && cfg.Tools.Web.GLMSearch.APIKey.String() != ""
-	case "baidu_search":
-		return cfg.Tools.Web.BaiduSearch.Enabled && cfg.Tools.Web.BaiduSearch.APIKey.String() != ""
-	default:
-		return false
-	}
+	return selected
 }

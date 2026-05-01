@@ -5,7 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +23,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 // picoConn represents a single WebSocket connection.
@@ -44,6 +49,26 @@ func outboundMessageIsThought(msg bus.OutboundMessage) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), MessageKindThought)
+}
+
+func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
+	if len(msg.Context.Raw) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
+}
+
+func outboundMessageIsToolCalls(msg bus.OutboundMessage) bool {
+	if len(msg.Context.Raw) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), MessageKindToolCalls)
+}
+
+func outboundMessageFinalizesTrackedToolFeedback(msg bus.OutboundMessage) bool {
+	return !outboundMessageIsToolFeedback(msg) &&
+		!outboundMessageIsThought(msg) &&
+		!outboundMessageIsToolCalls(msg)
 }
 
 // writeJSON sends a JSON message to the connection with write locking.
@@ -78,6 +103,8 @@ type PicoChannel struct {
 	connsMu            sync.RWMutex
 	ctx                context.Context
 	cancel             context.CancelFunc
+	progress           *channels.ToolFeedbackAnimator
+	deleteMessageFn    func(context.Context, string, string) error
 }
 
 // NewPicoChannel creates a new Pico Protocol channel.
@@ -106,7 +133,7 @@ func NewPicoChannel(
 		return false
 	}
 
-	return &PicoChannel{
+	ch := &PicoChannel{
 		BaseChannel: base,
 		bc:          bc,
 		config:      cfg,
@@ -117,7 +144,10 @@ func NewPicoChannel(
 		},
 		connections:        make(map[string]*picoConn),
 		sessionConnections: make(map[string]map[string]*picoConn),
-	}, nil
+	}
+	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage)
+	ch.deleteMessageFn = ch.DeleteMessage
+	return ch, nil
 }
 
 // createAndAddConnection checks MaxConnections and registers a connection atomically.
@@ -235,6 +265,9 @@ func (c *PicoChannel) Stop(ctx context.Context) error {
 	if c.cancel != nil {
 		c.cancel()
 	}
+	if c.progress != nil {
+		c.progress.StopAll()
+	}
 
 	logger.InfoC("pico", "Pico Protocol channel stopped")
 	return nil
@@ -251,6 +284,10 @@ func (c *PicoChannel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/ws", "/ws/":
 		c.handleWebSocket(w, r)
 	default:
+		if strings.HasPrefix(path, "/media/") {
+			c.handleMediaDownload(w, r)
+			return
+		}
 		http.NotFound(w, r)
 	}
 }
@@ -261,24 +298,146 @@ func (c *PicoChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]stri
 		return nil, channels.ErrNotRunning
 	}
 	isThought := outboundMessageIsThought(msg)
+	isToolFeedback := outboundMessageIsToolFeedback(msg)
+	isToolCalls := outboundMessageIsToolCalls(msg)
+	if isToolFeedback {
+		if msgID, handled, err := c.progress.Update(ctx, msg.ChatID, msg.Content); handled {
+			if err != nil {
+				return nil, err
+			}
+			return []string{msgID}, nil
+		}
+	}
+	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(msg.ChatID)
+	if outboundMessageFinalizesTrackedToolFeedback(msg) {
+		if msgIDs, handled := c.FinalizeToolFeedbackMessage(ctx, msg); handled {
+			return msgIDs, nil
+		}
+	}
+
+	content := msg.Content
+	if isToolFeedback {
+		content = channels.InitialAnimatedToolFeedbackContent(msg.Content)
+	}
+	msgID := uuid.New().String()
 
 	payload := map[string]any{
-		PayloadKeyContent: msg.Content,
-		PayloadKeyThought: isThought,
+		PayloadKeyContent: content,
+		"message_id":      msgID,
+	}
+	switch {
+	case isThought:
+		payload[PayloadKeyKind] = MessageKindThought
+
+		// This field is kept solely for compatibility with legacy pico clients that
+		// do not yet support the newer "kind" field.
+		// DO NOT use it for any purpose other than legacy client compatibility.
+		payload[PayloadKeyThought] = true
+
+	case isToolCalls:
+		payload[PayloadKeyKind] = MessageKindToolCalls
+		if toolCalls, ok := picoToolCallsPayload(msg); ok {
+			payload[PayloadKeyToolCalls] = toolCalls
+		}
 	}
 	setContextUsagePayload(payload, msg.ContextUsage)
 	outMsg := newMessage(TypeMessageCreate, payload)
 
-	return nil, c.broadcastToSession(msg.ChatID, outMsg)
+	if err := c.broadcastToSession(msg.ChatID, outMsg); err != nil {
+		return nil, err
+	}
+	if isToolFeedback {
+		c.RecordToolFeedbackMessage(msg.ChatID, msgID, msg.Content)
+	} else if hasTrackedMsg && outboundMessageFinalizesTrackedToolFeedback(msg) {
+		c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
+	}
+	return []string{msgID}, nil
 }
 
 // EditMessage implements channels.MessageEditor.
 func (c *PicoChannel) EditMessage(ctx context.Context, chatID string, messageID string, content string) error {
-	outMsg := newMessage(TypeMessageUpdate, map[string]any{
+	return c.editMessage(ctx, chatID, messageID, content, nil)
+}
+
+// DeleteMessage implements channels.MessageDeleter.
+func (c *PicoChannel) DeleteMessage(ctx context.Context, chatID string, messageID string) error {
+	outMsg := newMessage(TypeMessageDelete, map[string]any{
 		"message_id": messageID,
-		"content":    content,
 	})
 	return c.broadcastToSession(chatID, outMsg)
+}
+
+func (c *PicoChannel) currentToolFeedbackMessage(chatID string) (string, bool) {
+	if c.progress == nil {
+		return "", false
+	}
+	return c.progress.Current(chatID)
+}
+
+func (c *PicoChannel) takeToolFeedbackMessage(chatID string) (string, string, bool) {
+	if c.progress == nil {
+		return "", "", false
+	}
+	return c.progress.Take(chatID)
+}
+
+func (c *PicoChannel) RecordToolFeedbackMessage(chatID, messageID, content string) {
+	if c.progress == nil {
+		return
+	}
+	c.progress.Record(chatID, messageID, content)
+}
+
+func (c *PicoChannel) ClearToolFeedbackMessage(chatID string) {
+	if c.progress == nil {
+		return
+	}
+	c.progress.Clear(chatID)
+}
+
+func (c *PicoChannel) DismissToolFeedbackMessage(ctx context.Context, chatID string) {
+	msgID, ok := c.currentToolFeedbackMessage(chatID)
+	if !ok {
+		return
+	}
+	c.dismissTrackedToolFeedbackMessage(ctx, chatID, msgID)
+}
+
+func (c *PicoChannel) dismissTrackedToolFeedbackMessage(ctx context.Context, chatID, messageID string) {
+	if strings.TrimSpace(chatID) == "" || strings.TrimSpace(messageID) == "" {
+		return
+	}
+	c.ClearToolFeedbackMessage(chatID)
+	deleteFn := c.deleteMessageFn
+	if deleteFn == nil {
+		deleteFn = c.DeleteMessage
+	}
+	_ = deleteFn(ctx, chatID, messageID)
+}
+
+func (c *PicoChannel) finalizeTrackedToolFeedbackMessage(
+	ctx context.Context,
+	chatID string,
+	content string,
+	editFn func(context.Context, string, string, string, *bus.ContextUsage) error,
+	contextUsage *bus.ContextUsage,
+) ([]string, bool) {
+	msgID, baseContent, ok := c.takeToolFeedbackMessage(chatID)
+	if !ok || editFn == nil {
+		return nil, false
+	}
+	if err := editFn(ctx, chatID, msgID, content, contextUsage); err != nil {
+		c.RecordToolFeedbackMessage(chatID, msgID, baseContent)
+		return nil, false
+	}
+	return []string{msgID}, true
+}
+
+func (c *PicoChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool) {
+	if !outboundMessageFinalizesTrackedToolFeedback(msg) {
+		return nil, false
+	}
+	return c.finalizeTrackedToolFeedbackMessage(ctx, msg.ChatID, msg.Content, c.editMessage, msg.ContextUsage)
 }
 
 // StartTyping implements channels.TypingCapable.
@@ -306,7 +465,6 @@ func (c *PicoChannel) SendPlaceholder(ctx context.Context, chatID string) (strin
 	msgID := uuid.New().String()
 	outMsg := newMessage(TypeMessageCreate, map[string]any{
 		PayloadKeyContent: text,
-		PayloadKeyThought: false,
 		"message_id":      msgID,
 	})
 
@@ -315,6 +473,210 @@ func (c *PicoChannel) SendPlaceholder(ctx context.Context, chatID string) (strin
 	}
 
 	return msgID, nil
+}
+
+// SendMedia implements channels.MediaSender for the Pico web UI.
+// Media is delivered as a normal assistant message carrying structured
+// attachments plus an authenticated same-origin download URL.
+func (c *PicoChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error) {
+	if !c.IsRunning() {
+		return nil, channels.ErrNotRunning
+	}
+	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(msg.ChatID)
+
+	store := c.GetMediaStore()
+	if store == nil {
+		return nil, fmt.Errorf("no media store available: %w", channels.ErrSendFailed)
+	}
+
+	attachments := make([]map[string]any, 0, len(msg.Parts))
+	caption := ""
+
+	for _, part := range msg.Parts {
+		localPath, meta, err := store.ResolveWithMeta(part.Ref)
+		if err != nil {
+			logger.ErrorCF("pico", "Failed to resolve media ref", map[string]any{
+				"ref":   part.Ref,
+				"error": err.Error(),
+			})
+			continue
+		}
+
+		filename := strings.TrimSpace(part.Filename)
+		if filename == "" {
+			filename = strings.TrimSpace(meta.Filename)
+		}
+		if filename == "" {
+			filename = filepath.Base(localPath)
+		}
+
+		contentType := strings.TrimSpace(part.ContentType)
+		if contentType == "" {
+			contentType = strings.TrimSpace(meta.ContentType)
+		}
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+
+		attachmentType := strings.TrimSpace(part.Type)
+		if attachmentType == "" {
+			attachmentType = picoInferAttachmentType(filename, contentType)
+		}
+
+		attachmentURL, err := picoDownloadURLForRef(part.Ref)
+		if err != nil {
+			logger.ErrorCF("pico", "Failed to build media download URL", map[string]any{
+				"ref":   part.Ref,
+				"error": err.Error(),
+			})
+			continue
+		}
+
+		attachments = append(attachments, map[string]any{
+			"type":         attachmentType,
+			"url":          attachmentURL,
+			"filename":     filename,
+			"content_type": contentType,
+		})
+
+		if caption == "" && strings.TrimSpace(part.Caption) != "" {
+			caption = strings.TrimSpace(part.Caption)
+		}
+	}
+
+	if len(attachments) == 0 {
+		return nil, fmt.Errorf("no deliverable media parts: %w", channels.ErrSendFailed)
+	}
+
+	msgID := uuid.New().String()
+	outMsg := newMessage(TypeMessageCreate, map[string]any{
+		PayloadKeyContent: caption,
+		"attachments":     attachments,
+		"message_id":      msgID,
+	})
+
+	if err := c.broadcastToSession(msg.ChatID, outMsg); err != nil {
+		return nil, err
+	}
+	if hasTrackedMsg {
+		c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
+	}
+
+	return []string{msgID}, nil
+}
+
+func picoDownloadURLForRef(ref string) (string, error) {
+	refID, err := picoMediaRefID(ref)
+	if err != nil {
+		return "", err
+	}
+	return "/pico/media/" + url.PathEscape(refID), nil
+}
+
+func picoMediaRefID(ref string) (string, error) {
+	refID := strings.TrimSpace(strings.TrimPrefix(ref, "media://"))
+	if refID == "" || strings.Contains(refID, "/") {
+		return "", fmt.Errorf("invalid media ref %q", ref)
+	}
+	return refID, nil
+}
+
+func picoInferAttachmentType(filename, contentType string) string {
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	filename = strings.ToLower(strings.TrimSpace(filename))
+
+	switch {
+	case strings.HasPrefix(contentType, "image/"):
+		return "image"
+	case strings.HasPrefix(contentType, "audio/"):
+		return "audio"
+	case strings.HasPrefix(contentType, "video/"):
+		return "video"
+	}
+
+	switch ext := filepath.Ext(filename); ext {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg":
+		return "image"
+	case ".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac", ".wma", ".opus":
+		return "audio"
+	case ".mp4", ".avi", ".mov", ".webm", ".mkv":
+		return "video"
+	default:
+		return "file"
+	}
+}
+
+func picoAllowsInlineDisplay(filename, contentType string) bool {
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	filename = strings.ToLower(strings.TrimSpace(filename))
+
+	if strings.Contains(contentType, "svg") || filepath.Ext(filename) == ".svg" {
+		return false
+	}
+
+	return picoInferAttachmentType(filename, contentType) == "image"
+}
+
+func (c *PicoChannel) handleMediaDownload(w http.ResponseWriter, r *http.Request) {
+	if !c.IsRunning() {
+		http.Error(w, "channel not running", http.StatusServiceUnavailable)
+		return
+	}
+	if !c.authenticate(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	refID := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/pico/media/"), "/"))
+	if refID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	store := c.GetMediaStore()
+	if store == nil {
+		http.Error(w, "media store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	localPath, meta, err := store.ResolveWithMeta("media://" + refID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	file, err := os.Open(localPath)
+	if err != nil {
+		http.Error(w, "failed to open media", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		http.Error(w, "failed to stat media", http.StatusInternalServerError)
+		return
+	}
+
+	filename := strings.TrimSpace(meta.Filename)
+	if filename == "" {
+		filename = filepath.Base(localPath)
+	}
+	contentType := strings.TrimSpace(meta.ContentType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	dispositionType := "attachment"
+	if picoAllowsInlineDisplay(filename, contentType) {
+		dispositionType = "inline"
+	}
+
+	if cd := mime.FormatMediaType(dispositionType, map[string]string{"filename": filename}); cd != "" {
+		w.Header().Set("Content-Disposition", cd)
+	}
+	w.Header().Set("Content-Type", contentType)
+	http.ServeContent(w, r, filename, info.ModTime(), file)
 }
 
 // broadcastToSession sends a message to all connections with a matching session.
@@ -730,4 +1092,33 @@ func setContextUsagePayload(payload map[string]any, u *bus.ContextUsage) {
 		"compress_at_tokens": u.CompressAtTokens,
 		"used_percent":       u.UsedPercent,
 	}
+}
+
+func picoToolCallsPayload(msg bus.OutboundMessage) ([]utils.VisibleToolCall, bool) {
+	raw := strings.TrimSpace(msg.Context.Raw[PayloadKeyToolCalls])
+	if raw == "" {
+		return nil, false
+	}
+
+	var toolCalls []utils.VisibleToolCall
+	if err := json.Unmarshal([]byte(raw), &toolCalls); err != nil || len(toolCalls) == 0 {
+		return nil, false
+	}
+	return toolCalls, true
+}
+
+func (c *PicoChannel) editMessage(
+	ctx context.Context,
+	chatID string,
+	messageID string,
+	content string,
+	contextUsage *bus.ContextUsage,
+) error {
+	payload := map[string]any{
+		"message_id": messageID,
+		"content":    content,
+	}
+	setContextUsagePayload(payload, contextUsage)
+	outMsg := newMessage(TypeMessageUpdate, payload)
+	return c.broadcastToSession(chatID, outMsg)
 }

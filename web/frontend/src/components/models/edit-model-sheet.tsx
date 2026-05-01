@@ -3,6 +3,7 @@ import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { type ModelInfo, setDefaultModel, updateModel } from "@/api/models"
+import { ConfigChangeNotice } from "@/components/config-change-notice"
 import { maskedSecretPlaceholder } from "@/components/secret-placeholder"
 import {
   AdvancedSection,
@@ -21,8 +22,12 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
+import { showSaveSuccessOrRestartToast } from "@/lib/restart-required"
+import { refreshGatewayState } from "@/store/gateway"
 
 interface EditForm {
+  provider: string
+  modelId: string
   apiKey: string
   apiBase: string
   proxy: string
@@ -44,6 +49,29 @@ interface EditModelSheetProps {
   onSaved: () => void
 }
 
+function buildInitialEditForm(model: ModelInfo): EditForm {
+  return {
+    provider: model.provider ?? "",
+    modelId: model.model,
+    apiKey: "",
+    apiBase: model.api_base ?? "",
+    proxy: model.proxy ?? "",
+    authMethod: model.auth_method ?? "",
+    connectMode: model.connect_mode ?? "",
+    workspace: model.workspace ?? "",
+    rpm: model.rpm ? String(model.rpm) : "",
+    maxTokensField: model.max_tokens_field ?? "",
+    requestTimeout: model.request_timeout ? String(model.request_timeout) : "",
+    thinkingLevel: model.thinking_level ?? "",
+    extraBody: model.extra_body
+      ? JSON.stringify(model.extra_body, null, 2)
+      : "",
+    customHeaders: model.custom_headers
+      ? JSON.stringify(model.custom_headers, null, 2)
+      : "",
+  }
+}
+
 export function EditModelSheet({
   model,
   open,
@@ -52,6 +80,8 @@ export function EditModelSheet({
 }: EditModelSheetProps) {
   const { t } = useTranslation()
   const [form, setForm] = useState<EditForm>({
+    provider: "",
+    modelId: "",
     apiKey: "",
     apiBase: "",
     proxy: "",
@@ -68,29 +98,15 @@ export function EditModelSheet({
   const [saving, setSaving] = useState(false)
   const [setAsDefault, setSetAsDefault] = useState(false)
   const [error, setError] = useState("")
+  const initialForm = model ? buildInitialEditForm(model) : null
+  const isDirty =
+    model != null &&
+    (JSON.stringify(form) !== JSON.stringify(initialForm) ||
+      setAsDefault !== model.is_default)
 
   useEffect(() => {
     if (model) {
-      setForm({
-        apiKey: "",
-        apiBase: model.api_base ?? "",
-        proxy: model.proxy ?? "",
-        authMethod: model.auth_method ?? "",
-        connectMode: model.connect_mode ?? "",
-        workspace: model.workspace ?? "",
-        rpm: model.rpm ? String(model.rpm) : "",
-        maxTokensField: model.max_tokens_field ?? "",
-        requestTimeout: model.request_timeout
-          ? String(model.request_timeout)
-          : "",
-        thinkingLevel: model.thinking_level ?? "",
-        extraBody: model.extra_body
-          ? JSON.stringify(model.extra_body, null, 2)
-          : "",
-        customHeaders: model.custom_headers
-          ? JSON.stringify(model.custom_headers, null, 2)
-          : "",
-      })
+      setForm(buildInitialEditForm(model))
       setSetAsDefault(model.is_default)
       setError("")
     }
@@ -103,12 +119,17 @@ export function EditModelSheet({
 
   const handleSave = async () => {
     if (!model) return
+    if (!form.modelId.trim()) {
+      setError(t("models.add.errorRequired"))
+      return
+    }
     setSaving(true)
     setError("")
     try {
       await updateModel(model.index, {
         model_name: model.model_name,
-        model: model.model,
+        provider: form.provider.trim(),
+        model: form.modelId.trim(),
         api_base: form.apiBase || undefined,
         api_key: form.apiKey || undefined,
         proxy: form.proxy || undefined,
@@ -131,6 +152,13 @@ export function EditModelSheet({
       if (setAsDefault && !model.is_default) {
         await setDefaultModel(model.model_name)
       }
+      const gateway = await refreshGatewayState({ force: true })
+      showSaveSuccessOrRestartToast(
+        t,
+        t("models.edit.saveSuccess"),
+        model.model_name,
+        gateway?.restartRequired === true,
+      )
       onSaved()
       onClose()
     } catch (e) {
@@ -166,6 +194,29 @@ export function EditModelSheet({
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="space-y-5 px-6 py-5">
+            <Field
+              label={t("models.field.provider")}
+              hint={t("models.field.providerHint")}
+            >
+              <Input
+                value={form.provider}
+                onChange={setField("provider")}
+                placeholder={t("models.field.providerPlaceholder")}
+              />
+            </Field>
+
+            <Field
+              label={t("models.add.modelId")}
+              hint={t("models.add.modelIdHint")}
+            >
+              <Input
+                value={form.modelId}
+                onChange={setField("modelId")}
+                placeholder={t("models.add.modelIdPlaceholder")}
+                className="font-mono text-sm"
+              />
+            </Field>
+
             {!isOAuth && (
               <Field
                 label={t("models.field.apiKey")}
@@ -325,10 +376,17 @@ export function EditModelSheet({
         </div>
 
         <SheetFooter className="border-t-muted border-t px-6 py-4">
+          {isDirty && (
+            <ConfigChangeNotice
+              kind="save"
+              title={t("common.saveChangesTitle")}
+              description={t("models.unsavedPrompt")}
+            />
+          )}
           <Button variant="ghost" onClick={onClose} disabled={saving}>
             {t("common.cancel")}
           </Button>
-          <Button onClick={handleSave} disabled={saving}>
+          <Button onClick={handleSave} disabled={!isDirty || saving}>
             {saving && <IconLoader2 className="size-4 animate-spin" />}
             {t("common.save")}
           </Button>

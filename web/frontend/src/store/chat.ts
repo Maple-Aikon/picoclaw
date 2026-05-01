@@ -1,4 +1,5 @@
 import { atom, getDefaultStore } from "jotai"
+import { atomWithStorage } from "jotai/utils"
 
 import {
   getInitialActiveSessionId,
@@ -6,12 +7,29 @@ import {
 } from "@/features/chat/state"
 
 export interface ChatAttachment {
-  type: "image"
+  type: "image" | "audio" | "video" | "file"
   url: string
   filename?: string
+  contentType?: string
 }
 
-export type AssistantMessageKind = "normal" | "thought"
+export interface ChatToolCallFunction {
+  name?: string
+  arguments?: string
+}
+
+export interface ChatToolCallExtraContent {
+  toolFeedbackExplanation?: string
+}
+
+export interface ChatToolCall {
+  id?: string
+  type?: string
+  function?: ChatToolCallFunction
+  extraContent?: ChatToolCallExtraContent
+}
+
+export type AssistantMessageKind = "normal" | "thought" | "tool_calls"
 
 export interface ChatMessage {
   id: string
@@ -20,6 +38,7 @@ export interface ChatMessage {
   timestamp: number | string
   kind?: AssistantMessageKind
   attachments?: ChatAttachment[]
+  toolCalls?: ChatToolCall[]
 }
 
 export interface ContextUsage {
@@ -46,6 +65,9 @@ export interface ChatStoreState {
 
 type ChatStorePatch = Partial<ChatStoreState>
 
+// Keep the legacy storage value so existing user preferences survive the rename.
+const SHOW_ASSISTANT_DETAILS_STORAGE_KEY = "picoclaw:chat-show-thoughts"
+
 const DEFAULT_CHAT_STATE: ChatStoreState = {
   messages: [],
   connectionState: "disconnected",
@@ -55,8 +77,10 @@ const DEFAULT_CHAT_STATE: ChatStoreState = {
 }
 
 export const chatAtom = atom<ChatStoreState>(DEFAULT_CHAT_STATE)
-
-export const showThoughtsAtom = atom<boolean>(true)
+export const showAssistantDetailsAtom = atomWithStorage<boolean>(
+  SHOW_ASSISTANT_DETAILS_STORAGE_KEY,
+  true,
+)
 
 const store = getDefaultStore()
 

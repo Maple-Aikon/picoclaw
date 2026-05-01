@@ -6,6 +6,27 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 )
 
+type MCPServerInfo struct {
+	Name      string
+	Enabled   bool
+	Deferred  bool
+	Connected bool
+	ToolCount int
+}
+
+type MCPToolParameterInfo struct {
+	Name        string
+	Type        string
+	Description string
+	Required    bool
+}
+
+type MCPToolInfo struct {
+	Name        string
+	Description string
+	Parameters  []MCPToolParameterInfo
+}
+
 // ContextStats describes current session context window usage.
 type ContextStats struct {
 	UsedTokens       int
@@ -25,6 +46,8 @@ type Runtime struct {
 	ListAgentIDs       func() []string
 	ListDefinitions    func() []Definition
 	ListSkillNames     func() []string
+	ListMCPServers     func(ctx context.Context) []MCPServerInfo
+	ListMCPTools       func(ctx context.Context, serverName string) ([]MCPToolInfo, error)
 	GetEnabledChannels func() []string
 	GetActiveTurn      func() any // Returning any to avoid circular dependency with agent package
 	GetContextStats    func() *ContextStats

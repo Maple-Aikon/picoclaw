@@ -33,6 +33,7 @@ func (p *Pipeline) ExecuteTools(
 
 	ts.setPhase(TurnPhaseTools)
 	messages := exec.messages
+	handledAttachments := make([]providers.Attachment, 0)
 
 toolLoop:
 	for i, tc := range normalizedToolCalls {
@@ -79,21 +80,20 @@ toolLoop:
 						},
 					)
 
-					if al.cfg.Agents.Defaults.IsToolFeedbackEnabled() &&
-						ts.channel != "" &&
-						!ts.opts.SuppressToolFeedback {
-						argsJSON, _ := json.Marshal(toolArgs)
-						feedbackPreview := utils.Truncate(
-							string(argsJSON),
-							al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(),
+					if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "pico" {
+						toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
+						toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
+							exec.response,
+							tc,
+							messages,
 						)
-						feedbackMsg := utils.FormatToolFeedbackMessage(toolName, feedbackPreview)
+						feedbackMsg := utils.FormatToolFeedbackMessage(
+							toolName,
+							toolFeedbackExplanation,
+							toolFeedbackArgsPreview(toolArgs, toolFeedbackMaxLen),
+						)
 						fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
-						_ = al.bus.PublishOutbound(fbCtx, bus.OutboundMessage{
-							Channel: ts.channel,
-							ChatID:  ts.chatID,
-							Content: feedbackMsg,
-						})
+						_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithKind(ts, feedbackMsg, messageKindToolFeedback))
 						fbCancel()
 					}
 
@@ -130,7 +130,16 @@ toolLoop:
 						outboundMedia := bus.OutboundMediaMessage{
 							Channel: ts.channel,
 							ChatID:  ts.chatID,
-							Parts:   parts,
+							Context: outboundContextFromInbound(
+								ts.opts.Dispatch.InboundContext,
+								ts.channel,
+								ts.chatID,
+								ts.opts.Dispatch.ReplyToMessageID(),
+							),
+							AgentID:    ts.agent.ID,
+							SessionKey: ts.sessionKey,
+							Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
+							Parts:      parts,
 						}
 						if al.channelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
 							if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
@@ -144,6 +153,11 @@ toolLoop:
 									})
 								hookResult.IsError = true
 								hookResult.ForLLM = fmt.Sprintf("failed to deliver attachment: %v", err)
+							} else {
+								handledAttachments = append(
+									handledAttachments,
+									buildProviderAttachments(al.mediaStore, hookResult.Media)...,
+								)
 							}
 						} else if al.bus != nil {
 							al.bus.PublishOutboundMedia(ctx, outboundMedia)
@@ -253,7 +267,7 @@ toolLoop:
 						case result, ok := <-ts.pendingResults:
 							if ok && result != nil && result.ForLLM != "" {
 								content := al.cfg.FilterSensitiveData(result.ForLLM)
-								msg := providers.Message{Role: "user", Content: fmt.Sprintf("[SubTurn Result] %s", content)}
+								msg := subTurnResultPromptMessage(content)
 								messages = append(messages, msg)
 								ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
 							}
@@ -350,16 +364,20 @@ toolLoop:
 			},
 		)
 
-		if al.cfg.Agents.Defaults.IsToolFeedbackEnabled() &&
-			ts.channel != "" &&
-			!ts.opts.SuppressToolFeedback {
-			feedbackPreview := utils.Truncate(
-				string(argsJSON),
-				al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(),
+		if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "pico" {
+			toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
+			toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
+				exec.response,
+				tc,
+				messages,
 			)
-			feedbackMsg := utils.FormatToolFeedbackMessage(tc.Name, feedbackPreview)
+			feedbackMsg := utils.FormatToolFeedbackMessage(
+				toolName,
+				toolFeedbackExplanation,
+				toolFeedbackArgsPreview(toolArgs, toolFeedbackMaxLen),
+			)
 			fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
-			_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurn(ts, feedbackMsg))
+			_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithKind(ts, feedbackMsg, messageKindToolFeedback))
 			fbCancel()
 		}
 
@@ -510,6 +528,11 @@ toolLoop:
 							"error":    err.Error(),
 						})
 					toolResult = tools.ErrorResult(fmt.Sprintf("failed to deliver attachment: %v", err)).WithError(err)
+				} else {
+					handledAttachments = append(
+						handledAttachments,
+						buildProviderAttachments(al.mediaStore, toolResult.Media)...,
+					)
 				}
 			} else if al.bus != nil {
 				al.bus.PublishOutboundMedia(ctx, outboundMedia)
@@ -626,7 +649,7 @@ toolLoop:
 			case result, ok := <-ts.pendingResults:
 				if ok && result != nil && result.ForLLM != "" {
 					content := al.cfg.FilterSensitiveData(result.ForLLM)
-					msg := providers.Message{Role: "user", Content: fmt.Sprintf("[SubTurn Result] %s", content)}
+					msg := subTurnResultPromptMessage(content)
 					messages = append(messages, msg)
 					ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
 				}
@@ -666,11 +689,12 @@ toolLoop:
 	// No pending steering: finalize or break depending on allResponsesHandled
 	if exec.allResponsesHandled {
 		summaryMsg := providers.Message{
-			Role:    "assistant",
-			Content: handledToolResponseSummary,
+			Role:        "assistant",
+			Content:     handledToolResponseSummary,
+			Attachments: append([]providers.Attachment(nil), handledAttachments...),
 		}
 		if !ts.opts.NoHistory {
-			ts.agent.Sessions.AddMessage(ts.sessionKey, summaryMsg.Role, summaryMsg.Content)
+			ts.agent.Sessions.AddFullMessage(ts.sessionKey, summaryMsg)
 			ts.recordPersistedMessage(summaryMsg)
 			ts.ingestMessage(turnCtx, al, summaryMsg)
 			if err := ts.agent.Sessions.Save(ts.sessionKey); err != nil {
@@ -690,6 +714,9 @@ toolLoop:
 		}
 		ts.setPhase(TurnPhaseCompleted)
 		ts.setFinalContent("")
+		if al.channelManager != nil && ts.channel != "" {
+			al.channelManager.DismissToolFeedback(ctx, ts.channel, ts.chatID, ts.opts.InboundContext)
+		}
 		logger.InfoCF("agent", "Tool output satisfied delivery; ending turn without follow-up LLM",
 			map[string]any{
 				"agent_id":   ts.agent.ID,

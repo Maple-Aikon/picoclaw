@@ -100,33 +100,7 @@ func registerSharedTools(
 		}
 
 		if cfg.Tools.IsToolEnabled("web") {
-			searchTool, err := tools.NewWebSearchTool(tools.WebSearchToolOptions{
-				BraveAPIKeys:          cfg.Tools.Web.Brave.APIKeys.Values(),
-				BraveMaxResults:       cfg.Tools.Web.Brave.MaxResults,
-				BraveEnabled:          cfg.Tools.Web.Brave.Enabled,
-				TavilyAPIKeys:         cfg.Tools.Web.Tavily.APIKeys.Values(),
-				TavilyBaseURL:         cfg.Tools.Web.Tavily.BaseURL,
-				TavilyMaxResults:      cfg.Tools.Web.Tavily.MaxResults,
-				TavilyEnabled:         cfg.Tools.Web.Tavily.Enabled,
-				DuckDuckGoMaxResults:  cfg.Tools.Web.DuckDuckGo.MaxResults,
-				DuckDuckGoEnabled:     cfg.Tools.Web.DuckDuckGo.Enabled,
-				PerplexityAPIKeys:     cfg.Tools.Web.Perplexity.APIKeys.Values(),
-				PerplexityMaxResults:  cfg.Tools.Web.Perplexity.MaxResults,
-				PerplexityEnabled:     cfg.Tools.Web.Perplexity.Enabled,
-				SearXNGBaseURL:        cfg.Tools.Web.SearXNG.BaseURL,
-				SearXNGMaxResults:     cfg.Tools.Web.SearXNG.MaxResults,
-				SearXNGEnabled:        cfg.Tools.Web.SearXNG.Enabled,
-				GLMSearchAPIKey:       cfg.Tools.Web.GLMSearch.APIKey.String(),
-				GLMSearchBaseURL:      cfg.Tools.Web.GLMSearch.BaseURL,
-				GLMSearchEngine:       cfg.Tools.Web.GLMSearch.SearchEngine,
-				GLMSearchMaxResults:   cfg.Tools.Web.GLMSearch.MaxResults,
-				GLMSearchEnabled:      cfg.Tools.Web.GLMSearch.Enabled,
-				BaiduSearchAPIKey:     cfg.Tools.Web.BaiduSearch.APIKey.String(),
-				BaiduSearchBaseURL:    cfg.Tools.Web.BaiduSearch.BaseURL,
-				BaiduSearchMaxResults: cfg.Tools.Web.BaiduSearch.MaxResults,
-				BaiduSearchEnabled:    cfg.Tools.Web.BaiduSearch.Enabled,
-				Proxy:                 cfg.Tools.Web.Proxy,
-			})
+			searchTool, err := tools.NewWebSearchTool(tools.WebSearchToolOptionsFromConfig(cfg))
 			if err != nil {
 				logger.ErrorCF("agent", "Failed to create web search tool", map[string]any{"error": err.Error()})
 			} else if searchTool != nil {
@@ -153,6 +127,9 @@ func registerSharedTools(
 		}
 		if cfg.Tools.IsToolEnabled("spi") {
 			agent.Tools.Register(tools.NewSPITool())
+		}
+		if cfg.Tools.IsToolEnabled("serial") {
+			agent.Tools.Register(tools.NewSerialTool())
 		}
 
 		// Message tool
