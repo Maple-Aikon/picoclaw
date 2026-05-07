@@ -176,7 +176,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				}
 
 				extractCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				newSummary := extractTaskSummary(extractCtx, extractProvider, extractModel, "", exec.summary, steeringText.String())
+				newSummary := extractTaskSummary(extractCtx, extractProvider, extractModel, "", exec.summary, "", steeringText.String())
 				cancel()
 
 				if newSummary != "" {

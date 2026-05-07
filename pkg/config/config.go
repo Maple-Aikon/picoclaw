@@ -271,12 +271,13 @@ type AgentDefaults struct {
 	Routing                   *RoutingConfig     `json:"routing,omitempty"`
 	SteeringMode              string             `json:"steering_mode,omitempty"          env:"PICOCLAW_AGENTS_DEFAULTS_STEERING_MODE"`      // "one-at-a-time" (default) or "all"
 	MaxParallelTurns          int                `json:"max_parallel_turns,omitempty"     env:"PICOCLAW_AGENTS_DEFAULTS_MAX_PARALLEL_TURNS"` // Max concurrent turns (0 or 1 = sequential)
-	SubTurn                   SubTurnConfig      `json:"subturn"                                                                                      envPrefix:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_"`
+	SubTurn                   SubTurnConfig      `json:"subturn"                                                                                      envPrefix:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_"` 
+	SummarizeTaskModel        string             `json:"summarize_task_model,omitempty"   env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_TASK_MODEL"`
 	ToolFeedback              ToolFeedbackConfig `json:"tool_feedback,omitempty"`
 	SplitOnMarker             bool               `json:"split_on_marker"                  env:"PICOCLAW_AGENTS_DEFAULTS_SPLIT_ON_MARKER"` // split messages on <|[SPLIT]|> marker
 	ContextManager            string             `json:"context_manager,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_MANAGER"`
 	ContextManagerConfig      json.RawMessage    `json:"context_manager_config,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_MANAGER_CONFIG"`
-	MaxChatSizeWhenCompact    int                `json:"max_chat_size_when_compact"       env:"PICOCLAW_AGENTS_DEFAULTS_MAX_CHAT_SIZE_WHEN_COMPACT"`
+	MaxChatSizeWhenCompact    int                `json:"max_chat_size_when_compact"       env:"PICOCLAW_AGENTS_DEFAULTS_MAX_CHAT_SIZE_WHEN_COMPACT"` 
 }
 
 const DefaultMaxMediaSize = 20 * 1024 * 1024 // 20 MB
