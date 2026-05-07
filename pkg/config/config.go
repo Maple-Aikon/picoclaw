@@ -232,9 +232,11 @@ type SessionConfig struct {
 // agent's primary model. This reduces cost and latency for simple tasks without
 // requiring any keyword matching — all scoring is language-agnostic.
 type RoutingConfig struct {
-	Enabled    bool    `json:"enabled"`
-	LightModel string  `json:"light_model"` // model_name from model_list to use for simple tasks
-	Threshold  float64 `json:"threshold"`   // complexity score in [0,1]; score >= threshold → primary model
+	Enabled         bool    `json:"enabled"`
+	LightModel      string  `json:"light_model"`      // model_name from model_list to use for simple tasks
+	MediumModel     string  `json:"medium_model"`     // model_name from model_list for moderate tasks
+	Threshold       float64 `json:"threshold"`        // cutoff for light tier (default 0.25)
+	MediumThreshold float64 `json:"medium_threshold"` // cutoff for medium tier (default 0.55)
 }
 
 // SubTurnConfig configures the SubTurn execution system.

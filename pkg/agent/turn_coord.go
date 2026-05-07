@@ -171,8 +171,15 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 
 				extractProvider := exec.activeProvider
 				extractModel := exec.activeModel
-				if ts.agent.LightProvider != nil && exec.usedLight {
-					extractProvider = ts.agent.LightProvider
+				switch exec.tier {
+				case routing.TierLight:
+					if ts.agent.LightProvider != nil {
+						extractProvider = ts.agent.LightProvider
+					}
+				case routing.TierMedium:
+					if ts.agent.MediumProvider != nil {
+						extractProvider = ts.agent.MediumProvider
+					}
 				}
 
 				extractCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -316,30 +323,42 @@ func (al *AgentLoop) selectCandidates(
 	agent *AgentInstance,
 	userMsg string,
 	history []providers.Message,
-) (candidates []providers.FallbackCandidate, model string, usedLight bool) {
-	if agent.Router == nil || len(agent.LightCandidates) == 0 {
-		return agent.Candidates, resolvedCandidateModel(agent.Candidates, agent.Model), false
+) (candidates []providers.FallbackCandidate, model string, tier routing.Tier) {
+	if agent.Router == nil {
+		return agent.Candidates, resolvedCandidateModel(agent.Candidates, agent.Model), routing.TierHeavy
 	}
 
-	_, usedLight, score := agent.Router.SelectModel(userMsg, history, agent.Model)
-	if !usedLight {
-		logger.DebugCF("agent", "Model routing: primary model selected",
-			map[string]any{
-				"agent_id":  agent.ID,
-				"score":     score,
-				"threshold": agent.Router.Threshold(),
-			})
-		return agent.Candidates, resolvedCandidateModel(agent.Candidates, agent.Model), false
+	modelName, tier, score := agent.Router.SelectModel(userMsg, history, agent.Model)
+
+	switch tier {
+	case routing.TierLight:
+		if len(agent.LightCandidates) > 0 {
+			logger.InfoCF("agent", "Model routing: light model selected",
+				map[string]any{
+					"agent_id":    agent.ID,
+					"light_model": agent.Router.LightModel(),
+					"score":       score,
+				})
+			return agent.LightCandidates, resolvedCandidateModel(agent.LightCandidates, agent.Router.LightModel()), routing.TierLight
+		}
+	case routing.TierMedium:
+		if len(agent.MediumCandidates) > 0 {
+			logger.InfoCF("agent", "Model routing: medium model selected",
+				map[string]any{
+					"agent_id":     agent.ID,
+					"medium_model": agent.Router.MediumModel(),
+					"score":        score,
+				})
+			return agent.MediumCandidates, resolvedCandidateModel(agent.MediumCandidates, agent.Router.MediumModel()), routing.TierMedium
+		}
 	}
 
-	logger.InfoCF("agent", "Model routing: light model selected",
+	logger.DebugCF("agent", "Model routing: primary model selected",
 		map[string]any{
-			"agent_id":    agent.ID,
-			"light_model": agent.Router.LightModel(),
-			"score":       score,
-			"threshold":   agent.Router.Threshold(),
+			"agent_id": agent.ID,
+			"score":    score,
 		})
-	return agent.LightCandidates, resolvedCandidateModel(agent.LightCandidates, agent.Router.LightModel()), true
+	return agent.Candidates, resolvedCandidateModel(agent.Candidates, agent.Model), routing.TierHeavy
 }
 
 func (al *AgentLoop) resolveContextManager() ContextManager {
@@ -422,8 +441,8 @@ func (al *AgentLoop) askSideQuestion(
 	maxMediaSize := al.GetConfig().Agents.Defaults.GetMaxMediaSize()
 	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
 
-	activeCandidates, activeModel, usedLight := al.selectCandidates(agent, question, messages)
-	selectedModelName := sideQuestionModelName(agent, usedLight)
+	activeCandidates, activeModel, tier := al.selectCandidates(agent, question, messages)
+	selectedModelName := sideQuestionModelName(agent, tier)
 
 	llmOpts := map[string]any{
 		"max_tokens":       agent.MaxTokens,

@@ -138,7 +138,7 @@ type turnExecution struct {
 	activeCandidates []providers.FallbackCandidate
 	activeModel      string
 	activeProvider   providers.LLMProvider
-	usedLight        bool
+	tier             routing.Tier
 
 	// LLM call per-iteration state
 	response            *providers.LLMResponse

@@ -511,10 +511,16 @@ func hasMediaRefs(messages []providers.Message) bool {
 	return false
 }
 
-func sideQuestionModelName(agent *AgentInstance, usedLight bool) string {
-	if usedLight && len(agent.LightCandidates) > 0 {
-		// Use the first light candidate's model
-		return agent.LightCandidates[0].Model
+func sideQuestionModelName(agent *AgentInstance, tier routing.Tier) string {
+	switch tier {
+	case routing.TierLight:
+		if len(agent.LightCandidates) > 0 {
+			return agent.LightCandidates[0].Model
+		}
+	case routing.TierMedium:
+		if len(agent.MediumCandidates) > 0 {
+			return agent.MediumCandidates[0].Model
+		}
 	}
 	return agent.Model
 }

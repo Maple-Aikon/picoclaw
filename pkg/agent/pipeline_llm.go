@@ -139,11 +139,16 @@ func (p *Pipeline) CallLLM(
 		exec.llmOpts["native_search"] = true
 	}
 	if ts.agent.ThinkingLevel != ThinkingOff {
-		if tc, ok := ts.agent.Provider.(providers.ThinkingCapable); ok && tc.SupportsThinking() {
+		if tc, ok := exec.activeProvider.(providers.ThinkingCapable); ok && tc.SupportsThinking() {
 			exec.llmOpts["thinking_level"] = string(ts.agent.ThinkingLevel)
 		} else {
 			logger.WarnCF("agent", "thinking_level is set but current provider does not support it, ignoring",
-				map[string]any{"agent_id": ts.agent.ID, "thinking_level": string(ts.agent.ThinkingLevel)})
+				map[string]any{
+					"agent_id":       ts.agent.ID,
+					"tier":           exec.tier,
+					"model":          exec.activeModel,
+					"thinking_level": string(ts.agent.ThinkingLevel),
+				})
 		}
 	}
 

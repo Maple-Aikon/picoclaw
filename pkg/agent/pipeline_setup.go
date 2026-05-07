@@ -81,10 +81,17 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		ts.ingestMessage(ctx, p.al, rootMsg)
 	}
 
-	activeCandidates, activeModel, usedLight := p.al.selectCandidates(ts.agent, ts.userMessage, messages)
+	activeCandidates, activeModel, tier := p.al.selectCandidates(ts.agent, ts.userMessage, messages)
 	activeProvider := ts.agent.Provider
-	if usedLight && ts.agent.LightProvider != nil {
-		activeProvider = ts.agent.LightProvider
+	switch tier {
+	case routing.TierLight:
+		if ts.agent.LightProvider != nil {
+			activeProvider = ts.agent.LightProvider
+		}
+	case routing.TierMedium:
+		if ts.agent.MediumProvider != nil {
+			activeProvider = ts.agent.MediumProvider
+		}
 	}
 
 	exec := newTurnExecution(
@@ -97,7 +104,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	exec.activeCandidates = activeCandidates
 	exec.activeModel = activeModel
 	exec.activeProvider = activeProvider
-	exec.usedLight = usedLight
+	exec.tier = tier
 
 	// Background task extraction for goal-drift prevention.
 	// Spawn a goroutine to extract a concise task summary from the user's initial
@@ -207,7 +214,15 @@ func extractTaskWithFallback(
 		}
 	}
 
-	// 2. Try light_model
+	// 2. Try medium_model
+	if ts.agent.MediumProvider != nil && len(ts.agent.MediumCandidates) > 0 {
+		summary := extractTaskSummary(ctx, ts.agent.MediumProvider, ts.agent.MediumCandidates[0].Model, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
+		if summary != "" {
+			return summary
+		}
+	}
+
+	// 3. Try light_model
 	if ts.agent.LightProvider != nil && len(ts.agent.LightCandidates) > 0 {
 		summary := extractTaskSummary(ctx, ts.agent.LightProvider, ts.agent.LightCandidates[0].Model, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
 		if summary != "" {
@@ -215,7 +230,7 @@ func extractTaskWithFallback(
 		}
 	}
 
-	// 3. Try active model
+	// 4. Try active model
 	summary := extractTaskSummary(ctx, exec.activeProvider, exec.activeModel, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
 	return summary
 }

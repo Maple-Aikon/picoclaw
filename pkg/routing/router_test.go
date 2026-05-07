@@ -243,162 +243,125 @@ func TestRuleClassifier_ScoreDoesNotExceedOne(t *testing.T) {
 
 func TestRouter_DefaultThreshold(t *testing.T) {
 	r := New(RouterConfig{LightModel: "gemini-flash"})
-	if r.Threshold() != defaultThreshold {
-		t.Errorf("default threshold: got %f, want %f", r.Threshold(), defaultThreshold)
+	if r.cfg.Threshold != defaultThreshold {
+		t.Errorf("default light threshold: got %f, want %f", r.cfg.Threshold, defaultThreshold)
 	}
-}
-
-func TestRouter_NegativeThresholdFallsBackToDefault(t *testing.T) {
-	r := New(RouterConfig{LightModel: "gemini-flash", Threshold: -0.1})
-	if r.Threshold() != defaultThreshold {
-		t.Errorf("negative threshold: got %f, want %f", r.Threshold(), defaultThreshold)
+	if r.cfg.MediumThreshold != defaultMediumThreshold {
+		t.Errorf("default medium threshold: got %f, want %f", r.cfg.MediumThreshold, defaultMediumThreshold)
 	}
 }
 
 func TestRouter_SelectModel_SimpleMessageUsesLight(t *testing.T) {
-	r := New(RouterConfig{LightModel: "gemini-flash", Threshold: 0.35})
+	r := New(RouterConfig{LightModel: "gemini-flash"})
 	msg := "hi"
-	model, usedLight, _ := r.SelectModel(msg, nil, "claude-sonnet-4-6")
-	if !usedLight {
-		t.Error("simple message: expected light model to be selected")
+	model, tier, _ := r.SelectModel(msg, nil, "claude-sonnet-4-6")
+	if tier != TierLight {
+		t.Errorf("simple message: expected TierLight, got %v", tier)
 	}
 	if model != "gemini-flash" {
 		t.Errorf("simple message: model got %q, want %q", model, "gemini-flash")
 	}
 }
 
-func TestRouter_SelectModel_CodeBlockUsesPrimary(t *testing.T) {
-	r := New(RouterConfig{LightModel: "gemini-flash", Threshold: 0.35})
+func TestRouter_SelectModel_MediumMessageUsesMedium(t *testing.T) {
+	// RuleClassifier: CodeBlockCount 1 = 0.40. 
+	// Default thresholds: Light 0.25, Medium 0.55.
+	// 0.25 <= 0.40 < 0.55 -> TierMedium
+	r := New(RouterConfig{LightModel: "light", MediumModel: "medium"})
 	msg := "```go\nfmt.Println(\"hello\")\n```"
-	model, usedLight, _ := r.SelectModel(msg, nil, "claude-sonnet-4-6")
-	if usedLight {
-		t.Error("code block: expected primary model to be selected")
+	model, tier, _ := r.SelectModel(msg, nil, "heavy")
+	if tier != TierMedium {
+		t.Errorf("code block: expected TierMedium, got %v", tier)
 	}
-	if model != "claude-sonnet-4-6" {
-		t.Errorf("code block: model got %q, want %q", model, "claude-sonnet-4-6")
-	}
-}
-
-func TestRouter_SelectModel_AttachmentUsesPrimary(t *testing.T) {
-	r := New(RouterConfig{LightModel: "gemini-flash", Threshold: 0.35})
-	msg := "can you analyze this? data:image/png;base64,abc123"
-	model, usedLight, _ := r.SelectModel(msg, nil, "claude-sonnet-4-6")
-	if usedLight {
-		t.Error("attachment: expected primary model to be selected")
-	}
-	if model != "claude-sonnet-4-6" {
-		t.Errorf("attachment: model got %q, want %q", model, "claude-sonnet-4-6")
+	if model != "medium" {
+		t.Errorf("code block: model got %q, want %q", model, "medium")
 	}
 }
 
-func TestRouter_SelectModel_LongMessageUsesPrimary(t *testing.T) {
-	r := New(RouterConfig{LightModel: "gemini-flash", Threshold: 0.35})
-	// >200 token estimate: 210 * 3 = 630 chars
+func TestRouter_SelectModel_AttachmentUsesHeavy(t *testing.T) {
+	r := New(RouterConfig{LightModel: "light", MediumModel: "medium"})
+	msg := "can you analyze this? screenshot.png"
+	model, tier, _ := r.SelectModel(msg, nil, "heavy")
+	if tier != TierHeavy {
+		t.Errorf("attachment: expected TierHeavy, got %v", tier)
+	}
+	if model != "heavy" {
+		t.Errorf("attachment: model got %q, want %q", model, "heavy")
+	}
+}
+
+func TestRouter_SelectModel_LongMessageUsesMedium(t *testing.T) {
+	r := New(RouterConfig{LightModel: "light", MediumModel: "medium"})
+	// >200 token estimate: 210 * 3 = 630 chars -> score 0.35
+	// 0.25 <= 0.35 < 0.55 -> TierMedium
 	msg := strings.Repeat("word ", 210)
-	model, usedLight, _ := r.SelectModel(msg, nil, "claude-sonnet-4-6")
-	if usedLight {
-		t.Error("long message: expected primary model to be selected")
+	model, tier, _ := r.SelectModel(msg, nil, "heavy")
+	if tier != TierMedium {
+		t.Errorf("long message: expected TierMedium, got %v", tier)
 	}
-	if model != "claude-sonnet-4-6" {
-		t.Errorf("long message: model got %q, want %q", model, "claude-sonnet-4-6")
+	if model != "medium" {
+		t.Errorf("long message: model got %q, want %q", model, "medium")
 	}
 }
 
 func TestRouter_SelectModel_DeepToolChainUsesLight(t *testing.T) {
-	// Tool calls alone (0.25) don't cross the 0.35 threshold — acceptable behavior.
-	// Routing is conservative: only promote to heavy when the signal is unambiguous.
-	r := New(RouterConfig{LightModel: "gemini-flash", Threshold: 0.35})
+	// Tool calls (3) -> score 0.10 < 0.25 (Threshold) -> TierLight
+	r := New(RouterConfig{LightModel: "light", MediumModel: "medium"})
 	history := []providers.Message{
 		{Role: "assistant", ToolCalls: []providers.ToolCall{{Name: "read_file"}, {Name: "write_file"}}},
-		{Role: "assistant", ToolCalls: []providers.ToolCall{{Name: "exec"}, {Name: "search"}}},
+		{Role: "assistant", ToolCalls: []providers.ToolCall{{Name: "exec"}}},
 	}
 	msg := "ok"
-	_, usedLight, _ := r.SelectModel(msg, history, "claude-sonnet-4-6")
-	if !usedLight {
-		t.Error("short message + moderate tool calls: expected light model (score 0.20 < 0.35)")
-	}
-}
-
-func TestRouter_SelectModel_ToolChainPlusMediumUsesHeavy(t *testing.T) {
-	// Tool calls (0.25) + medium message (0.15) = 0.40 >= 0.35 → heavy
-	r := New(RouterConfig{LightModel: "gemini-flash", Threshold: 0.35})
-	history := []providers.Message{
-		{Role: "assistant", ToolCalls: []providers.ToolCall{
-			{Name: "a"}, {Name: "b"}, {Name: "c"}, {Name: "d"},
-		}},
-	}
-	// ~55 tokens * 3 = 165 chars
-	msg := strings.Repeat("word ", 55)
-	_, usedLight, _ := r.SelectModel(msg, history, "claude-sonnet-4-6")
-	if usedLight {
-		t.Error("tool chain + medium message: expected primary model (score >= 0.35)")
-	}
-}
-
-func TestRouter_SelectModel_CustomThreshold(t *testing.T) {
-	// Very low threshold: even a short message triggers heavy model
-	r := New(RouterConfig{LightModel: "gemini-flash", Threshold: 0.05})
-	msg := strings.Repeat("word ", 55) // medium message → 0.15 >= 0.05
-	_, usedLight, _ := r.SelectModel(msg, nil, "claude-sonnet-4-6")
-	if usedLight {
-		t.Error("low threshold: medium message should use primary model")
-	}
-}
-
-func TestRouter_SelectModel_HighThreshold(t *testing.T) {
-	// Very high threshold: even code blocks route to light
-	r := New(RouterConfig{LightModel: "gemini-flash", Threshold: 0.99})
-	msg := "```go\nfmt.Println()\n```"
-	_, usedLight, _ := r.SelectModel(msg, nil, "claude-sonnet-4-6")
-	if !usedLight {
-		t.Error("very high threshold: code block (0.40) should route to light model")
+	_, tier, _ := r.SelectModel(msg, history, "heavy")
+	if tier != TierLight {
+		t.Errorf("short message + moderate tool calls: expected TierLight, got %v", tier)
 	}
 }
 
 func TestRouter_LightModel(t *testing.T) {
-	r := New(RouterConfig{LightModel: "my-fast-model", Threshold: 0.35})
+	r := New(RouterConfig{LightModel: "my-fast-model"})
 	if r.LightModel() != "my-fast-model" {
 		t.Errorf("LightModel: got %q, want %q", r.LightModel(), "my-fast-model")
 	}
 }
 
-// ── newWithClassifier (internal testing hook) ─────────────────────────────────
-
-type fixedScoreClassifier struct{ score float64 }
-
-func (f *fixedScoreClassifier) Score(_ Features) float64 { return f.score }
+func TestRouter_MediumModel(t *testing.T) {
+	r := New(RouterConfig{MediumModel: "my-medium-model"})
+	if r.MediumModel() != "my-medium-model" {
+		t.Errorf("MediumModel: got %q, want %q", r.MediumModel(), "my-medium-model")
+	}
+}
 
 func TestRouter_CustomClassifier_LowScore_SelectsLight(t *testing.T) {
 	r := newWithClassifier(
 		RouterConfig{LightModel: "light", Threshold: 0.5},
 		&fixedScoreClassifier{score: 0.2},
 	)
-	_, usedLight, _ := r.SelectModel("anything", nil, "heavy")
-	if !usedLight {
-		t.Error("low score with custom classifier: expected light model")
+	_, tier, _ := r.SelectModel("anything", nil, "heavy")
+	if tier != TierLight {
+		t.Errorf("low score: expected TierLight, got %v", tier)
 	}
 }
 
-func TestRouter_CustomClassifier_HighScore_SelectsPrimary(t *testing.T) {
+func TestRouter_CustomClassifier_MediumScore_SelectsMedium(t *testing.T) {
 	r := newWithClassifier(
-		RouterConfig{LightModel: "light", Threshold: 0.5},
+		RouterConfig{LightModel: "light", MediumModel: "medium", Threshold: 0.2, MediumThreshold: 0.6},
+		&fixedScoreClassifier{score: 0.4},
+	)
+	_, tier, _ := r.SelectModel("anything", nil, "heavy")
+	if tier != TierMedium {
+		t.Errorf("medium score: expected TierMedium, got %v", tier)
+	}
+}
+
+func TestRouter_CustomClassifier_HighScore_SelectsHeavy(t *testing.T) {
+	r := newWithClassifier(
+		RouterConfig{LightModel: "light", MediumModel: "medium", MediumThreshold: 0.6},
 		&fixedScoreClassifier{score: 0.8},
 	)
-	_, usedLight, _ := r.SelectModel("anything", nil, "heavy")
-	if usedLight {
-		t.Error("high score with custom classifier: expected primary model")
-	}
-}
-
-func TestRouter_CustomClassifier_ExactThreshold_SelectsPrimary(t *testing.T) {
-	// score == threshold → primary (uses >= comparison)
-	r := newWithClassifier(
-		RouterConfig{LightModel: "light", Threshold: 0.5},
-		&fixedScoreClassifier{score: 0.5},
-	)
-	_, usedLight, _ := r.SelectModel("anything", nil, "heavy")
-	if usedLight {
-		t.Error("score == threshold: expected primary model (>= threshold → primary)")
+	_, tier, _ := r.SelectModel("anything", nil, "heavy")
+	if tier != TierHeavy {
+		t.Errorf("high score: expected TierHeavy, got %v", tier)
 	}
 }
 
@@ -410,5 +373,59 @@ func TestRouter_SelectModel_ReturnsScore(t *testing.T) {
 	_, _, score := r.SelectModel("anything", nil, "heavy")
 	if score != 0.42 {
 		t.Errorf("score: got %f, want 0.42", score)
+	}
+}
+
+type fixedScoreClassifier struct {
+	score float64
+}
+
+func (c *fixedScoreClassifier) Score(f Features) float64 {
+	return c.score
+}
+
+func TestRouter_Normalization(t *testing.T) {
+	cases := []struct {
+		name       string
+		in         RouterConfig
+		wantT      float64
+		wantMT     float64
+	}{
+		{
+			"Negative values use defaults",
+			RouterConfig{Threshold: -1, MediumThreshold: -0.5},
+			defaultThreshold,
+			defaultMediumThreshold,
+		},
+		{
+			"Above 1.0 clamped to 1.0",
+			RouterConfig{Threshold: 1.5, MediumThreshold: 2.0},
+			1.0,
+			1.0,
+		},
+		{
+			"Inverted thresholds are swapped",
+			RouterConfig{Threshold: 0.8, MediumThreshold: 0.4},
+			0.4,
+			0.8,
+		},
+		{
+			"Zero values use defaults",
+			RouterConfig{Threshold: 0, MediumThreshold: 0},
+			defaultThreshold,
+			defaultMediumThreshold,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New(tc.in)
+			if r.cfg.Threshold != tc.wantT {
+				t.Errorf("Threshold: got %v, want %v", r.cfg.Threshold, tc.wantT)
+			}
+			if r.cfg.MediumThreshold != tc.wantMT {
+				t.Errorf("MediumThreshold: got %v, want %v", r.cfg.MediumThreshold, tc.wantMT)
+			}
+		})
 	}
 }
