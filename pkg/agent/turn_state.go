@@ -115,6 +115,18 @@ type turnExecution struct {
 	pendingMessages []providers.Message // steering/SubTurn messages awaiting injection
 	history         []providers.Message // from ContextManager.Assemble
 	summary         string
+	taskSummaryChan chan string
+
+	// injectedTaskSummary tracks whether a task reminder has been injected
+	// this turn. Empty = not yet injected; non-empty = the exact summary text
+	// that was injected. Guards against duplicate injection at the 50%
+	// threshold when steering already placed a reminder into the messages.
+	injectedTaskSummary string
+
+	// reminderInjected tracks whether a task reminder has been injected at the
+	// 50% threshold. Separated from injectedTaskSummary because error recovery
+	// injects at iteration 1 (first injection) and again at threshold (reminder).
+	reminderInjected bool
 
 	// Turn output
 	finalContent string
@@ -142,9 +154,17 @@ type turnExecution struct {
 	// Phase tracking
 	phase LLMPhase
 
+	// Error recovery: set when prior turn failed and we pre-extract task context
+	isErrorRecovery bool
+
 	// Abort signaling for coordinator (set by Pipeline methods)
 	abortedByHardAbort bool // true when hard abort triggered during LLM/tools
 	abortedByHook      bool // true when HookActionAbortTurn triggered
+
+	// taskExtractCancel cancels the in-flight background task extraction goroutine.
+	// Set by SetupTurn, called by runTurn when steering messages arrive mid-turn
+	// to prevent stale summaries from overwriting the steering result.
+	taskExtractCancel context.CancelFunc
 }
 
 // newTurnExecution creates a turnExecution initialized from turnState and options.
@@ -160,6 +180,7 @@ func newTurnExecution(
 		summary:         summary,
 		messages:        messages,
 		pendingMessages: append([]providers.Message(nil), opts.InitialSteeringMessages...),
+		taskSummaryChan: make(chan string, 1),
 		iteration:       0,
 		phase:           LLMPhaseSetup,
 	}

@@ -569,7 +569,23 @@ func shouldReconnectCallError(err error) bool {
 	if errors.Is(err, mcp.ErrSessionMissing) {
 		return true
 	}
-	return strings.Contains(strings.ToLower(err.Error()), mcp.ErrSessionMissing.Error())
+
+	errStr := strings.ToLower(err.Error())
+	patterns := []string{
+		mcp.ErrSessionMissing.Error(),
+		"connection closed",
+		"eof",
+		"broken pipe",
+		"client is closing",
+	}
+
+	for _, p := range patterns {
+		if strings.Contains(errStr, p) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (m *Manager) reconnectServer(

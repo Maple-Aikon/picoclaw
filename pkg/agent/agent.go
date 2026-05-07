@@ -62,6 +62,11 @@ type AgentLoop struct {
 	activeTurnStates sync.Map
 	subTurnCounter   atomic.Int64
 
+	// sessionTaskSummary persists the last task summary per session for cross-turn
+	// recovery (e.g. when a turn fails and the user sends a short follow-up).
+	// Keyed by sessionKey (string), value (string) is the 1-2 sentence task summary.
+	sessionTaskSummary sync.Map
+
 	turnSeq        atomic.Uint64
 	activeRequests sync.WaitGroup
 

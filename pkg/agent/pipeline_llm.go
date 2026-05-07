@@ -67,6 +67,69 @@ func (p *Pipeline) CallLLM(
 		exec.providerToolDefs = nil
 	}
 
+	// Task summary injection:
+	//
+	// Two injection points exist:
+	//   1. First injection — error recovery at iteration 1 (blocking extraction
+	//      from SetupTurn already placed summary in taskSummaryChan).
+	//   2. Reminder at 50% threshold — for ALL turns (both normal and error
+	//      recovery). If injectedTaskSummary is already set (from iter 1 or
+	//      steering), reuse it directly. Otherwise poll the channel.
+	//
+	// Once the threshold reminder fires (reminderInjected = true), no further
+	// injection occurs this turn. Steering may still inject its own reminder
+	// directly into messages (see turn_coord.go) and sets reminderInjected.
+	maxIter := ts.agent.MaxIterations
+	if maxIter == 0 {
+		maxIter = 20
+	}
+
+	shouldInject := false
+	var taskSummary string
+
+	// Case 1: Error recovery first injection at iteration 1
+	if exec.isErrorRecovery && iteration == 1 && exec.injectedTaskSummary == "" {
+		select {
+		case taskSummary = <-exec.taskSummaryChan:
+			shouldInject = taskSummary != ""
+		default:
+		}
+	}
+
+	// Case 2: Reminder at 50% threshold for ALL turns
+	atThreshold := iteration >= maxIter/2 && iteration > 1
+	if atThreshold && !exec.reminderInjected {
+		if exec.injectedTaskSummary != "" {
+			// Error recovery (or steering already happened): reuse existing summary
+			taskSummary = exec.injectedTaskSummary
+			shouldInject = true
+		} else {
+			// Normal turn: first injection from channel
+			select {
+			case taskSummary = <-exec.taskSummaryChan:
+				shouldInject = taskSummary != ""
+			default:
+			}
+		}
+	}
+
+	if shouldInject && taskSummary != "" {
+		// Track first injection
+		if exec.injectedTaskSummary == "" {
+			exec.injectedTaskSummary = taskSummary
+			al.sessionTaskSummary.Store(ts.sessionKey, taskSummary)
+		}
+		// Mark reminder done at threshold
+		if atThreshold {
+			exec.reminderInjected = true
+		}
+		reminderMsg := providers.Message{
+			Role:    "user",
+			Content: fmt.Sprintf("[Task context reminder] Remember your original task: %s", taskSummary),
+		}
+		exec.callMessages = append(append([]providers.Message(nil), exec.callMessages...), reminderMsg)
+	}
+
 	exec.llmOpts = map[string]any{
 		"max_tokens":       ts.agent.MaxTokens,
 		"temperature":      ts.agent.Temperature,

@@ -150,6 +150,56 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			// Clear exec.pendingMessages after injection so InitialSteeringMessages
 			// are not re-injected on subsequent iterations (Issue 2 fix).
 			exec.pendingMessages = nil
+
+			// When steering messages arrive, re-extract the task summary for
+			// the new goal. Block until extraction completes so the LLM sees
+			// the updated task immediately in this iteration.
+			{
+			// Cancel any in-flight background extraction so it cannot
+			// overwrite sessionTaskSummary after we set the new one.
+			if exec.taskExtractCancel != nil {
+				exec.taskExtractCancel()
+			}
+
+				var steeringText strings.Builder
+				for i, pm := range pendingMessages {
+					if i > 0 {
+						steeringText.WriteString("\n")
+					}
+					steeringText.WriteString(pm.Content)
+				}
+
+				extractProvider := exec.activeProvider
+				extractModel := exec.activeModel
+				if ts.agent.LightProvider != nil && exec.usedLight {
+					extractProvider = ts.agent.LightProvider
+				}
+
+				extractCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				newSummary := extractTaskSummary(extractCtx, extractProvider, extractModel, "", exec.summary, steeringText.String())
+				cancel()
+
+				if newSummary != "" {
+					al.sessionTaskSummary.Store(ts.sessionKey, newSummary)
+					exec.injectedTaskSummary = newSummary
+					// Steering already injects its own reminder below, so
+					// mark the threshold reminder as done to prevent a
+					// duplicate at the 50% threshold later.
+					exec.reminderInjected = true
+
+					reminderMsg := providers.Message{
+						Role:    "user",
+						Content: fmt.Sprintf("[Task context reminder] Updated task from user steering: %s", newSummary),
+					}
+					messages = append(messages, reminderMsg)
+				} else {
+					// Drain the channel to discard any stale summary.
+					select {
+					case <-exec.taskSummaryChan:
+					default:
+					}
+				}
+			}
 		}
 		// Always sync messages into exec.messages so CallLLM sees the updated state
 		exec.messages = messages
