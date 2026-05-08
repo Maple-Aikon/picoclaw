@@ -11,6 +11,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/routing"
 )
 
 func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipeline) (turnResult, error) {
@@ -169,43 +170,32 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 					steeringText.WriteString(pm.Content)
 				}
 
-				extractProvider := exec.activeProvider
-				extractModel := exec.activeModel
-				switch exec.tier {
-				case routing.TierLight:
-					if ts.agent.LightProvider != nil {
-						extractProvider = ts.agent.LightProvider
-					}
-				case routing.TierMedium:
-					if ts.agent.MediumProvider != nil {
-						extractProvider = ts.agent.MediumProvider
-					}
+			// Get previous summary for fallback
+			prevSummary := ""
+			if prev, ok := al.sessionTaskSummary.Load(ts.sessionKey); ok {
+				prevSummary = prev.(string)
+			}
+
+			extractCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			newSummary := extractTaskWithFallback(extractCtx, al, ts, exec, prevSummary, exec.summary, "", steeringText.String())
+
+			if newSummary != "" {
+				al.sessionTaskSummary.Store(ts.sessionKey, newSummary)
+				exec.injectedTaskSummary = newSummary
+				exec.reminderInjected = true
+
+				reminderMsg := providers.Message{
+					Role:    "user",
+					Content: fmt.Sprintf("[Task context reminder] Updated task from user steering: %s", newSummary),
 				}
-
-				extractCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				newSummary := extractTaskSummary(extractCtx, extractProvider, extractModel, "", exec.summary, "", steeringText.String())
-				cancel()
-
-				if newSummary != "" {
-					al.sessionTaskSummary.Store(ts.sessionKey, newSummary)
-					exec.injectedTaskSummary = newSummary
-					// Steering already injects its own reminder below, so
-					// mark the threshold reminder as done to prevent a
-					// duplicate at the 50% threshold later.
-					exec.reminderInjected = true
-
-					reminderMsg := providers.Message{
-						Role:    "user",
-						Content: fmt.Sprintf("[Task context reminder] Updated task from user steering: %s", newSummary),
-					}
-					messages = append(messages, reminderMsg)
-				} else {
-					// Drain the channel to discard any stale summary.
-					select {
-					case <-exec.taskSummaryChan:
-					default:
-					}
+				messages = append(messages, reminderMsg)
+			} else {
+				select {
+				case <-exec.taskSummaryChan:
+				default:
 				}
+			}
 			}
 		}
 		// Always sync messages into exec.messages so CallLLM sees the updated state
@@ -328,7 +318,7 @@ func (al *AgentLoop) selectCandidates(
 		return agent.Candidates, resolvedCandidateModel(agent.Candidates, agent.Model), routing.TierHeavy
 	}
 
-	modelName, tier, score := agent.Router.SelectModel(userMsg, history, agent.Model)
+	_, tier, score := agent.Router.SelectModel(userMsg, history, agent.Model)
 
 	switch tier {
 	case routing.TierLight:

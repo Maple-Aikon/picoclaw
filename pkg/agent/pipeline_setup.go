@@ -10,6 +10,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/routing"
 )
 
 // SetupTurn extracts the one-time initialization phase, returning a
@@ -145,11 +146,10 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		if isErrorRecovery {
 			// Blocking extraction: the result must be available before the
 			// iteration loop starts so CallLLM can inject it at iteration 1.
-			extractCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			extractCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 			taskSummary := extractTaskWithFallback(extractCtx, p.al, ts, exec, prevTaskSummary, summary, lastAssistantMsg, ts.userMessage)
-			cancel()
 			if taskSummary != "" {
-				p.al.sessionTaskSummary.Delete(ts.sessionKey)
 				select {
 				case exec.taskSummaryChan <- taskSummary:
 				default:
@@ -159,7 +159,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		} else {
 			// Background extraction: context + cancel exposed via exec so steering
 			// in runTurn can cancel it mid-flight and prevent stale overwrites.
-			extractCtx, taskCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			extractCtx, taskCancel := context.WithCancel(context.Background())
 			exec.taskExtractCancel = taskCancel
 			go func() {
 				defer func() {
@@ -176,12 +176,11 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 					return
 				}
 				if taskSummary != "" {
-					p.al.sessionTaskSummary.Delete(ts.sessionKey)
 					select {
 					case exec.taskSummaryChan <- taskSummary:
-						p.al.sessionTaskSummary.Store(ts.sessionKey, taskSummary)
 					default:
 					}
+					p.al.sessionTaskSummary.Store(ts.sessionKey, taskSummary)
 				}
 			}()
 		}
@@ -214,15 +213,7 @@ func extractTaskWithFallback(
 		}
 	}
 
-	// 2. Try medium_model
-	if ts.agent.MediumProvider != nil && len(ts.agent.MediumCandidates) > 0 {
-		summary := extractTaskSummary(ctx, ts.agent.MediumProvider, ts.agent.MediumCandidates[0].Model, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
-		if summary != "" {
-			return summary
-		}
-	}
-
-	// 3. Try light_model
+	// 2. Try light_model
 	if ts.agent.LightProvider != nil && len(ts.agent.LightCandidates) > 0 {
 		summary := extractTaskSummary(ctx, ts.agent.LightProvider, ts.agent.LightCandidates[0].Model, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
 		if summary != "" {
@@ -230,8 +221,27 @@ func extractTaskWithFallback(
 		}
 	}
 
+	// 3. Try medium_model
+	if ts.agent.MediumProvider != nil && len(ts.agent.MediumCandidates) > 0 {
+		summary := extractTaskSummary(ctx, ts.agent.MediumProvider, ts.agent.MediumCandidates[0].Model, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
+		if summary != "" {
+			return summary
+		}
+	}
+
 	// 4. Try active model
 	summary := extractTaskSummary(ctx, exec.activeProvider, exec.activeModel, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
+	if summary == "" {
+		// Fallback: combine previous summary with the latest user message
+		if prevTaskSummary != "" && userContent != "" {
+			return prevTaskSummary + "\n---\n" + userContent
+		} else if prevTaskSummary != "" {
+			return prevTaskSummary
+		} else if userContent != "" {
+			return userContent
+		}
+		return ""
+	}
 	return summary
 }
 
