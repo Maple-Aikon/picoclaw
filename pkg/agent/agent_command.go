@@ -326,6 +326,8 @@ func (al *AgentLoop) buildCommandsRuntime(
 			if opts == nil {
 				return fmt.Errorf("process options not available")
 			}
+			// Clear task summary for the session
+			al.sessionTaskSummary.Delete(opts.SessionKey)
 			return al.contextManager.Clear(ctx, opts.SessionKey)
 		}
 

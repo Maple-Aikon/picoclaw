@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -91,12 +92,20 @@ func (r *Router) SelectModel(
 
 	switch {
 	case score < r.cfg.Threshold:
-		return r.cfg.LightModel, TierLight, score
+		model, tier = r.cfg.LightModel, TierLight
 	case score < r.cfg.MediumThreshold && r.cfg.MediumModel != "":
-		return r.cfg.MediumModel, TierMedium, score
+		model, tier = r.cfg.MediumModel, TierMedium
 	default:
-		return primaryModel, TierHeavy, score
+		model, tier = primaryModel, TierHeavy
 	}
+
+	logger.DebugCF("routing", "Model selected", map[string]any{
+		"model": model,
+		"tier":  int(tier),
+		"score": score,
+	})
+
+	return model, tier, score
 }
 
 // LightModel returns the configured light model name.
