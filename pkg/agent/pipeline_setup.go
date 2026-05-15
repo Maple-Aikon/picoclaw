@@ -146,7 +146,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		if isErrorRecovery {
 			// Blocking extraction: the result must be available before the
 			// iteration loop starts so CallLLM can inject it at iteration 1.
-			extractCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			extractCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			taskSummary := extractTaskWithFallback(extractCtx, p.al, ts, exec, prevTaskSummary, summary, lastAssistantMsg, ts.userMessage)
 			if taskSummary != "" {
@@ -159,7 +159,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		} else {
 			// Background extraction: context + cancel exposed via exec so steering
 			// in runTurn can cancel it mid-flight and prevent stale overwrites.
-			extractCtx, taskCancel := context.WithCancel(context.Background())
+			extractCtx, taskCancel := context.WithTimeout(context.Background(), 60*time.Second)
 			exec.taskExtractCancel = taskCancel
 			go func() {
 				defer func() {
@@ -203,50 +203,54 @@ func extractTaskWithFallback(
 	cfg := al.cfg
 	logger.DebugCF("agent", "Starting task extraction fallback chain", nil)
 
-	// 1. Try summarize_task_model
+	// 1. Try summarize_task_model (30s timeout)
 	if cfg.Agents.Defaults.SummarizeTaskModel != "" {
-		logger.DebugCF("agent", "Trying summarize_task_model", map[string]any{
+		logger.DebugCF("agent", "Task extraction: trying summarize_task_model", map[string]any{
 			"model": cfg.Agents.Defaults.SummarizeTaskModel,
 		})
 		provider, model, err := al.providerFactory(&config.ModelConfig{Model: cfg.Agents.Defaults.SummarizeTaskModel})
 		if err == nil {
-			summary := extractTaskSummary(ctx, provider, model, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
+			summarizeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			summary := extractTaskSummary(summarizeCtx, provider, model, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
+			cancel()
 			if summary != "" {
 				return summary
 			}
+			logger.DebugCF("agent", "Task extraction: summarize_task_model returned empty, falling back to light_model", map[string]any{
+				"model": cfg.Agents.Defaults.SummarizeTaskModel,
+			})
 		} else {
-			logger.WarnCF("agent", "summarize_task_model provider init failed", map[string]any{
+			logger.WarnCF("agent", "Task extraction: summarize_task_model provider init failed, falling back to light_model", map[string]any{
 				"model": cfg.Agents.Defaults.SummarizeTaskModel,
 				"error": err.Error(),
 			})
 		}
+	} else {
+		logger.DebugCF("agent", "Task extraction: summarize_task_model not configured, skipping", nil)
 	}
 
-	// 2. Try light_model
+	// 2. Try light_model (10s timeout)
 	if ts.agent.LightProvider != nil && len(ts.agent.LightCandidates) > 0 {
 		model := ts.agent.LightCandidates[0].Model
-		logger.DebugCF("agent", "Trying light_model", map[string]any{"model": model})
-		summary := extractTaskSummary(ctx, ts.agent.LightProvider, model, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
+		logger.DebugCF("agent", "Task extraction: trying light_model (summarize_task_model failed)", map[string]any{"model": model})
+		lightCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		summary := extractTaskSummary(lightCtx, ts.agent.LightProvider, model, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
+		cancel()
 		if summary != "" {
 			return summary
 		}
+		logger.DebugCF("agent", "Task extraction: light_model returned empty, falling back to active_model", map[string]any{"model": model})
+	} else {
+		logger.DebugCF("agent", "Task extraction: light_model not configured, falling back to active_model", nil)
 	}
 
-	// 3. Try medium_model
-	if ts.agent.MediumProvider != nil && len(ts.agent.MediumCandidates) > 0 {
-		model := ts.agent.MediumCandidates[0].Model
-		logger.DebugCF("agent", "Trying medium_model", map[string]any{"model": model})
-		summary := extractTaskSummary(ctx, ts.agent.MediumProvider, model, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
-		if summary != "" {
-			return summary
-		}
-	}
-
-	// 4. Try active model
-	logger.DebugCF("agent", "Trying active model", map[string]any{"model": exec.activeModel})
-	summary := extractTaskSummary(ctx, exec.activeProvider, exec.activeModel, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
+	// 3. Try active model (10s timeout)
+	logger.DebugCF("agent", "Task extraction: trying active_model (light_model failed)", map[string]any{"model": exec.activeModel})
+	activeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	summary := extractTaskSummary(activeCtx, exec.activeProvider, exec.activeModel, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
+	cancel()
 	if summary == "" {
-		logger.WarnCF("agent", "All task extraction models failed. Falling back to raw text", nil)
+		logger.WarnCF("agent", "Task extraction: all models failed, falling back to raw text concatenation", nil)
 		// Fallback: combine previous summary with the latest user message
 		if prevTaskSummary != "" && userContent != "" {
 			return prevTaskSummary + "\n---\n" + userContent

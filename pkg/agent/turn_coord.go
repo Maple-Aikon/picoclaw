@@ -159,6 +159,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			// Cancel any in-flight background extraction so it cannot
 			// overwrite sessionTaskSummary after we set the new one.
 			if exec.taskExtractCancel != nil {
+				logger.DebugCF("agent", "Task extraction: cancelling background extraction for steering re-extract", nil)
 				exec.taskExtractCancel()
 			}
 
@@ -176,7 +177,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				prevSummary = prev.(string)
 			}
 
-			extractCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			extractCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			newSummary := extractTaskWithFallback(extractCtx, al, ts, exec, prevSummary, exec.summary, "", steeringText.String())
 
