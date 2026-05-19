@@ -208,7 +208,14 @@ func extractTaskWithFallback(
 		logger.DebugCF("agent", "Task extraction: trying summarize_task_model", map[string]any{
 			"model": cfg.Agents.Defaults.SummarizeTaskModel,
 		})
-		provider, model, err := al.providerFactory(&config.ModelConfig{Model: cfg.Agents.Defaults.SummarizeTaskModel})
+		// Look up the full ModelConfig from model_list (with api_key, api_base, etc.)
+		// instead of passing a bare Model{Model: "alias"} which fails provider init.
+		mc := lookupModelConfigByRef(cfg, cfg.Agents.Defaults.SummarizeTaskModel)
+		if mc == nil {
+			// No explicit config — fall back to constructing one with ensureProtocolModel
+			mc = &config.ModelConfig{Model: ensureProtocolModel(cfg.Agents.Defaults.SummarizeTaskModel)}
+		}
+		provider, model, err := al.providerFactory(mc)
 		if err == nil {
 			summarizeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			summary := extractTaskSummary(summarizeCtx, provider, model, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
@@ -230,22 +237,45 @@ func extractTaskWithFallback(
 	}
 
 	// 2. Try light_model (10s timeout)
-	if ts.agent.LightProvider != nil && len(ts.agent.LightCandidates) > 0 {
-		model := ts.agent.LightCandidates[0].Model
-		logger.DebugCF("agent", "Task extraction: trying light_model (summarize_task_model failed)", map[string]any{"model": model})
+	var lightModelName string
+	if cfg.Agents.Defaults.Routing != nil {
+		lightModelName = cfg.Agents.Defaults.Routing.LightModel
+	}
+	lightProvider, lightModel := resolveTaskModel(cfg, ts.agent.LightProvider, ts.agent.LightCandidates, lightModelName)
+	if lightProvider != nil && lightModel != "" {
+		logger.DebugCF("agent", "Task extraction: trying light_model", map[string]any{"model": lightModel})
 		lightCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		summary := extractTaskSummary(lightCtx, ts.agent.LightProvider, model, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
+		summary := extractTaskSummary(lightCtx, lightProvider, lightModel, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
 		cancel()
 		if summary != "" {
 			return summary
 		}
-		logger.DebugCF("agent", "Task extraction: light_model returned empty, falling back to active_model", map[string]any{"model": model})
+		logger.DebugCF("agent", "Task extraction: light_model returned empty, falling back to medium_model", map[string]any{"model": lightModel})
 	} else {
-		logger.DebugCF("agent", "Task extraction: light_model not configured, falling back to active_model", nil)
+		logger.DebugCF("agent", "Task extraction: light_model not configured, falling back to medium_model", nil)
 	}
 
-	// 3. Try active model (10s timeout)
-	logger.DebugCF("agent", "Task extraction: trying active_model (light_model failed)", map[string]any{"model": exec.activeModel})
+	// 3. Try medium_model (10s timeout)
+	var mediumModelName string
+	if cfg.Agents.Defaults.Routing != nil {
+		mediumModelName = cfg.Agents.Defaults.Routing.MediumModel
+	}
+	mediumProvider, mediumModel := resolveTaskModel(cfg, ts.agent.MediumProvider, ts.agent.MediumCandidates, mediumModelName)
+	if mediumProvider != nil && mediumModel != "" {
+		logger.DebugCF("agent", "Task extraction: trying medium_model", map[string]any{"model": mediumModel})
+		mediumCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		summary := extractTaskSummary(mediumCtx, mediumProvider, mediumModel, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
+		cancel()
+		if summary != "" {
+			return summary
+		}
+		logger.DebugCF("agent", "Task extraction: medium_model returned empty, falling back to active_model", map[string]any{"model": mediumModel})
+	} else {
+		logger.DebugCF("agent", "Task extraction: medium_model not configured, falling back to active_model", nil)
+	}
+
+	// 4. Try active model (10s timeout)
+	logger.DebugCF("agent", "Task extraction: trying active_model (medium_model failed)", map[string]any{"model": exec.activeModel})
 	activeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	summary := extractTaskSummary(activeCtx, exec.activeProvider, exec.activeModel, prevTaskSummary, convSummary, lastAssistantMsg, userContent)
 	cancel()
@@ -262,6 +292,41 @@ func extractTaskWithFallback(
 		return ""
 	}
 	return summary
+}
+
+// resolveTaskModel resolves a task extraction model, preferring pre-resolved
+// provider/candidates (from routing initialization) and falling back to
+// direct config lookup when routing is disabled.
+func resolveTaskModel(
+	cfg *config.Config,
+	preResolvedProvider providers.LLMProvider,
+	preResolvedCandidates []providers.FallbackCandidate,
+	modelName string,
+) (providers.LLMProvider, string) {
+	// Use pre-resolved provider if available
+	if preResolvedProvider != nil && len(preResolvedCandidates) > 0 {
+		return preResolvedProvider, preResolvedCandidates[0].Model
+	}
+
+	// Otherwise, resolve directly from config
+	if modelName == "" {
+		return nil, ""
+	}
+
+	mc := lookupModelConfigByRef(cfg, modelName)
+	if mc == nil {
+		mc = &config.ModelConfig{Model: ensureProtocolModel(modelName)}
+	}
+
+	lp, model, err := providers.CreateProviderFromConfig(mc)
+	if err != nil {
+		logger.WarnCF("agent", "Task extraction: failed to resolve model from config", map[string]any{
+			"model": modelName,
+			"error": err.Error(),
+		})
+		return nil, ""
+	}
+	return lp, model
 }
 
 // extractTaskSummary calls the LLM to produce a 1-2 sentence task summary.
@@ -282,21 +347,40 @@ func extractTaskSummary(
 		"model": model,
 	})
 
-	prompt := "You are a task extractor. Extract the single most important task or question the user wants accomplished from the messages below. Output ONLY 1-2 sentences describing the core task. Do not include any metadata or explanation.\n\n"
+	// 1. Truncate aggressive for 4B models
+	if lastAssistantMsg != "" && len(lastAssistantMsg) > 300 {
+		lastAssistantMsg = lastAssistantMsg[:300] + "... (truncated)"
+	}
+
+	// 2. Collapse context into flat text
+	priorContext := ""
 	if convSummary != "" {
-		prompt += "Conversation summary:\n" + convSummary + "\n\n"
+		priorContext += "Summary: " + convSummary + "\n"
 	}
 	if prevTaskSummary != "" {
-		prompt += "Previous task summary (the user is continuing this task):\n" + prevTaskSummary + "\n\n"
+		priorContext += "Previous task: " + prevTaskSummary + "\n"
 	}
 	if lastAssistantMsg != "" {
-		prompt += "Last status from assistant:\n" + lastAssistantMsg + "\n\n"
+		priorContext += "Last assistant response: " + lastAssistantMsg + "\n"
 	}
-	prompt += "Latest user message:\n" + userContent
+
+	// 3. Schema-first prompt
+	prompt := "Your task: Extract the user's request from <user_message> in 1-2 sentences.\n\n" +
+		"Output format: One concise sentence describing the core task. No prefix. No explanation.\n\n"
+
+	if priorContext != "" {
+		prompt += "<context>\n" + priorContext + "</context>\n\n"
+	}
+
+	prompt += "<user_message>\n" + userContent + "\n</user_message>\n\n" +
+		"CRITICAL: Base your output ONLY on <user_message>. Ignore <context>.\n" +
+		"Example BAD (from context): \"The API returned error 500\"\n" +
+		"Example GOOD (from user): \"Fix the gateway timeout issue\"\n\n" +
+		"Task:"
 
 	resp, err := provider.Chat(ctx,
 		[]providers.Message{{Role: "user", Content: prompt}},
-		nil, model, map[string]any{"max_tokens": 256})
+		nil, model, map[string]any{"max_tokens": 256, "stop": []string{"\n\n"}})
 	if err != nil {
 		logger.WarnCF("agent", "Task extraction failed", map[string]any{
 			"model": model,

@@ -386,6 +386,7 @@ func (t *ReadFileLinesTool) Parameters() map[string]any {
 			"max_lines": map[string]any{
 				"type":        "integer",
 				"description": "Maximum number of lines to read.",
+				"default":     100,
 			},
 		},
 		"required": []string{"path"},
@@ -556,9 +557,9 @@ func (t *ReadFileLinesTool) Execute(ctx context.Context, args map[string]any) *T
 		return ErrorResult("limit is not supported in line mode; use max_lines")
 	}
 
-	limit := int64(-1)
+	limit := int64(100)
 	if raw, exists := args["max_lines"]; exists && raw != nil {
-		limit, err = getInt64Arg(args, "max_lines", -1)
+		limit, err = getInt64Arg(args, "max_lines", 100)
 		if err != nil {
 			return ErrorResult(err.Error())
 		}

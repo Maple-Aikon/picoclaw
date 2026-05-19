@@ -48,6 +48,10 @@ func MigrateFromJSON(
 		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
+		// Skip sync state file used by Seahorse.
+		if name == "sync_state.json" {
+			continue
+		}
 		// Skip JSONL metadata files. They are part of the new storage format,
 		// not legacy session snapshots, and re-importing them would overwrite
 		// the paired .jsonl history with an empty message list.

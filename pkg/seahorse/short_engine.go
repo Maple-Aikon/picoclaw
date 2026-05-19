@@ -427,7 +427,7 @@ func (e *Engine) Bootstrap(ctx context.Context, sessionKey string, messages []Me
 		return nil
 	}
 	if len(messages) == 0 {
-		return nil
+		return fmt.Errorf("bootstrap: cannot bootstrap empty history, use ClearSession instead")
 	}
 
 	conv, err := e.store.GetOrCreateConversation(ctx, sessionKey)
