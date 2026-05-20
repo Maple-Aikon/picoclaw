@@ -321,6 +321,8 @@ Download the APK from [picoclaw.io](https://picoclaw.io/download/) and install d
 
 **Option 2: Termux**
 
+For a full command-line setup checklist, see the [Android Termux Guide](docs/guides/android-termux.md).
+
 <details>
 <summary><b>Terminal Launcher (for resource-constrained environments)</b></summary>
 
