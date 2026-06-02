@@ -171,6 +171,27 @@ const (
 	ContextCompressReasonSummarize ContextCompressReason = "summarize"
 )
 
+// CompactHookRequest is sent to hook.before_compact to notify hooks
+// that context compaction is about to occur. The hook receives the
+// session key, compaction reason, and context budget for observability.
+type CompactHookRequest struct {
+	SessionKey string                `json:"session_key"`
+	Reason     ContextCompressReason `json:"reason"`
+	Budget     int                   `json:"budget"`
+}
+
+// Clone returns a shallow copy of the CompactHookRequest.
+func (r *CompactHookRequest) Clone() *CompactHookRequest {
+	if r == nil {
+		return nil
+	}
+	return &CompactHookRequest{
+		SessionKey: r.SessionKey,
+		Reason:     r.Reason,
+		Budget:     r.Budget,
+	}
+}
+
 // ContextCompressPayload describes a forced history compression.
 type ContextCompressPayload struct {
 	Reason            ContextCompressReason

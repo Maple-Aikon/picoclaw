@@ -239,7 +239,12 @@ func (t *MCPTool) Parameters() map[string]any {
 func (t *MCPTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
 	result, err := t.manager.CallTool(ctx, t.serverName, t.tool.Name, args)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("MCP tool execution failed: %v", err)).WithError(err)
+		res := ErrorResult(fmt.Sprintf("MCP tool execution failed: %v", err)).WithError(err)
+		errStr := err.Error()
+		if strings.Contains(errStr, "reconnect failed") || strings.Contains(errStr, "failed to recover lost MCP session") {
+			res = res.WithErrorKind(toolshared.ErrDependencyDown)
+		}
+		return res
 	}
 
 	if result == nil {

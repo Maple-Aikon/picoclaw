@@ -46,11 +46,11 @@ func (e *CompactionEngine) Close() {
 }
 
 // Compact runs leaf compaction (sync) and optionally condensed compaction.
-func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input CompactInput) (*CompactResult, error) {
+func (e *CompactionEngine) Compact(ctx context.Context, sessionKey string, convID int64, input CompactInput) (*CompactResult, error) {
 	result := &CompactResult{}
 
 	// Phase 1: leaf compaction (synchronous, every turn)
-	summaryID, err := e.compactLeaf(ctx, convID)
+	summaryID, err := e.compactLeaf(ctx, sessionKey, convID)
 	if err != nil {
 		return nil, fmt.Errorf("compact leaf: %w", err)
 	}
@@ -82,7 +82,7 @@ func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input Comp
 		if _, loaded := e.condensing.LoadOrStore(convID, struct{}{}); !loaded {
 			go func() {
 				defer e.condensing.Delete(convID)
-				e.runCondensedLoop(e.shutdownCtx, convID)
+				e.runCondensedLoop(e.shutdownCtx, sessionKey, convID)
 			}()
 		}
 	}
@@ -96,7 +96,7 @@ func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input Comp
 }
 
 // CompactUntilUnder aggressively compacts until context is under budget.
-func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, budget int) (*CompactResult, error) {
+func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, sessionKey string, convID int64, budget int) (*CompactResult, error) {
 	result := &CompactResult{}
 	prevTokens := 0
 	logger.InfoCF("seahorse", "compact_until_under: start", map[string]any{"conv_id": convID, "budget": budget})
@@ -118,7 +118,7 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, 
 		}
 
 		// Try leaf first
-		summaryID, err := e.compactLeaf(ctx, convID, true)
+		summaryID, err := e.compactLeaf(ctx, sessionKey, convID, true)
 		if err != nil {
 			return result, err
 		}
@@ -133,7 +133,7 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, 
 		}
 
 		// Try condensed with forced fanout
-		condensedID, err := e.compactCondensed(ctx, convID)
+		condensedID, err := e.compactCondensed(ctx, sessionKey, convID)
 		if err != nil {
 			return result, err
 		}
@@ -171,7 +171,7 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, 
 
 // compactLeaf compresses the oldest contiguous message chunk into a leaf summary.
 // When force is true, FreshTailCount protection is bypassed (used by CompactUntilUnder).
-func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force ...bool) (*string, error) {
+func (e *CompactionEngine) compactLeaf(ctx context.Context, sessionKey string, convID int64, force ...bool) (*string, error) {
 	items, err := e.store.GetContextItems(ctx, convID)
 	if err != nil {
 		return nil, err
@@ -288,7 +288,7 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 	}
 
 	// Remember in Signet (async)
-	go rememberInSignet(content)
+	go rememberInSignet(sessionKey, content)
 
 	// Link to source messages
 	msgIDs := make([]int64, len(messages))
@@ -310,7 +310,7 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 }
 
 // compactCondensed compresses multiple summaries into one higher-level summary.
-func (e *CompactionEngine) compactCondensed(ctx context.Context, convID int64) (*string, error) {
+func (e *CompactionEngine) compactCondensed(ctx context.Context, sessionKey string, convID int64) (*string, error) {
 	// Try ordinal-aware selection first (respects consecutive ordering)
 	var candidates []Summary
 
@@ -396,7 +396,7 @@ func (e *CompactionEngine) compactCondensed(ctx context.Context, convID int64) (
 	}
 
 	// Remember in Signet (async)
-	go rememberInSignet(content)
+	go rememberInSignet(sessionKey, content)
 
 	// Find the ordinal range for the candidate summaries in context
 	items, err := e.store.GetContextItems(ctx, convID)
@@ -699,7 +699,7 @@ func (e *CompactionEngine) generateCondensedSummary(ctx context.Context, summari
 // b) No candidate found (nothing to condense), OR
 // c) tokensAfter >= tokensBefore (no progress this iteration), OR
 // d) tokensAfter >= previousTokens (no improvement over last iteration)
-func (e *CompactionEngine) runCondensedLoop(ctx context.Context, convID int64) {
+func (e *CompactionEngine) runCondensedLoop(ctx context.Context, sessionKey string, convID int64) {
 	var prevTokens int
 	for {
 		select {
@@ -714,7 +714,7 @@ func (e *CompactionEngine) runCondensedLoop(ctx context.Context, convID int64) {
 			return
 		}
 
-		condensedID, err := e.compactCondensed(ctx, convID)
+		condensedID, err := e.compactCondensed(ctx, sessionKey, convID)
 		if err != nil {
 			logger.ErrorCF("seahorse", "condensed: compact", map[string]any{"error": err.Error()})
 			return
@@ -906,10 +906,11 @@ func minInt(a, b int) int {
 	return b
 }
 
-func rememberInSignet(content string) {
+func rememberInSignet(sessionKey, content string) {
 	payload, err := json.Marshal(map[string]string{
-		"harness": "picoclaw",
-		"summary": content,
+		"harness":    "picoclaw",
+		"sessionKey": sessionKey,
+		"summary":    content,
 	})
 	if err != nil {
 		logger.ErrorCF("seahorse", "signet remember marshal failed", map[string]any{"error": err.Error()})

@@ -45,10 +45,18 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		if isOverContextBudget(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens) {
 			logger.WarnCF("agent", "Proactive compression: context budget exceeded before LLM call",
 				map[string]any{"session_key": ts.sessionKey})
-			if err := p.ContextManager.Compact(ctx, &CompactRequest{
+			compactReq := &CompactHookRequest{
 				SessionKey: ts.sessionKey,
 				Reason:     ContextCompressReasonProactive,
 				Budget:     ts.agent.ContextWindow,
+			}
+			if p.Hooks != nil {
+				compactReq, _ = p.Hooks.BeforeCompact(ctx, compactReq)
+			}
+			if err := p.ContextManager.Compact(ctx, &CompactRequest{
+				SessionKey: compactReq.SessionKey,
+				Reason:     compactReq.Reason,
+				Budget:     compactReq.Budget,
 			}); err != nil {
 				logger.WarnCF("agent", "Proactive compact failed", map[string]any{
 					"session_key": ts.sessionKey,
@@ -365,18 +373,30 @@ func extractTaskSummary(
 	}
 
 	// 3. Schema-first prompt
-	prompt := "Your task: Extract the user's request from <user_message> in 1-2 sentences.\n\n" +
-		"Output format: One concise sentence describing the core task. No prefix. No explanation.\n\n"
+	prompt := "Your task: Extract the core task requested by the user in <user_message> as a single concise, action-oriented command.\n\n" +
+		"Rules:\n" +
+		"1. Output ONLY the active command/task. Do NOT use descriptive prefixes like 'The user wants to...', 'Yêu cầu...', or passive voice.\n" +
+		"2. Keep it extremely concise (typically 3-12 words).\n" +
+		"3. Match the language of the output to the language of <user_message> (Vietnamese or English).\n" +
+		"4. Base your output ONLY on <user_message>. Ignore <context>.\n\n" +
+		"Examples:\n" +
+		"- Input: \"em kiểm tra các service đang chạy đi...\"\n" +
+		"  Output: Kiểm tra các dịch vụ đang chạy.\n" +
+		"- Input: \"restart lại PMC đi, nó bị treo rồi...\"\n" +
+		"  Output: Khởi động lại PMC.\n" +
+		"- Input: \"Run memory-optimization Mode A\"\n" +
+		"  Output: Run memory-optimization Mode A.\n" +
+		"- Input: \"Cho phép lập trình thay vì prompt language models, nghĩa là sao\"\n" +
+		"  Output: Giải thích khái niệm lập trình thay vì prompt.\n" +
+		"- Input: \"Em thêm error handling rồi test trước 1 round nhé. Ok thì chạy hết luôn\"\n" +
+		"  Output: Thêm error handling và chạy thử nghiệm 1 vòng.\n\n"
 
 	if priorContext != "" {
 		prompt += "<context>\n" + priorContext + "</context>\n\n"
 	}
 
 	prompt += "<user_message>\n" + userContent + "\n</user_message>\n\n" +
-		"CRITICAL: Base your output ONLY on <user_message>. Ignore <context>.\n" +
-		"Example BAD (from context): \"The API returned error 500\"\n" +
-		"Example GOOD (from user): \"Fix the gateway timeout issue\"\n\n" +
-		"Task:"
+		"Output:"
 
 	resp, err := provider.Chat(ctx,
 		[]providers.Message{{Role: "user", Content: prompt}},

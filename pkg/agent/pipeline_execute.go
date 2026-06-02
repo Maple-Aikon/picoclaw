@@ -706,10 +706,18 @@ toolLoop:
 			}
 		}
 		if ts.opts.EnableSummary {
-			al.contextManager.Compact(turnCtx, &CompactRequest{
+			compactReq := &CompactHookRequest{
 				SessionKey: ts.sessionKey,
 				Reason:     ContextCompressReasonSummarize,
 				Budget:     ts.agent.ContextWindow,
+			}
+			if al.hooks != nil {
+				compactReq, _ = al.hooks.BeforeCompact(turnCtx, compactReq)
+			}
+			al.contextManager.Compact(turnCtx, &CompactRequest{
+				SessionKey: compactReq.SessionKey,
+				Reason:     compactReq.Reason,
+				Budget:     compactReq.Budget,
 			})
 		}
 		ts.setPhase(TurnPhaseCompleted)

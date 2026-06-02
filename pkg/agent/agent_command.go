@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -328,6 +330,16 @@ func (al *AgentLoop) buildCommandsRuntime(
 			}
 			// Clear task summary for the session
 			al.sessionTaskSummary.Delete(opts.SessionKey)
+
+			// Clear session continuity events file to prevent cross-session contamination
+			eventsPath := filepath.Join(agent.Workspace, "sessions", "session-continuity-events.jsonl")
+			if err := os.Truncate(eventsPath, 0); err != nil && !os.IsNotExist(err) {
+				logger.WarnCF("agent", "Failed to truncate session continuity events", map[string]any{
+					"path":  eventsPath,
+					"error": err.Error(),
+				})
+			}
+
 			return al.contextManager.Clear(ctx, opts.SessionKey)
 		}
 

@@ -245,7 +245,7 @@ func processHookOptionsFromConfig(spec config.ProcessHookConfig) (ProcessHookOpt
 
 	for _, intercept := range spec.Intercept {
 		switch intercept {
-		case "before_llm", "after_llm":
+		case "before_llm", "after_llm", "before_compact":
 			opts.InterceptLLM = true
 		case "before_tool", "after_tool":
 			opts.InterceptTool = true

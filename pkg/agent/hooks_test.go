@@ -150,6 +150,13 @@ func (h *llmObserverHook) AfterLLM(
 	return next, HookDecision{Action: HookActionModify}, nil
 }
 
+func (h *llmObserverHook) BeforeCompact(
+	ctx context.Context,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, error) {
+	return req, HookDecision{Action: HookActionContinue}, nil
+}
+
 type llmSystemRewriteHook struct{}
 
 func (h *llmSystemRewriteHook) BeforeLLM(
@@ -169,6 +176,13 @@ func (h *llmSystemRewriteHook) AfterLLM(
 	return resp.Clone(), HookDecision{Action: HookActionContinue}, nil
 }
 
+func (h *llmSystemRewriteHook) BeforeCompact(
+	ctx context.Context,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, error) {
+	return req, HookDecision{Action: HookActionContinue}, nil
+}
+
 type llmUserAppendHook struct{}
 
 func (h *llmUserAppendHook) BeforeLLM(
@@ -185,6 +199,13 @@ func (h *llmUserAppendHook) AfterLLM(
 	resp *LLMHookResponse,
 ) (*LLMHookResponse, HookDecision, error) {
 	return resp.Clone(), HookDecision{Action: HookActionContinue}, nil
+}
+
+func (h *llmUserAppendHook) BeforeCompact(
+	ctx context.Context,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, error) {
+	return req, HookDecision{Action: HookActionContinue}, nil
 }
 
 type llmJSONRoundTripUserAppendHook struct{}
@@ -227,6 +248,13 @@ func (h *llmJSONRoundTripUserAppendHook) AfterLLM(
 	return resp.Clone(), HookDecision{Action: HookActionContinue}, nil
 }
 
+func (h *llmJSONRoundTripUserAppendHook) BeforeCompact(
+	ctx context.Context,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, error) {
+	return req, HookDecision{Action: HookActionContinue}, nil
+}
+
 type llmToolRewriteHook struct{}
 
 func (h *llmToolRewriteHook) BeforeLLM(
@@ -255,6 +283,13 @@ func (h *llmToolRewriteHook) AfterLLM(
 	resp *LLMHookResponse,
 ) (*LLMHookResponse, HookDecision, error) {
 	return resp.Clone(), HookDecision{Action: HookActionContinue}, nil
+}
+
+func (h *llmToolRewriteHook) BeforeCompact(
+	ctx context.Context,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, error) {
+	return req, HookDecision{Action: HookActionContinue}, nil
 }
 
 func TestHookManager_BeforeLLMControlsSystemPromptMutation(t *testing.T) {

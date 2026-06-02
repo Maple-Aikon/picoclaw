@@ -986,6 +986,13 @@ type MCPServerConfig struct {
 	IncludeTools []string `json:"include_tools,omitempty"`
 	// ExcludeTools is a list of tools to exclude (takes precedence over include)
 	ExcludeTools []string `json:"exclude_tools,omitempty"`
+	// CallTimeout sets the default timeout for tool calls to this server.
+	// Format: duration string, e.g., "30s", "1m", "500ms".
+	// If empty, falls back to MCPConfig.DefaultCallTimeout.
+	CallTimeout string `json:"call_timeout,omitempty"`
+	// ToolTimeouts sets per-tool timeout overrides for this server.
+	// Tool-specific timeout takes priority over server-level timeout.
+	ToolTimeouts map[string]string `json:"tool_timeouts,omitempty"`
 }
 
 // MCPConfig defines configuration for all MCP servers
@@ -994,6 +1001,9 @@ type MCPConfig struct {
 	Discovery  ToolDiscoveryConfig `                                json:"discovery"`
 	// MaxInlineTextChars controls how much MCP text stays inline before it is saved as an artifact.
 	MaxInlineTextChars int `json:"max_inline_text_chars,omitempty" env:"PICOCLAW_TOOLS_MCP_MAX_INLINE_TEXT_CHARS"`
+	// DefaultCallTimeout sets the default timeout for MCP tool calls across all servers.
+	// Default: 60s if not set. Per-server and per-tool timeouts override this.
+	DefaultCallTimeout string `json:"default_call_timeout,omitempty" env:"PICOCLAW_TOOLS_MCP_DEFAULT_CALL_TIMEOUT"`
 	// Servers is a map of server name to server configuration
 	Servers map[string]MCPServerConfig `json:"servers,omitempty"`
 }

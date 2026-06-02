@@ -78,6 +78,7 @@ type EventObserver interface {
 type LLMInterceptor interface {
 	BeforeLLM(ctx context.Context, req *LLMHookRequest) (*LLMHookRequest, HookDecision, error)
 	AfterLLM(ctx context.Context, resp *LLMHookResponse) (*LLMHookResponse, HookDecision, error)
+	BeforeCompact(ctx context.Context, req *CompactHookRequest) (*CompactHookRequest, HookDecision, error)
 }
 
 type ToolInterceptor interface {
@@ -369,6 +370,37 @@ func (hm *HookManager) AfterLLM(ctx context.Context, resp *LLMHookResponse) (*LL
 	return current, HookDecision{Action: HookActionContinue}
 }
 
+func (hm *HookManager) BeforeCompact(ctx context.Context, req *CompactHookRequest) (*CompactHookRequest, HookDecision) {
+	if hm == nil || req == nil {
+		return req, HookDecision{Action: HookActionContinue}
+	}
+
+	current := req.Clone()
+	for _, reg := range hm.snapshotHooks() {
+		interceptor, ok := reg.Hook.(LLMInterceptor)
+		if !ok {
+			continue
+		}
+
+		next, decision, ok := hm.callBeforeCompact(ctx, reg.Name, interceptor, current.Clone())
+		if !ok {
+			continue
+		}
+
+		switch decision.normalizedAction() {
+		case HookActionContinue, HookActionModify:
+			if next != nil {
+				current = next
+			}
+		case HookActionAbortTurn, HookActionHardAbort:
+			return current, decision
+		default:
+			hm.logUnsupportedAction(reg.Name, "before_compact", decision.Action)
+		}
+	}
+	return current, HookDecision{Action: HookActionContinue}
+}
+
 func (hm *HookManager) applyBeforeLLMControls(
 	hookName string,
 	current *LLMHookRequest,
@@ -621,6 +653,23 @@ func (hm *HookManager) callBeforeLLM(
 		"before_llm",
 		func(ctx context.Context) (*LLMHookRequest, HookDecision, error) {
 			return interceptor.BeforeLLM(ctx, req)
+		},
+	)
+}
+
+func (hm *HookManager) callBeforeCompact(
+	parent context.Context,
+	name string,
+	interceptor LLMInterceptor,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, bool) {
+	return runInterceptorHook(
+		parent,
+		hm.interceptorTimeout,
+		name,
+		"before_compact",
+		func(ctx context.Context) (*CompactHookRequest, HookDecision, error) {
+			return interceptor.BeforeCompact(ctx, req)
 		},
 	)
 }

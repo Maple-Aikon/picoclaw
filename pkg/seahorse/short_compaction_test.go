@@ -132,7 +132,7 @@ func TestCompactLeaf(t *testing.T) {
 	}
 
 	// Compact
-	result, err := ce.Compact(ctx, convID, CompactInput{})
+	result, err := ce.Compact(ctx, "test-session", convID, CompactInput{})
 	if err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestCompactLeafNoCandidate(t *testing.T) {
 	m, _ := ce.store.AddMessage(ctx, convID, "user", "short", 10)
 	ce.store.AppendContextMessage(ctx, convID, m.ID)
 
-	result, err := ce.Compact(ctx, convID, CompactInput{})
+	result, err := ce.Compact(ctx, "test-session", convID, CompactInput{})
 	if err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestCompactCondensed(t *testing.T) {
 	}
 
 	// Compact with force to trigger condensation
-	_, err := ce.Compact(ctx, convID, CompactInput{Force: true})
+	_, err := ce.Compact(ctx, "test-session", convID, CompactInput{Force: true})
 	if err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestCompactUntilUnder(t *testing.T) {
 	}
 
 	// Force compact until under budget
-	result, err := ce.CompactUntilUnder(ctx, convID, 2000)
+	result, err := ce.CompactUntilUnder(ctx, "test-session", convID, 2000)
 	if err != nil {
 		t.Fatalf("CompactUntilUnder: %v", err)
 	}
@@ -462,7 +462,7 @@ func TestCompactCondensedUsesSelectOldestChunk(t *testing.T) {
 	s.AppendContextMessage(ctx, convID, msg.ID)
 
 	// Run compactCondensed
-	result, err := ce.compactCondensed(ctx, convID)
+	result, err := ce.compactCondensed(ctx, "test-session", convID)
 	if err != nil {
 		t.Fatalf("compactCondensed: %v", err)
 	}
@@ -809,7 +809,7 @@ func TestCompactAsyncReturnsBeforeCondensed(t *testing.T) {
 
 	// Compact with force — should return quickly, condensed runs async
 	start := time.Now()
-	result, err := ce.Compact(ctx, convID, CompactInput{Force: true})
+	result, err := ce.Compact(ctx, "test-session", convID, CompactInput{Force: true})
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -880,8 +880,8 @@ func TestCompactAsyncDedup(t *testing.T) {
 	}
 
 	// Call Compact twice rapidly
-	ce.Compact(ctx, convID, CompactInput{Force: true})
-	ce.Compact(ctx, convID, CompactInput{Force: true})
+	ce.Compact(ctx, "test-session", convID, CompactInput{Force: true})
+	ce.Compact(ctx, "test-session", convID, CompactInput{Force: true})
 
 	// Wait for async to finish
 	time.Sleep(600 * time.Millisecond)
@@ -910,7 +910,7 @@ func TestCompactLeafForceBypassesFreshTail(t *testing.T) {
 	}
 
 	// Without force: should return nil (all in fresh tail)
-	summaryID, err := ce.compactLeaf(ctx, convID)
+	summaryID, err := ce.compactLeaf(ctx, "test-session", convID)
 	if err != nil {
 		t.Fatalf("compactLeaf no-force: %v", err)
 	}
@@ -919,7 +919,7 @@ func TestCompactLeafForceBypassesFreshTail(t *testing.T) {
 	}
 
 	// With force: should compact despite fresh tail protection
-	summaryID, err = ce.compactLeaf(ctx, convID, true)
+	summaryID, err = ce.compactLeaf(ctx, "test-session", convID, true)
 	if err != nil {
 		t.Fatalf("compactLeaf force: %v", err)
 	}
@@ -950,7 +950,7 @@ func TestCompactLeafAccumulatesUpToLeafChunkTokens(t *testing.T) {
 		s.AppendContextMessage(ctx, convID, m.ID)
 	}
 
-	summaryID, err := ce.compactLeaf(ctx, convID)
+	summaryID, err := ce.compactLeaf(ctx, "test-session", convID)
 	if err != nil {
 		t.Fatalf("compactLeaf: %v", err)
 	}

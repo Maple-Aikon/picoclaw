@@ -196,6 +196,7 @@ func (t *ExecTool) Parameters() map[string]any {
 			"action": map[string]any{
 				"type":        "string",
 				"enum":        []string{"run", "list", "poll", "read", "write", "kill", "send-keys"},
+				"default":     "run",
 				"description": "Action: run (execute command), list (show sessions), poll (check status), read (get output), write (send input), kill (terminate), send-keys (send keys to PTY)",
 			},
 			"command": map[string]any{
@@ -231,14 +232,14 @@ func (t *ExecTool) Parameters() map[string]any {
 				"description": "Timeout in seconds (0 = no timeout)",
 			},
 		},
-		"required": []string{"action"},
+		"required": []string{},
 	}
 }
 
 func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
 	action, _ := args["action"].(string)
 	if action == "" {
-		return ErrorResult("action is required")
+		action = "run"
 	}
 
 	switch action {

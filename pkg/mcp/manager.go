@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -127,10 +128,11 @@ type ServerConnection struct {
 
 // Manager manages multiple MCP server connections
 type Manager struct {
-	servers map[string]*ServerConnection
-	mu      sync.RWMutex
-	closed  atomic.Bool    // changed from bool to atomic.Bool to avoid TOCTOU race
-	wg      sync.WaitGroup // tracks in-flight CallTool calls
+	servers            map[string]*ServerConnection
+	mu                 sync.RWMutex
+	closed             atomic.Bool
+	wg                 sync.WaitGroup // tracks in-flight CallTool calls
+	defaultCallTimeout time.Duration  // default timeout for tool calls (0 = use fallback)
 }
 
 var connectServerFunc = connectServer
@@ -158,6 +160,9 @@ func (m *Manager) LoadFromMCPConfig(
 		logger.InfoCF("mcp", "MCP integration is disabled", nil)
 		return nil
 	}
+
+	// Parse default call timeout
+	m.defaultCallTimeout = parseTimeout(mcpCfg.DefaultCallTimeout)
 
 	if len(mcpCfg.Servers) == 0 {
 		logger.InfoCF("mcp", "No MCP servers configured", nil)
@@ -498,13 +503,54 @@ func (m *Manager) CallTool(
 	}
 	defer m.wg.Done()
 
+	// Resolve timeout for this tool call
+	timeout := resolveTimeout(conn.Config, m.defaultCallTimeout, toolName)
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	params := &mcp.CallToolParams{
 		Name:      toolName,
 		Arguments: arguments,
 	}
 
-	result, err := conn.Session.CallTool(ctx, params)
+	result, err := conn.Session.CallTool(callCtx, params)
 	if err != nil {
+		// Detect timeout and treat as a connection-health issue
+		if errors.Is(err, context.DeadlineExceeded) {
+			logger.WarnCF("mcp", "MCP tool call timed out, triggering reconnect",
+				map[string]any{
+					"server":  serverName,
+					"tool":    toolName,
+					"timeout": timeout.String(),
+				})
+
+			// Give the SDK's notifications/cancelled time to reach the server
+			// before closing the connection via reconnectServer.
+			// If the parent context is already done, abort immediately.
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("tool %q call failed: parent context done: %w", toolName, ctx.Err())
+			case <-time.After(3 * time.Second):
+			}
+
+			reconnectedConn, reconnectErr := m.reconnectServer(ctx, serverName, conn)
+			if reconnectErr != nil {
+				return nil, fmt.Errorf("tool %q timed out after %v and reconnect failed: %w",
+					toolName, timeout, reconnectErr)
+			}
+			// Update conn reference for the retry
+			conn = reconnectedConn
+			// Retry once with a fresh timeout context
+			retryCtx, retryCancel := context.WithTimeout(ctx, timeout)
+			defer retryCancel()
+			result, err = conn.Session.CallTool(retryCtx, params)
+			if err != nil {
+				return nil, fmt.Errorf("tool %q timed out after %v (retry also failed: %w)",
+					toolName, timeout, err)
+			}
+			return result, nil
+		}
+
 		if shouldReconnectCallError(err) {
 			logger.WarnCF("mcp", "MCP server session was lost during tool call, reconnecting",
 				map[string]any{
@@ -586,6 +632,53 @@ func shouldReconnectCallError(err error) bool {
 	}
 
 	return false
+}
+
+// defaultToolCallTimeout is the fallback when no config is set.
+const defaultToolCallTimeout = 60 * time.Second
+
+// parseTimeout parses a duration string, returning 0 on failure.
+func parseTimeout(s string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0
+	}
+	return d
+}
+
+// resolveTimeout picks the effective timeout for a tool call.
+// Priority: per-tool > per-server > global default > hardcoded fallback (60s).
+func resolveTimeout(
+	serverConfig config.MCPServerConfig,
+	globalDefault time.Duration,
+	toolName string,
+) time.Duration {
+	// Layer 1: Per-tool timeout
+	if serverConfig.ToolTimeouts != nil {
+		if t, ok := serverConfig.ToolTimeouts[toolName]; ok && t != "" {
+			if d := parseTimeout(t); d > 0 {
+				return d
+			}
+		}
+	}
+
+	// Layer 2: Per-server timeout
+	if serverConfig.CallTimeout != "" {
+		if d := parseTimeout(serverConfig.CallTimeout); d > 0 {
+			return d
+		}
+	}
+
+	// Layer 3: Global default timeout
+	if globalDefault > 0 {
+		return globalDefault
+	}
+
+	// Layer 4: Hardcoded fallback
+	return defaultToolCallTimeout
 }
 
 func (m *Manager) reconnectServer(

@@ -348,7 +348,7 @@ func (e *Engine) Compact(ctx context.Context, sessionKey string, input CompactIn
 	}
 
 	e.initCompactionOnce()
-	return e.compaction.Compact(ctx, conv.ConversationID, input)
+	return e.compaction.Compact(ctx, sessionKey, conv.ConversationID, input)
 }
 
 // CompactUntilUnder aggressively compacts until context is under budget.
@@ -364,7 +364,7 @@ func (e *Engine) CompactUntilUnder(ctx context.Context, sessionKey string, budge
 	}
 
 	e.initCompactionOnce()
-	return e.compaction.CompactUntilUnder(ctx, conv.ConversationID, budget)
+	return e.compaction.CompactUntilUnder(ctx, sessionKey, conv.ConversationID, budget)
 }
 
 // initCompactionOnce lazily initializes the compaction engine.

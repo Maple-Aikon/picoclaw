@@ -283,6 +283,21 @@ func (ph *ProcessHook) ApproveTool(ctx context.Context, req *ToolApprovalRequest
 	return resp, nil
 }
 
+func (ph *ProcessHook) BeforeCompact(
+	ctx context.Context,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, error) {
+	if ph == nil || !ph.opts.InterceptLLM {
+		return req, HookDecision{Action: HookActionContinue}, nil
+	}
+
+	var resp processHookDecisionResponse
+	if err := ph.call(ctx, "hook.before_compact", req, &resp); err != nil {
+		return nil, HookDecision{}, err
+	}
+	return req, HookDecision{Action: resp.Action, Reason: resp.Reason}, nil
+}
+
 func (ph *ProcessHook) hello(ctx context.Context) error {
 	modes := make([]string, 0, 4)
 	if ph.opts.Observe {

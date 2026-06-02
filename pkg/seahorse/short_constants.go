@@ -15,6 +15,10 @@ const (
 	CondensedMinFanout     int = 4 // Min summaries per condensed
 	CondensedMinFanoutHard int = 2 // Min for forced compaction
 
+	// FreshTailCount is the number of most recent messages protected from
+	// compaction — the "fresh tail" that stays in context verbatim.
+	FreshTailCount int = 32
+
 	// LeafChunkTokens is the token target.
 	LeafChunkTokens       int = 20000 // Max tokens per leaf chunk
 	LeafTargetTokens      int = 1200  // Target tokens for leaf summaries

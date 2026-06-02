@@ -125,6 +125,13 @@ func (h modelRewriteHook) AfterLLM(
 	return resp.Clone(), HookDecision{Action: HookActionContinue}, nil
 }
 
+func (h modelRewriteHook) BeforeCompact(
+	ctx context.Context,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, error) {
+	return req, HookDecision{Action: HookActionContinue}, nil
+}
+
 func useTestSideQuestionProvider(al *AgentLoop, provider providers.LLMProvider) {
 	al.providerFactory = func(mc *config.ModelConfig) (providers.LLMProvider, string, error) {
 		model := provider.GetDefaultModel()
@@ -5282,8 +5289,8 @@ func TestProcessMessage_ContextOverflowRecovery(t *testing.T) {
 		t.Fatalf("response = %q, want %q", response, "Recovered from overflow")
 	}
 
-	if provider.calls != 2 {
-		t.Fatalf("expected 2 calls, got %d", provider.calls)
+	if provider.calls != 3 {
+		t.Fatalf("expected 3 calls, got %d", provider.calls)
 	}
 }
 
