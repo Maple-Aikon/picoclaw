@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,6 +26,7 @@ type ToolRegistry struct {
 	mu         sync.RWMutex
 	version    atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
 	mediaStore media.MediaStore
+	allowlist  map[string]struct{}
 }
 
 type mediaStoreAware interface {
@@ -38,10 +40,40 @@ func NewToolRegistry() *ToolRegistry {
 	}
 }
 
+// SetAllowlist restricts registrations to the provided runtime tool names.
+// A nil slice means "allow all". An empty-but-non-nil slice means "allow none".
+func (r *ToolRegistry) SetAllowlist(names []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if names == nil {
+		r.allowlist = nil
+		return
+	}
+
+	allowlist := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		trimmed := strings.ToLower(strings.TrimSpace(name))
+		if trimmed == "" {
+			continue
+		}
+		allowlist[trimmed] = struct{}{}
+	}
+	r.allowlist = allowlist
+}
+
 func (r *ToolRegistry) Register(tool Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	name := tool.Name()
+	if !r.toolAllowedLocked(name) {
+		logger.DebugCF(
+			"tools",
+			"Skipped core tool registration by agent allowlist",
+			map[string]any{"name": name},
+		)
+		return
+	}
 	if _, exists := r.tools[name]; exists {
 		logger.WarnCF("tools", "Tool registration overwrites existing tool",
 			map[string]any{"name": name})
@@ -66,6 +98,14 @@ func (r *ToolRegistry) RegisterHidden(tool Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	name := tool.Name()
+	if !r.toolAllowedLocked(name) {
+		logger.DebugCF(
+			"tools",
+			"Skipped hidden tool registration by agent allowlist",
+			map[string]any{"name": name},
+		)
+		return
+	}
 	if _, exists := r.tools[name]; exists {
 		logger.WarnCF("tools", "Hidden tool registration overwrites existing tool",
 			map[string]any{"name": name})
@@ -134,6 +174,30 @@ func (r *ToolRegistry) TickTTL() {
 // Version returns the current registry version (atomically).
 func (r *ToolRegistry) Version() uint64 {
 	return r.version.Load()
+}
+
+func (r *ToolRegistry) toolAllowedLocked(name string) bool {
+	if r.allowlist == nil {
+		return true
+	}
+	if isToolDiscoveryToolName(name) {
+		// Discovery tools are part of the MCP control plane: they must remain
+		// available whenever configured so deferred MCP tools can still be
+		// unlocked. Per-agent allowlists still apply to the hidden MCP tools
+		// themselves during RegisterHidden.
+		return true
+	}
+	_, ok := r.allowlist[strings.ToLower(strings.TrimSpace(name))]
+	return ok
+}
+
+// HasRegistered reports whether a tool name is present in the registry,
+// including hidden tools whose TTL is currently zero.
+func (r *ToolRegistry) HasRegistered(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.tools[name]
+	return ok
 }
 
 // HiddenToolSnapshot holds a consistent snapshot of hidden tools and the
@@ -217,7 +281,9 @@ func (r *ToolRegistry) ExecuteWithContext(
 			map[string]any{
 				"tool": name,
 			})
-		return ErrorResult(fmt.Sprintf("tool %q not found", name)).WithError(fmt.Errorf("tool not found"))
+		return ErrorResult(
+			fmt.Sprintf("tool %q not found", name),
+		).WithError(fmt.Errorf("tool not found"))
 	}
 
 	// Circuit Breaker check
@@ -470,6 +536,12 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		breakers:   make(map[string]*CircuitBreaker, len(r.breakers)),
 		mediaStore: r.mediaStore,
 	}
+	if r.allowlist != nil {
+		clone.allowlist = make(map[string]struct{}, len(r.allowlist))
+		for name := range r.allowlist {
+			clone.allowlist[name] = struct{}{}
+		}
+	}
 	for name, entry := range r.tools {
 		clone.tools[name] = &ToolEntry{
 			Tool:   entry.Tool,
@@ -508,7 +580,10 @@ func (r *ToolRegistry) GetSummaries() []string {
 			continue
 		}
 
-		summaries = append(summaries, fmt.Sprintf("- `%s` - %s", entry.Tool.Name(), entry.Tool.Description()))
+		summaries = append(
+			summaries,
+			fmt.Sprintf("- `%s` - %s", entry.Tool.Name(), entry.Tool.Description()),
+		)
 	}
 	return summaries
 }
