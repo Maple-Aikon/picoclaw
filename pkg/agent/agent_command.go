@@ -276,6 +276,12 @@ func (al *AgentLoop) buildCommandsRuntime(
 			return nil
 		},
 	}
+	rt.StopActiveTurn = func() (commands.StopResult, error) {
+		if opts == nil {
+			return commands.StopResult{}, fmt.Errorf("process options not available")
+		}
+		return al.stopActiveTurnForSession(opts.Dispatch.SessionKey)
+	}
 	if agent != nil && agent.ContextBuilder != nil {
 		rt.ListSkillNames = agent.ContextBuilder.ListSkillNames
 	}
@@ -315,6 +321,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 			agent.Provider = nextProvider
 			agent.Candidates = nextCandidates
 			agent.ThinkingLevel = parseThinkingLevel(modelCfg.ThinkingLevel)
+			agent.ThinkingLevelConfigured = isConfiguredThinkingLevel(modelCfg.ThinkingLevel)
 
 			if oldProvider != nil && oldProvider != nextProvider {
 				if stateful, ok := oldProvider.(providers.StatefulProvider); ok {

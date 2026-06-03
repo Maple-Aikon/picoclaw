@@ -406,6 +406,7 @@ func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 	result := seahorse.Message{
 		Role:             msg.Role,
 		Content:          msg.Content,
+		ModelName:        msg.ModelName,
 		ReasoningContent: msg.ReasoningContent,
 		TokenCount:       tokenizer.EstimateMessageTokens(msg),
 	}
@@ -452,6 +453,7 @@ func seahorseToProviderMessages(result *seahorse.AssembleResult) []protocoltypes
 		pm := protocoltypes.Message{
 			Role:             msg.Role,
 			Content:          msg.Content,
+			ModelName:        msg.ModelName,
 			ReasoningContent: msg.ReasoningContent,
 		}
 
