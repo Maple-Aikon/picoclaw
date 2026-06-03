@@ -108,8 +108,8 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		}
 	}
 	activeModelName := strings.TrimSpace(ts.agent.Model)
-	if usedLight {
-		activeModelName = strings.TrimSpace(sideQuestionModelName(ts.agent, true))
+	if tier == routing.TierLight {
+		activeModelName = strings.TrimSpace(sideQuestionModelName(ts.agent, routing.TierLight))
 	}
 	activeModelName = resolvedCandidateModelName(activeCandidates, activeModelName)
 

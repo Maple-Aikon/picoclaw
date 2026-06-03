@@ -21,6 +21,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/commands"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/constants"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -37,9 +38,13 @@ type AgentLoop struct {
 	registry *AgentRegistry
 	state    *state.Manager
 
-	// Event system (from Incoming)
-	eventBus *EventBus
-	hooks    *HookManager
+	// Runtime event system
+	runtimeEvents      runtimeevents.Bus
+	ownsRuntimeEvents  bool
+	runtimeEventLogMu  sync.RWMutex
+	runtimeEventLogger *runtimeEventLogger
+	runtimeEventLogSub runtimeevents.Subscription
+	hooks              *HookManager
 
 	// Runtime state
 	running        atomic.Bool
@@ -50,9 +55,11 @@ type AgentLoop struct {
 	transcriber    asr.Transcriber
 	cmdRegistry    *commands.Registry
 	mcp            mcpRuntime
+	evolution      *evolutionBridge
 	hookRuntime    hookRuntime
 	steering       *steeringQueue
 	pendingSkills  sync.Map
+	pendingStops   sync.Map
 	mu             sync.RWMutex
 
 	// workerSem limits concurrent turn processing workers.
@@ -77,17 +84,18 @@ type AgentLoop struct {
 
 // processOptions configures how a message is processed
 type processOptions struct {
-	Dispatch                DispatchRequest        // Normalized routed request boundary for this turn
-	SessionKey              string                 // Session identifier for history/context
-	SessionAliases          []string               // Compatibility aliases for the session key
-	Channel                 string                 // Target channel for tool execution
-	ChatID                  string                 // Target chat ID for tool execution
-	MessageID               string                 // Current inbound platform message ID
-	ReplyToMessageID        string                 // Current inbound reply target message ID
-	SenderID                string                 // Current sender ID for dynamic context
-	SenderDisplayName       string                 // Current sender display name for dynamic context
-	UserMessage             string                 // User message content (may include prefix)
-	ForcedSkills            []string               // Skills explicitly requested for this message
+	Dispatch                DispatchRequest // Normalized routed request boundary for this turn
+	SessionKey              string          // Session identifier for history/context
+	SessionAliases          []string        // Compatibility aliases for the session key
+	Channel                 string          // Target channel for tool execution
+	ChatID                  string          // Target chat ID for tool execution
+	MessageID               string          // Current inbound platform message ID
+	ReplyToMessageID        string          // Current inbound reply target message ID
+	SenderID                string          // Current sender ID for dynamic context
+	SenderDisplayName       string          // Current sender display name for dynamic context
+	UserMessage             string          // User message content (may include prefix)
+	ForcedSkills            []string        // Skills explicitly requested for this message
+	TurnProfile             config.EffectiveTurnProfile
 	SystemPromptOverride    string                 // Override the default system prompt (Used by SubTurns)
 	Media                   []string               // media:// refs from inbound message
 	InitialSteeringMessages []providers.Message    // Steering messages from refactor/agent
@@ -117,9 +125,11 @@ const (
 	pendingTurnPrefix          = "pending-"
 	metadataKeyMessageKind     = "message_kind"
 	metadataKeyToolCalls       = "tool_calls"
+	metadataKeyOutboundKind    = "outbound_kind"
 	messageKindThought         = "thought"
 	messageKindToolFeedback    = "tool_feedback"
 	messageKindToolCalls       = "tool_calls"
+	outboundKindFinal          = "final"
 	metadataKeyAccountID       = "account_id"
 	metadataKeyGuildID         = "guild_id"
 	metadataKeyTeamID          = "team_id"
@@ -177,6 +187,12 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				phase:  TurnPhaseSetup,
 			}
 			if _, loaded := al.activeTurnStates.LoadOrStore(sessionKey, placeholder); loaded {
+				if al.tryHandleStopCommand(ctx, msg, sessionKey) {
+					continue
+				}
+
+				msg = al.prepareInboundMessageForAgent(ctx, msg)
+
 				// Another turn is already active (or reserved) for this session — enqueue
 				if err := al.enqueueSteeringMessage(sessionKey, agentID, providers.Message{
 					Role:    "user",
@@ -240,6 +256,24 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 					defer al.channelManager.InvokeTypingStop(m.Channel, m.ChatID)
 				}
 
+				if al.takePendingStop(sessionKey) {
+					al.activeTurnStates.Delete(sessionKey)
+					target := &continuationTarget{
+						SessionKey: sessionKey,
+						Channel:    m.Channel,
+						ChatID:     m.ChatID,
+					}
+					continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
+					if continueErr != nil {
+						al.maybePublishError(ctx, m.Channel, m.ChatID, sessionKey, continueErr)
+						return
+					}
+					if continued != "" {
+						al.PublishResponseIfNeeded(ctx, target.Channel, target.ChatID, target.SessionKey, continued)
+					}
+					return
+				}
+
 				al.runTurnWithSteering(ctx, m)
 			}(msg)
 
@@ -285,25 +319,34 @@ func (al *AgentLoop) Close() {
 				})
 		}
 	}
+	evolution := al.currentEvolutionBridge()
+	if evolution != nil {
+		if err := evolution.Close(); err != nil {
+			logger.ErrorCF("agent", "Failed to close evolution bridge",
+				map[string]any{
+					"error": err.Error(),
+				})
+		}
+	}
 
 	al.GetRegistry().Close()
 	if al.hooks != nil {
 		al.hooks.Close()
 	}
-	if al.eventBus != nil {
-		al.eventBus.Close()
+	al.closeRuntimeEventLogger()
+	if al.runtimeEvents != nil && al.ownsRuntimeEvents {
+		if err := al.runtimeEvents.Close(); err != nil {
+			logger.ErrorCF("agent", "Failed to close runtime event bus",
+				map[string]any{
+					"error": err.Error(),
+				})
+		}
 	}
 }
 
 // MountHook registers an in-process hook on the agent loop.
 
 // UnmountHook removes a previously registered in-process hook.
-
-// SubscribeEvents registers a subscriber for agent-loop events.
-
-// UnsubscribeEvents removes a previously registered event subscriber.
-
-// EventDrops returns the number of dropped events for the given kind.
 
 type turnEventScope struct {
 	agentID    string
@@ -369,14 +412,29 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	// Ensure shared tools are re-registered on the new registry
 	registerSharedTools(al, cfg, al.bus, registry, provider)
 
+	newEvolution, evolutionErr := newEvolutionBridge(registry, cfg, provider)
+	if evolutionErr != nil {
+		logger.WarnCF("agent", "Failed to reinitialize evolution bridge during reload",
+			map[string]any{"error": evolutionErr.Error()})
+	}
+	if newEvolution != nil {
+		newEvolution.setCurrentCheck(al.isCurrentEvolutionBridge)
+		if err := newEvolution.subscribeRuntimeEvents(al.runtimeEvents.Channel()); err != nil {
+			logger.WarnCF("agent", "Failed to subscribe reloaded evolution bridge to runtime events",
+				map[string]any{"error": err.Error()})
+		}
+	}
+
 	// Atomically swap the config and registry under write lock
 	// This ensures readers see a consistent pair
 	al.mu.Lock()
 	oldRegistry := al.registry
+	oldEvolution := al.evolution
 
 	// Store new values
 	al.cfg = cfg
 	al.registry = registry
+	al.evolution = newEvolution
 
 	// Also update fallback chain with new config; rebuild rate limiter registry.
 	newRL := providers.NewRateLimiterRegistry()
@@ -389,6 +447,7 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	al.fallback = providers.NewFallbackChain(providers.NewCooldownTracker(), newRL)
 
 	al.mu.Unlock()
+	al.refreshRuntimeEventLogger(cfg)
 
 	oldMCPManager := al.mcp.reset()
 	al.hookRuntime.reset(al)
@@ -400,6 +459,12 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	if oldMCPManager != nil {
 		if err := oldMCPManager.Close(); err != nil {
 			logger.WarnCF("agent", "Failed to close previous MCP manager during reload",
+				map[string]any{"error": err.Error()})
+		}
+	}
+	if oldEvolution != nil {
+		if err := oldEvolution.Close(); err != nil {
+			logger.WarnCF("agent", "Failed to close previous evolution bridge during reload",
 				map[string]any{"error": err.Error()})
 		}
 	}
@@ -475,17 +540,22 @@ func (al *AgentLoop) runAgentLoop(
 	opts processOptions,
 ) (string, error) {
 	opts = normalizeProcessOptions(opts)
+	var err error
+	opts, err = resolveTurnProfileOptions(al.GetConfig(), opts)
+	if err != nil {
+		return "", err
+	}
 
 	// Record last channel for heartbeat notifications (skip internal channels and cli)
 	if opts.Dispatch.Channel() != "" &&
 		opts.Dispatch.ChatID() != "" &&
 		!constants.IsInternalChannel(opts.Dispatch.Channel()) {
 		channelKey := fmt.Sprintf("%s:%s", opts.Dispatch.Channel(), opts.Dispatch.ChatID())
-		if err := al.RecordLastChannel(channelKey); err != nil {
+		if recordErr := al.RecordLastChannel(channelKey); recordErr != nil {
 			logger.WarnCF(
 				"agent",
 				"Failed to record last channel",
-				map[string]any{"error": err.Error()},
+				map[string]any{"error": recordErr.Error()},
 			)
 		}
 	}
@@ -528,7 +598,7 @@ func (al *AgentLoop) runAgentLoop(
 			opts.Dispatch.SessionKey,
 			opts.Dispatch.SessionScope,
 		)
-		al.bus.PublishOutbound(ctx, bus.OutboundMessage{
+		msg := bus.OutboundMessage{
 			Context: outboundContextFromInbound(
 				opts.Dispatch.InboundContext,
 				opts.Dispatch.Channel(),
@@ -540,7 +610,15 @@ func (al *AgentLoop) runAgentLoop(
 			Scope:        scope,
 			Content:      result.finalContent,
 			ContextUsage: computeContextUsage(agent, opts.Dispatch.SessionKey),
-		})
+		}
+		if modelName := strings.TrimSpace(result.modelName); modelName != "" {
+			if msg.Context.Raw == nil {
+				msg.Context.Raw = make(map[string]string, 1)
+			}
+			msg.Context.Raw["model_name"] = modelName
+		}
+		markFinalOutbound(&msg)
+		al.bus.PublishOutbound(ctx, msg)
 	}
 
 	if result.finalContent != "" {

@@ -6,15 +6,102 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/constants"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
+
+func toolErrorSummary(result *tools.ToolResult) string {
+	if result == nil || !result.IsError {
+		return ""
+	}
+	content := strings.TrimSpace(result.ContentForLLM())
+	if content == "" && result.Err != nil {
+		content = strings.TrimSpace(result.Err.Error())
+	}
+	return utils.Truncate(content, 200)
+}
+
+func inferSkillNamesFromToolCall(ts *turnState, toolName string, toolArgs map[string]any) []string {
+	if ts == nil || toolName != "read_file" {
+		return nil
+	}
+
+	rawPath, ok := toolArgs["path"].(string)
+	if !ok {
+		return nil
+	}
+	path := strings.TrimSpace(rawPath)
+	if path == "" {
+		return nil
+	}
+
+	cleanPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanPath) {
+		cleanPath = filepath.Join(ts.workspace, cleanPath)
+	}
+	if filepath.Base(cleanPath) != "SKILL.md" {
+		return nil
+	}
+
+	var roots []string
+	if ts.agent != nil && ts.agent.ContextBuilder != nil {
+		roots = ts.agent.ContextBuilder.skillRoots()
+	}
+	if len(roots) == 0 && strings.TrimSpace(ts.workspace) != "" {
+		roots = []string{filepath.Join(ts.workspace, "skills")}
+	}
+
+	found := make(map[string]struct{})
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		rel, err := filepath.Rel(filepath.Clean(root), cleanPath)
+		if err != nil {
+			continue
+		}
+		if rel == "." || rel == "" || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		parts := strings.Split(rel, string(filepath.Separator))
+		if len(parts) != 2 || parts[1] != "SKILL.md" {
+			continue
+		}
+
+		skillName := strings.TrimSpace(parts[0])
+		if skillName == "" {
+			continue
+		}
+		if ts.agent != nil && ts.agent.ContextBuilder != nil {
+			if canonical, ok := ts.agent.ContextBuilder.ResolveSkillName(skillName); ok {
+				skillName = canonical
+			}
+		}
+		found[skillName] = struct{}{}
+	}
+
+	if len(found) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(found))
+	for skillName := range found {
+		names = append(names, skillName)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // ExecuteTools executes the tool loop, handling BeforeTool/ApproveTool/AfterTool hooks,
 // tool execution with async callbacks, media delivery, and steering injection.
@@ -44,6 +131,36 @@ toolLoop:
 
 		toolName := tc.Name
 		toolArgs := cloneStringAnyMap(tc.Arguments)
+		denyByTurnProfile := func() bool {
+			if turnProfileToolAllowed(ts.profile, toolName) {
+				return false
+			}
+			exec.allResponsesHandled = false
+			denyContent := fmt.Sprintf("Tool %q is not allowed by the active turn profile.", toolName)
+			al.emitEvent(
+				runtimeevents.KindAgentToolExecSkipped,
+				ts.eventMeta("runTurn", "turn.tool.skipped"),
+				ToolExecSkippedPayload{
+					Tool:   toolName,
+					Reason: denyContent,
+				},
+			)
+			deniedMsg := providers.Message{
+				Role:       "tool",
+				Content:    denyContent,
+				ToolCallID: tc.ID,
+			}
+			messages = append(messages, deniedMsg)
+			if !ts.opts.NoHistory {
+				ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
+				ts.recordPersistedMessage(deniedMsg)
+			}
+			return true
+		}
+
+		if denyByTurnProfile() {
+			continue
+		}
 
 		if al.hooks != nil {
 			toolReq, decision := al.hooks.BeforeTool(turnCtx, &ToolCallHookRequest{
@@ -72,7 +189,7 @@ toolLoop:
 						})
 
 					al.emitEvent(
-						EventKindToolExecStart,
+						runtimeevents.KindAgentToolExecStart,
 						ts.eventMeta("runTurn", "turn.tool.start"),
 						ToolExecStartPayload{
 							Tool:      toolName,
@@ -93,7 +210,11 @@ toolLoop:
 							toolFeedbackArgsPreview(toolArgs, toolFeedbackMaxLen),
 						)
 						fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
-						_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithKind(ts, feedbackMsg, messageKindToolFeedback))
+						_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(
+							ts,
+							feedbackMsg,
+							outboundTurnMessageOptions{kind: messageKindToolFeedback},
+						))
 						fbCancel()
 					}
 
@@ -194,7 +315,7 @@ toolLoop:
 					}
 
 					al.emitEvent(
-						EventKindToolExecEnd,
+						runtimeevents.KindAgentToolExecEnd,
 						ts.eventMeta("runTurn", "turn.tool.end"),
 						ToolExecEndPayload{
 							Tool:       toolName,
@@ -204,6 +325,12 @@ toolLoop:
 							IsError:    hookResult.IsError,
 							Async:      hookResult.Async,
 						},
+					)
+					ts.recordToolExecution(
+						toolName,
+						!hookResult.IsError,
+						toolErrorSummary(hookResult),
+						inferSkillNamesFromToolCall(ts, toolName, toolArgs),
 					)
 
 					messages = append(messages, toolResultMsg)
@@ -240,7 +367,7 @@ toolLoop:
 							for j := i + 1; j < len(normalizedToolCalls); j++ {
 								skippedTC := normalizedToolCalls[j]
 								al.emitEvent(
-									EventKindToolExecSkipped,
+									runtimeevents.KindAgentToolExecSkipped,
 									ts.eventMeta("runTurn", "turn.tool.skipped"),
 									ToolExecSkippedPayload{
 										Tool:   skippedTC.Name,
@@ -269,7 +396,9 @@ toolLoop:
 								content := al.cfg.FilterSensitiveData(result.ForLLM)
 								msg := subTurnResultPromptMessage(content)
 								messages = append(messages, msg)
-								ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
+								if !ts.opts.NoHistory {
+									ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
+								}
 							}
 						default:
 						}
@@ -287,7 +416,7 @@ toolLoop:
 				exec.allResponsesHandled = false
 				denyContent := hookDeniedToolContent("Tool execution denied by hook", decision.Reason)
 				al.emitEvent(
-					EventKindToolExecSkipped,
+					runtimeevents.KindAgentToolExecSkipped,
 					ts.eventMeta("runTurn", "turn.tool.skipped"),
 					ToolExecSkippedPayload{
 						Tool:   toolName,
@@ -326,7 +455,7 @@ toolLoop:
 				exec.allResponsesHandled = false
 				denyContent := hookDeniedToolContent("Tool execution denied by approval hook", approval.Reason)
 				al.emitEvent(
-					EventKindToolExecSkipped,
+					runtimeevents.KindAgentToolExecSkipped,
 					ts.eventMeta("runTurn", "turn.tool.skipped"),
 					ToolExecSkippedPayload{
 						Tool:   toolName,
@@ -347,6 +476,10 @@ toolLoop:
 			}
 		}
 
+		if denyByTurnProfile() {
+			continue
+		}
+
 		argsJSON, _ := json.Marshal(toolArgs)
 		argsPreview := utils.Truncate(string(argsJSON), 200)
 		logger.InfoCF("agent", fmt.Sprintf("Tool call: %s(%s)", toolName, argsPreview),
@@ -356,7 +489,7 @@ toolLoop:
 				"iteration": iteration,
 			})
 		al.emitEvent(
-			EventKindToolExecStart,
+			runtimeevents.KindAgentToolExecStart,
 			ts.eventMeta("runTurn", "turn.tool.start"),
 			ToolExecStartPayload{
 				Tool:      toolName,
@@ -377,7 +510,11 @@ toolLoop:
 				toolFeedbackArgsPreview(toolArgs, toolFeedbackMaxLen),
 			)
 			fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
-			_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithKind(ts, feedbackMsg, messageKindToolFeedback))
+			_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(
+				ts,
+				feedbackMsg,
+				outboundTurnMessageOptions{kind: messageKindToolFeedback},
+			))
 			fbCancel()
 		}
 
@@ -408,7 +545,7 @@ toolLoop:
 					"channel":     ts.channel,
 				})
 			al.emitEvent(
-				EventKindFollowUpQueued,
+				runtimeevents.KindAgentFollowUpQueued,
 				ts.scope.meta(iteration, "runTurn", "turn.follow_up.queued"),
 				FollowUpQueuedPayload{
 					SourceTool: asyncToolName,
@@ -577,7 +714,7 @@ toolLoop:
 			toolResultMsg.Media = append(toolResultMsg.Media, toolResult.Media...)
 		}
 		al.emitEvent(
-			EventKindToolExecEnd,
+			runtimeevents.KindAgentToolExecEnd,
 			ts.eventMeta("runTurn", "turn.tool.end"),
 			ToolExecEndPayload{
 				Tool:       toolName,
@@ -587,6 +724,12 @@ toolLoop:
 				IsError:    toolResult.IsError,
 				Async:      toolResult.Async,
 			},
+		)
+		ts.recordToolExecution(
+			toolName,
+			!toolResult.IsError,
+			toolErrorSummary(toolResult),
+			inferSkillNamesFromToolCall(ts, toolName, toolArgs),
 		)
 		messages = append(messages, toolResultMsg)
 		if !ts.opts.NoHistory {
@@ -622,7 +765,7 @@ toolLoop:
 				for j := i + 1; j < len(normalizedToolCalls); j++ {
 					skippedTC := normalizedToolCalls[j]
 					al.emitEvent(
-						EventKindToolExecSkipped,
+						runtimeevents.KindAgentToolExecSkipped,
 						ts.eventMeta("runTurn", "turn.tool.skipped"),
 						ToolExecSkippedPayload{
 							Tool:   skippedTC.Name,
@@ -651,7 +794,9 @@ toolLoop:
 					content := al.cfg.FilterSensitiveData(result.ForLLM)
 					msg := subTurnResultPromptMessage(content)
 					messages = append(messages, msg)
-					ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
+					if !ts.opts.NoHistory {
+						ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
+					}
 				}
 			default:
 			}
@@ -705,7 +850,7 @@ toolLoop:
 					})
 			}
 		}
-		if ts.opts.EnableSummary {
+		if !ts.opts.NoHistory && ts.opts.EnableSummary {
 			compactReq := &CompactHookRequest{
 				SessionKey: ts.sessionKey,
 				Reason:     ContextCompressReasonSummarize,
