@@ -513,6 +513,28 @@ func (m *Manager) CallTool(
 		Arguments: arguments,
 	}
 
+	// Preemptive watchdog: force-kill the subprocess if CallTool doesn't return
+	// within timeout + 5s grace period. This is the nuclear fallback that ensures
+	// MCP hangs can always be recovered, even when context propagation fails.
+	watchConn := conn
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-time.After(timeout + 5*time.Second):
+			logger.WarnCF("mcp", "preemptive watchdog fired, force-killing MCP subprocess",
+				map[string]any{
+					"server":  serverName,
+					"tool":    toolName,
+					"timeout": timeout.String(),
+				})
+			// Close the session to kill the subprocess and unblock any hanging I/O.
+			// Safe to call multiple times; Close is idempotent (uses closeOnce).
+			_ = watchConn.Session.Close()
+		case <-done:
+		}
+	}()
+
 	result, err := conn.Session.CallTool(callCtx, params)
 	if err != nil {
 		// Detect timeout and treat as a connection-health issue
@@ -523,6 +545,10 @@ func (m *Manager) CallTool(
 					"tool":    toolName,
 					"timeout": timeout.String(),
 				})
+
+			// Early kill: close the stale session immediately to kill the hanging
+			// subprocess, preventing process leaks during the grace period.
+			_ = conn.Session.Close()
 
 			// Give the SDK's notifications/cancelled time to reach the server
 			// before closing the connection via reconnectServer.
