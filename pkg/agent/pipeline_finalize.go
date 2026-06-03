@@ -6,6 +6,7 @@ import (
 	"context"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -32,6 +33,7 @@ func (p *Pipeline) Finalize(
 		ts.setPhase(TurnPhaseCompleted)
 		return turnResult{
 			finalContent: finalContent,
+			modelName:    exec.llmModelName,
 			status:       turnStatus,
 			followUps:    append([]bus.InboundMessage(nil), ts.followUps...),
 		}, nil
@@ -43,6 +45,7 @@ func (p *Pipeline) Finalize(
 		finalMsg := providers.Message{
 			Role:             "assistant",
 			Content:          finalContent,
+			ModelName:        exec.llmModelName,
 			ReasoningContent: responseReasoningContent(exec.response),
 		}
 		ts.agent.Sessions.AddFullMessage(ts.sessionKey, finalMsg)
@@ -50,18 +53,19 @@ func (p *Pipeline) Finalize(
 		ts.ingestMessage(turnCtx, al, finalMsg)
 		if err := ts.agent.Sessions.Save(ts.sessionKey); err != nil {
 			al.emitEvent(
-				EventKindError,
+				runtimeevents.KindAgentError,
 				ts.eventMeta("runTurn", "turn.error"),
 				ErrorPayload{
 					Stage:   "session_save",
 					Message: err.Error(),
 				},
 			)
+			cancelConfiguredStreamingLLM(turnCtx, exec)
 			return turnResult{status: TurnEndStatusError}, err
 		}
 	}
 
-	if ts.opts.EnableSummary {
+	if !ts.opts.NoHistory && ts.opts.EnableSummary {
 		compactReq := &CompactHookRequest{
 			SessionKey: ts.sessionKey,
 			Reason:     ContextCompressReasonSummarize,
@@ -80,9 +84,31 @@ func (p *Pipeline) Finalize(
 		)
 	}
 
+	contextUsage := computeContextUsage(ts.agent, ts.sessionKey)
+	streamErr := finalizeConfiguredStreamingLLM(turnCtx, ts, exec, finalContent, contextUsage)
+	// If streaming never became visible, keep the legacy Pico interim publish path
+	// so the final answer is still delivered outside normal SendResponse.
+	if ((streamErr != nil && !isConfiguredStreamingVisibleError(streamErr)) || exec.streamingFallback) &&
+		!ts.opts.SendResponse && ts.opts.AllowInterimPicoPublish && finalContent != "" {
+		msg := outboundMessageForTurnWithOptions(ts, finalContent, outboundTurnMessageOptions{
+			modelName: exec.llmModelName,
+		})
+		msg.ContextUsage = contextUsage
+		markFinalOutbound(&msg)
+		_ = al.bus.PublishOutbound(turnCtx, msg)
+	}
+	if streamErr != nil && isConfiguredStreamingVisibleError(streamErr) {
+		ts.setPhase(TurnPhaseCompleted)
+		return turnResult{
+			finalContent: finalContent,
+			status:       TurnEndStatusError,
+			followUps:    append([]bus.InboundMessage(nil), ts.followUps...),
+		}, streamErr
+	}
 	ts.setPhase(TurnPhaseCompleted)
 	return turnResult{
 		finalContent: finalContent,
+		modelName:    exec.llmModelName,
 		status:       turnStatus,
 		followUps:    append([]bus.InboundMessage(nil), ts.followUps...),
 	}, nil

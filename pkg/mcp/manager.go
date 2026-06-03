@@ -17,6 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
@@ -129,19 +130,47 @@ type ServerConnection struct {
 // Manager manages multiple MCP server connections
 type Manager struct {
 	servers            map[string]*ServerConnection
+	runtimeEvents      runtimeevents.Bus
 	mu                 sync.RWMutex
-	closed             atomic.Bool
-	wg                 sync.WaitGroup // tracks in-flight CallTool calls
-	defaultCallTimeout time.Duration  // default timeout for tool calls (0 = use fallback)
+	closed             atomic.Bool         // changed from bool to atomic.Bool to avoid TOCTOU race
+	wg                 sync.WaitGroup      // tracks in-flight CallTool calls
+	defaultCallTimeout time.Duration       // default timeout for tool calls (0 = use fallback)
 }
 
 var connectServerFunc = connectServer
 
+// ManagerOption configures an MCP manager.
+type ManagerOption func(*Manager)
+
+// WithRuntimeEvents injects the runtime event bus used for MCP observations.
+func WithRuntimeEvents(eventBus runtimeevents.Bus) ManagerOption {
+	return func(m *Manager) {
+		m.runtimeEvents = eventBus
+	}
+}
+
+// ServerEventPayload describes MCP server connection events.
+type ServerEventPayload struct {
+	Server    string `json:"server"`
+	Type      string `json:"type,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Command   string `json:"command,omitempty"`
+	Tool      string `json:"tool,omitempty"`
+	ToolCount int    `json:"tool_count,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
 // NewManager creates a new MCP manager
-func NewManager() *Manager {
-	return &Manager{
+func NewManager(opts ...ManagerOption) *Manager {
+	m := &Manager{
 		servers: make(map[string]*ServerConnection),
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(m)
+		}
+	}
+	return m
 }
 
 // LoadFromConfig loads MCP servers from configuration
@@ -269,8 +298,10 @@ func (m *Manager) ConnectServer(
 	name string,
 	cfg config.MCPServerConfig,
 ) error {
+	m.publishServerEvent(runtimeevents.KindMCPServerConnecting, name, cfg, 0, nil)
 	conn, err := connectServerFunc(ctx, name, cfg)
 	if err != nil {
+		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, err)
 		return err
 	}
 
@@ -279,10 +310,19 @@ func (m *Manager) ConnectServer(
 
 	if m.closed.Load() {
 		_ = conn.Session.Close()
+		m.publishServerEvent(runtimeevents.KindMCPServerFailed, name, cfg, 0, fmt.Errorf("manager is closed"))
 		return fmt.Errorf("manager is closed")
 	}
 
 	m.servers[name] = conn
+	for _, tool := range conn.Tools {
+		toolName := ""
+		if tool != nil {
+			toolName = tool.Name
+		}
+		m.publishToolDiscovered(name, cfg, toolName)
+	}
+	m.publishServerEvent(runtimeevents.KindMCPServerConnected, name, cfg, len(conn.Tools), nil)
 	return nil
 }
 
@@ -307,17 +347,9 @@ func connectServer(
 	// Create transport based on configuration
 	// Auto-detect transport type if not explicitly specified
 	var transport mcp.Transport
-	transportType := cfg.Type
-
-	// Auto-detect: if URL is provided, use SSE; if command is provided, use stdio
+	transportType := config.EffectiveMCPTransportType(cfg)
 	if transportType == "" {
-		if cfg.URL != "" {
-			transportType = "sse"
-		} else if cfg.Command != "" {
-			transportType = "stdio"
-		} else {
-			return nil, fmt.Errorf("either URL or command must be provided")
-		}
+		return nil, fmt.Errorf("either URL or command must be provided")
 	}
 
 	switch transportType {
@@ -327,12 +359,13 @@ func connectServer(
 		}
 
 		// Configure DisableStandaloneSSE based on transport type.
-		// - "http": Request-response only mode. Disable the standalone SSE stream
-		//   to avoid compatibility issues with servers that don't support GET /mcp.
+		// - "http": Streamable HTTP request-response mode. Disable the standalone
+		//   SSE stream to avoid compatibility issues with servers that don't
+		//   support the optional GET listener.
 		// - "sse": Bidirectional mode. Enable the standalone SSE stream to receive
 		//   server-initiated notifications (e.g., ToolListChangedNotification).
 		// - Empty or auto-detected: Defaults to "sse" behavior (standalone SSE enabled).
-		disableStandaloneSSE := (cfg.Type == "http")
+		disableStandaloneSSE := transportType == "http"
 
 		logger.DebugCF("mcp", "Using SSE/HTTP transport",
 			map[string]any{
@@ -417,7 +450,7 @@ func connectServer(
 		transport = &isolatedCommandTransport{Command: cmd}
 	default:
 		return nil, fmt.Errorf(
-			"unsupported transport type: %s (supported: stdio, sse, http)",
+			"unsupported transport type: %s (supported: stdio, sse, http, streamable-http)",
 			transportType,
 		)
 	}
