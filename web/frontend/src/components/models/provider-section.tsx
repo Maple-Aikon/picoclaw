@@ -5,10 +5,10 @@ import type { ModelInfo } from "@/api/models"
 
 import { ModelCard } from "./model-card"
 import { ProviderIcon } from "./provider-icon"
+import type { ProviderCatalogEntry } from "./provider-registry"
 
 interface ProviderSectionProps {
-  provider: string
-  providerKey: string
+  provider: Pick<ProviderCatalogEntry, "key" | "label" | "iconSlug" | "domain">
   models: ModelInfo[]
   onEdit: (model: ModelInfo) => void
   onSetDefault: (model: ModelInfo) => void
@@ -18,7 +18,6 @@ interface ProviderSectionProps {
 
 export function ProviderSection({
   provider,
-  providerKey,
   models,
   onEdit,
   onSetDefault,
@@ -38,8 +37,8 @@ export function ProviderSection({
         <div className="border-border/40 border-t" />
         <span className="text-foreground/80 text-center text-xs font-semibold tracking-wide uppercase">
           <span className="bg-background inline-flex items-center gap-1.5 px-2">
-            <ProviderIcon providerKey={providerKey} providerLabel={provider} />
-            {provider}
+            <ProviderIcon provider={provider} />
+            {provider.label}
           </span>
         </span>
         <div className="border-border/40 border-t" />
@@ -57,7 +56,7 @@ export function ProviderSection({
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {models.map((model) => (
             <ModelCard
-              key={model.index}
+              key={model.model_name}
               model={model}
               onEdit={onEdit}
               onSetDefault={onSetDefault}

@@ -14,6 +14,8 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -102,7 +104,8 @@ func (m *mockDeletingMediaChannel) DismissToolFeedbackMessage(_ context.Context,
 }
 
 type mockStreamer struct {
-	finalizeFn func(context.Context, string) error
+	finalizeFn            func(context.Context, string) error
+	finalizeWithContextFn func(context.Context, string, *bus.ContextUsage) error
 }
 
 func (m *mockStreamer) Update(context.Context, string) error { return nil }
@@ -114,15 +117,82 @@ func (m *mockStreamer) Finalize(ctx context.Context, content string) error {
 	return nil
 }
 
+func (m *mockStreamer) FinalizeWithContext(ctx context.Context, content string, usage *bus.ContextUsage) error {
+	if m.finalizeWithContextFn != nil {
+		return m.finalizeWithContextFn(ctx, content, usage)
+	}
+	return m.Finalize(ctx, content)
+}
+
 func (m *mockStreamer) Cancel(context.Context) {}
+
+type mockReasoningStreamer struct {
+	mockStreamer
+	reasoningUpdates []string
+	reasoningFinal   string
+}
+
+func (m *mockReasoningStreamer) UpdateReasoning(_ context.Context, content string) error {
+	m.reasoningUpdates = append(m.reasoningUpdates, content)
+	return nil
+}
+
+func (m *mockReasoningStreamer) FinalizeReasoning(_ context.Context, content string) error {
+	m.reasoningFinal = content
+	return nil
+}
+
+type modelTrackingReasoningStreamer struct {
+	mockReasoningStreamer
+	modelNames []string
+}
+
+func (m *modelTrackingReasoningStreamer) SetModelName(modelName string) {
+	m.modelNames = append(m.modelNames, strings.TrimSpace(modelName))
+}
+
+type recordingStreamSegment struct {
+	updates       []string
+	finals        []string
+	finalUsage    *bus.ContextUsage
+	canceledCount int
+	modelNames    []string
+}
+
+func (s *recordingStreamSegment) Update(_ context.Context, content string) error {
+	s.updates = append(s.updates, content)
+	return nil
+}
+
+func (s *recordingStreamSegment) Finalize(ctx context.Context, content string) error {
+	return s.FinalizeWithContext(ctx, content, nil)
+}
+
+func (s *recordingStreamSegment) FinalizeWithContext(_ context.Context, content string, usage *bus.ContextUsage) error {
+	s.finals = append(s.finals, content)
+	s.finalUsage = usage
+	return nil
+}
+
+func (s *recordingStreamSegment) Cancel(context.Context) {
+	s.canceledCount++
+}
+
+func (s *recordingStreamSegment) SetModelName(modelName string) {
+	s.modelNames = append(s.modelNames, strings.TrimSpace(modelName))
+}
 
 type mockStreamingChannel struct {
 	mockMessageEditor
 	streamer        Streamer
+	beginStreamFn   func(context.Context, string) (Streamer, error)
 	resolveChatIDFn func(chatID string, outboundCtx *bus.InboundContext) string
 }
 
-func (m *mockStreamingChannel) BeginStream(context.Context, string) (Streamer, error) {
+func (m *mockStreamingChannel) BeginStream(ctx context.Context, chatID string) (Streamer, error) {
+	if m.beginStreamFn != nil {
+		return m.beginStreamFn(ctx, chatID)
+	}
 	if m.streamer == nil {
 		return nil, errors.New("missing streamer")
 	}
@@ -145,6 +215,26 @@ func newTestManager() *Manager {
 		channels: make(map[string]Channel),
 		workers:  make(map[string]*channelWorker),
 		bus:      bus.NewMessageBus(),
+	}
+}
+
+func TestSetMediaStorePropagatesToExistingChannels(t *testing.T) {
+	oldStore := media.NewFileMediaStore()
+	newStore := media.NewFileMediaStore()
+	ch := &mockChannel{}
+	ch.SetMediaStore(oldStore)
+
+	m := newTestManager()
+	m.mediaStore = oldStore
+	m.channels["telegram"] = ch
+
+	m.SetMediaStore(newStore)
+
+	if m.mediaStore != newStore {
+		t.Fatal("manager media store was not updated")
+	}
+	if got := ch.GetMediaStore(); got != newStore {
+		t.Fatalf("channel media store = %p, want %p", got, newStore)
 	}
 }
 
@@ -242,6 +332,57 @@ func TestStartAll_PartialFailure_StartsSuccessfulWorkers(t *testing.T) {
 	}
 }
 
+func TestStartAllPublishesLifecycleRuntimeEvents(t *testing.T) {
+	eventBus := runtimeevents.NewBus()
+	defer func() {
+		if err := eventBus.Close(); err != nil {
+			t.Errorf("event bus close failed: %v", err)
+		}
+	}()
+
+	_, eventsCh, err := eventBus.Channel().SubscribeChan(
+		t.Context(),
+		runtimeevents.SubscribeOptions{Name: "channel-lifecycle", Buffer: 4},
+	)
+	if err != nil {
+		t.Fatalf("SubscribeChan failed: %v", err)
+	}
+
+	m := newTestManager()
+	m.runtimeEvents = eventBus
+	m.config = &config.Config{Channels: config.ChannelsConfig{}}
+	m.channels["good"] = &mockChannel{}
+	m.channels["bad"] = &mockChannel{
+		startFn: func(_ context.Context) error { return errors.New("bad start") },
+	}
+
+	if err := m.StartAll(t.Context()); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := m.StopAll(stopCtx); err != nil {
+			t.Errorf("StopAll() error = %v", err)
+		}
+	})
+
+	events := []runtimeevents.Event{
+		receiveChannelRuntimeEvent(t, eventsCh),
+		receiveChannelRuntimeEvent(t, eventsCh),
+	}
+	seen := map[runtimeevents.Kind]runtimeevents.Event{}
+	for _, evt := range events {
+		seen[evt.Kind] = evt
+	}
+	if evt, ok := seen[runtimeevents.KindChannelLifecycleStarted]; !ok || evt.Scope.Channel != "good" {
+		t.Fatalf("missing started event for good channel: %+v", events)
+	}
+	if evt, ok := seen[runtimeevents.KindChannelLifecycleStartFailed]; !ok || evt.Scope.Channel != "bad" {
+		t.Fatalf("missing failed event for bad channel: %+v", events)
+	}
+}
+
 func testOutboundMessage(msg bus.OutboundMessage) bus.OutboundMessage {
 	if msg.Context.Channel == "" && msg.Context.ChatID == "" {
 		msg.Context = bus.NewOutboundContext(msg.Channel, msg.ChatID, msg.ReplyToMessageID)
@@ -254,6 +395,21 @@ func testOutboundMediaMessage(msg bus.OutboundMediaMessage) bus.OutboundMediaMes
 		msg.Context = bus.NewOutboundContext(msg.Channel, msg.ChatID, "")
 	}
 	return bus.NormalizeOutboundMediaMessage(msg)
+}
+
+func receiveChannelRuntimeEvent(t *testing.T, ch <-chan runtimeevents.Event) runtimeevents.Event {
+	t.Helper()
+
+	select {
+	case evt, ok := <-ch:
+		if !ok {
+			t.Fatal("runtime event channel closed before expected event")
+		}
+		return evt
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runtime event")
+		return runtimeevents.Event{}
+	}
 }
 
 func TestSendWithRetry_Success(t *testing.T) {
@@ -277,6 +433,69 @@ func TestSendWithRetry_Success(t *testing.T) {
 
 	if callCount != 1 {
 		t.Fatalf("expected 1 Send call, got %d", callCount)
+	}
+}
+
+func TestSendWithRetryPublishesOutboundRuntimeEvents(t *testing.T) {
+	eventBus := runtimeevents.NewBus()
+	defer func() {
+		if err := eventBus.Close(); err != nil {
+			t.Errorf("event bus close failed: %v", err)
+		}
+	}()
+
+	_, eventsCh, err := eventBus.Channel().OfKind(
+		runtimeevents.KindChannelMessageOutboundSent,
+		runtimeevents.KindChannelMessageOutboundFailed,
+	).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "channel-outbound", Buffer: 2})
+	if err != nil {
+		t.Fatalf("SubscribeChan failed: %v", err)
+	}
+
+	m := newTestManager()
+	m.runtimeEvents = eventBus
+
+	successWorker := &channelWorker{
+		ch:      &mockChannel{},
+		limiter: rate.NewLimiter(rate.Inf, 1),
+	}
+	m.sendWithRetry(
+		context.Background(),
+		"test",
+		successWorker,
+		testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "chat-1", Content: "hello"}),
+	)
+	sent := receiveChannelRuntimeEvent(t, eventsCh)
+	if sent.Kind != runtimeevents.KindChannelMessageOutboundSent || sent.Scope.ChatID != "chat-1" {
+		t.Fatalf("sent event = %+v", sent)
+	}
+	if sent.Attrs["content_len"] != 5 {
+		t.Fatalf("sent attrs = %#v, want content_len", sent.Attrs)
+	}
+
+	failWorker := &channelWorker{
+		ch: &mockChannel{
+			sendFn: func(context.Context, bus.OutboundMessage) error {
+				return fmt.Errorf("send failed: %w", ErrSendFailed)
+			},
+		},
+		limiter: rate.NewLimiter(rate.Inf, 1),
+	}
+	m.sendWithRetry(
+		context.Background(),
+		"test",
+		failWorker,
+		testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "chat-2", Content: "hello"}),
+	)
+	failed := receiveChannelRuntimeEvent(t, eventsCh)
+	if failed.Kind != runtimeevents.KindChannelMessageOutboundFailed || failed.Scope.ChatID != "chat-2" {
+		t.Fatalf("failed event = %+v", failed)
+	}
+	if failed.Severity != runtimeevents.SeverityError {
+		t.Fatalf("failed severity = %q", failed.Severity)
+	}
+	if failed.Attrs["error"] == "" || failed.Attrs["retries"] != maxRetries {
+		t.Fatalf("failed attrs = %#v, want error and retries", failed.Attrs)
 	}
 }
 
@@ -1325,6 +1544,9 @@ func TestPreSend_StaleToolFeedbackDoesNotConsumeStreamActiveMarker(t *testing.T)
 		Context: bus.InboundContext{
 			Channel: "test",
 			ChatID:  "123",
+			Raw: map[string]string{
+				"outbound_kind": "final",
+			},
 		},
 	})
 
@@ -1340,6 +1562,206 @@ func TestPreSend_StaleToolFeedbackDoesNotConsumeStreamActiveMarker(t *testing.T)
 	}
 	if editedContent != "final streamed reply" {
 		t.Fatalf("editedContent = %q, want final streamed reply", editedContent)
+	}
+}
+
+func TestPreSend_StaleThoughtDoesNotConsumeStreamActiveMarker(t *testing.T) {
+	m := newTestManager()
+	m.streamActive.Store("test:123", true)
+	m.streamAuxiliaryTombstones.Store("test:123", time.Now())
+	m.RecordPlaceholder("test", "123", "placeholder-1")
+
+	var editedContent string
+	ch := &mockMessageEditor{
+		editFn: func(_ context.Context, chatID, messageID, content string) error {
+			if chatID != "123" || messageID != "placeholder-1" {
+				t.Fatalf("unexpected edit target: %s/%s", chatID, messageID)
+			}
+			editedContent = content
+			return nil
+		},
+	}
+
+	thought := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "late reasoning",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"message_kind": "thought",
+			},
+		},
+	})
+
+	msgIDs, handled := m.preSend(context.Background(), "test", thought, ch)
+	if !handled {
+		t.Fatal("expected stale thought to be dropped after stream finalize")
+	}
+	if len(msgIDs) != 0 {
+		t.Fatalf("expected no delivered message IDs for stale thought, got %v", msgIDs)
+	}
+	if _, ok := m.streamActive.Load("test:123"); !ok {
+		t.Fatal("expected streamActive marker to remain for the final outbound message")
+	}
+	if _, ok := m.placeholders.Load("test:123"); !ok {
+		t.Fatal("expected placeholder cleanup to remain deferred to the final outbound message")
+	}
+	if ch.editedMessages != 0 {
+		t.Fatalf("expected no placeholder edit for stale thought, got %d edits", ch.editedMessages)
+	}
+
+	finalMsg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "final streamed reply",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"outbound_kind": "final",
+			},
+		},
+	})
+
+	_, handled = m.preSend(context.Background(), "test", finalMsg, ch)
+	if !handled {
+		t.Fatal("expected final outbound message to consume streamActive marker")
+	}
+	if _, ok := m.streamActive.Load("test:123"); ok {
+		t.Fatal("expected streamActive marker to be cleared by final outbound message")
+	}
+	if _, ok := m.placeholders.Load("test:123"); ok {
+		t.Fatal("expected placeholder to be cleaned up by final outbound message")
+	}
+	if editedContent != "final streamed reply" {
+		t.Fatalf("editedContent = %q, want final streamed reply", editedContent)
+	}
+
+	lateThought := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "later reasoning",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"message_kind": "thought",
+			},
+		},
+	})
+	msgIDs, handled = m.preSend(context.Background(), "test", lateThought, ch)
+	if !handled {
+		t.Fatal("expected tombstone to drop late thought after final outbound was suppressed")
+	}
+	if len(msgIDs) != 0 {
+		t.Fatalf("expected no delivered message IDs for late thought, got %v", msgIDs)
+	}
+}
+
+func TestPreSend_StreamActiveDoesNotConsumeEarlierVisibleMessage(t *testing.T) {
+	m := newTestManager()
+	m.streamActive.Store("test:123", true)
+	m.streamAuxiliaryTombstones.Store("test:123", time.Now())
+	m.RecordPlaceholder("test", "123", "placeholder-1")
+
+	editCalls := 0
+	ch := &mockMessageEditor{
+		editFn: func(_ context.Context, chatID, messageID, content string) error {
+			editCalls++
+			if chatID != "123" || messageID != "placeholder-1" || content != "final streamed reply" {
+				t.Fatalf("unexpected placeholder edit for %s/%s: %q", chatID, messageID, content)
+			}
+			return nil
+		},
+	}
+
+	earlierVisible := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "earlier visible message",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+		},
+	})
+	_, handled := m.preSend(context.Background(), "test", earlierVisible, ch)
+	if handled {
+		t.Fatal("expected earlier visible message to be delivered normally")
+	}
+	if editCalls != 0 {
+		t.Fatalf("placeholder edits after earlier visible message = %d, want 0", editCalls)
+	}
+	if _, ok := m.streamActive.Load("test:123"); !ok {
+		t.Fatal("expected streamActive marker to remain for final outbound")
+	}
+	if _, ok := m.streamAuxiliaryTombstones.Load("test:123"); !ok {
+		t.Fatal("expected auxiliary tombstone to remain")
+	}
+	if _, ok := m.placeholders.Load("test:123"); !ok {
+		t.Fatal("expected placeholder cleanup to remain deferred to final outbound")
+	}
+
+	finalMsg := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "final streamed reply",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"outbound_kind": "final",
+			},
+		},
+	})
+	_, handled = m.preSend(context.Background(), "test", finalMsg, ch)
+	if !handled {
+		t.Fatal("expected final outbound message to consume streamActive marker")
+	}
+	if _, ok := m.streamActive.Load("test:123"); ok {
+		t.Fatal("expected streamActive marker to be cleared by final outbound message")
+	}
+	if editCalls != 1 {
+		t.Fatalf("placeholder edits after final outbound = %d, want 1", editCalls)
+	}
+}
+
+func TestPreSend_StreamActiveDoesNotConsumeOtherSessionFinal(t *testing.T) {
+	m := newTestManager()
+	m.streamActive.Store("test:123", true)
+	m.RecordPlaceholder("test", "123", "placeholder-1")
+
+	ch := &mockMessageEditor{
+		editFn: func(_ context.Context, _, _, _ string) error {
+			t.Fatal("placeholder edit should remain deferred for the streaming session")
+			return nil
+		},
+	}
+
+	otherSessionFinal := testOutboundMessage(bus.OutboundMessage{
+		Channel:    "test",
+		ChatID:     "123",
+		SessionKey: "session-other",
+		Content:    "other session final",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"outbound_kind": "final",
+			},
+		},
+	})
+
+	_, handled := m.preSend(context.Background(), "test", otherSessionFinal, ch)
+	if handled {
+		t.Fatal("expected final outbound from a different session to be delivered normally")
+	}
+	if _, ok := m.streamActive.Load("test:123"); !ok {
+		t.Fatal("expected streaming marker to remain for the streaming session")
+	}
+	if _, ok := m.placeholders.Load("test:123"); !ok {
+		t.Fatal("expected placeholder cleanup to remain deferred to the streaming session")
 	}
 }
 
@@ -1459,7 +1881,7 @@ func TestGetStreamer_FinalizeDismissesTrackedToolFeedback(t *testing.T) {
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -1471,6 +1893,400 @@ func TestGetStreamer_FinalizeDismissesTrackedToolFeedback(t *testing.T) {
 	}
 	if _, ok := m.streamActive.Load("test:123"); !ok {
 		t.Fatal("expected streamActive marker to be recorded after finalize")
+	}
+}
+
+func TestGetStreamer_FinalizeCleansPlaceholderImmediately(t *testing.T) {
+	m := newTestManager()
+	m.RecordPlaceholder("test", "123", "placeholder-1")
+	var editedContent string
+	editCalls := 0
+	ch := &mockStreamingChannel{
+		mockMessageEditor: mockMessageEditor{
+			editFn: func(_ context.Context, chatID, messageID, content string) error {
+				if chatID != "123" || messageID != "placeholder-1" {
+					t.Fatalf("unexpected edit target: %s/%s", chatID, messageID)
+				}
+				editCalls++
+				editedContent = content
+				return nil
+			},
+		},
+		streamer: &mockStreamer{},
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	if err := streamer.Finalize(context.Background(), "final reply"); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+	if editedContent != "final reply" {
+		t.Fatalf("edited placeholder content = %q, want final reply", editedContent)
+	}
+	if _, placeholderExists := m.placeholders.Load("test:123"); placeholderExists {
+		t.Fatal("expected placeholder to be cleaned up during finalize")
+	}
+	if _, streamActiveExists := m.streamActive.Load("test:123"); !streamActiveExists {
+		t.Fatal("expected streamActive marker to be recorded after finalize")
+	}
+	cleaner, ok := streamer.(interface{ ClearFinalizedStreamMarker() })
+	if !ok {
+		t.Fatal("expected streamer to expose marker cleanup")
+	}
+	cleaner.ClearFinalizedStreamMarker()
+	if _, streamActiveExists := m.streamActive.Load("test:123"); streamActiveExists {
+		t.Fatal("expected streamActive marker to be cleared")
+	}
+	if _, ok := m.streamAuxiliaryTombstones.Load("test:123"); !ok {
+		t.Fatal("expected auxiliary tombstone to remain after final marker cleanup")
+	}
+
+	lateThought := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "late reasoning",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"message_kind": "thought",
+			},
+		},
+	})
+	msgIDs, handled := m.preSend(context.Background(), "test", lateThought, ch)
+	if !handled {
+		t.Fatal("expected auxiliary tombstone to drop late thought")
+	}
+	if len(msgIDs) != 0 {
+		t.Fatalf("expected no delivered message IDs for late thought, got %v", msgIDs)
+	}
+	if editCalls != 1 {
+		t.Fatalf("expected late thought not to edit placeholder, got %d edits", editCalls)
+	}
+
+	finalOutbound := testOutboundMessage(bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "visible final reply",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+		},
+	})
+	_, handled = m.preSend(context.Background(), "test", finalOutbound, ch)
+	if handled {
+		t.Fatal("expected cleared final marker to let normal outbound send")
+	}
+	if _, ok := m.streamAuxiliaryTombstones.Load("test:123"); ok {
+		t.Fatal("expected normal outbound to clear auxiliary tombstone")
+	}
+}
+
+func TestGetStreamer_FinalizeCleansPlaceholderWithSessionKey(t *testing.T) {
+	m := newTestManager()
+	m.RecordPlaceholder("test", "123", "placeholder-1")
+	ch := &mockStreamingChannel{
+		mockMessageEditor: mockMessageEditor{
+			editFn: func(_ context.Context, chatID, messageID, content string) error {
+				if chatID != "123" || messageID != "placeholder-1" || content != "final reply" {
+					t.Fatalf("unexpected edit for %s/%s: %q", chatID, messageID, content)
+				}
+				return nil
+			},
+		},
+		streamer: &mockStreamer{},
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1")
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	if err := streamer.Finalize(context.Background(), "final reply"); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+	if _, placeholderExists := m.placeholders.Load("test:123"); placeholderExists {
+		t.Fatal("expected placeholder to be cleaned up during finalize")
+	}
+	if _, streamActiveExists := m.streamActive.Load("test:123:session-1"); !streamActiveExists {
+		t.Fatal("expected session streamActive marker to be recorded after finalize")
+	}
+}
+
+func TestGetStreamer_PreservesContextUsageStreamer(t *testing.T) {
+	m := newTestManager()
+	var gotUsage *bus.ContextUsage
+	ch := &mockStreamingChannel{
+		streamer: &mockStreamer{
+			finalizeWithContextFn: func(_ context.Context, content string, usage *bus.ContextUsage) error {
+				if content != "final reply" {
+					t.Fatalf("unexpected finalize content: %q", content)
+				}
+				gotUsage = usage
+				return nil
+			},
+		},
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	contextStreamer, ok := streamer.(bus.ContextUsageStreamer)
+	if !ok {
+		t.Fatal("manager-wrapped streamer should preserve ContextUsageStreamer")
+	}
+	usage := &bus.ContextUsage{UsedTokens: 10, TotalTokens: 100, CompressAtTokens: 80, UsedPercent: 10}
+	if err := contextStreamer.FinalizeWithContext(context.Background(), "final reply", usage); err != nil {
+		t.Fatalf("FinalizeWithContext() error = %v", err)
+	}
+	if gotUsage != usage {
+		t.Fatalf("context usage = %#v, want original usage", gotUsage)
+	}
+	if _, ok := m.streamActive.Load("test:123"); !ok {
+		t.Fatal("expected streamActive marker to be recorded after finalize with context")
+	}
+}
+
+func TestGetStreamer_PreservesReasoningStreamer(t *testing.T) {
+	m := newTestManager()
+	inner := &mockReasoningStreamer{}
+	ch := &mockStreamingChannel{
+		streamer: inner,
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	reasoningStreamer, ok := streamer.(bus.ReasoningStreamer)
+	if !ok {
+		t.Fatal("manager-wrapped streamer should preserve ReasoningStreamer")
+	}
+	if err := reasoningStreamer.UpdateReasoning(context.Background(), "thinking"); err != nil {
+		t.Fatalf("UpdateReasoning() error = %v", err)
+	}
+	if err := reasoningStreamer.FinalizeReasoning(context.Background(), "final thought"); err != nil {
+		t.Fatalf("FinalizeReasoning() error = %v", err)
+	}
+	if got := inner.reasoningUpdates; len(got) != 1 || got[0] != "thinking" {
+		t.Fatalf("reasoning updates = %v, want [thinking]", got)
+	}
+	if inner.reasoningFinal != "final thought" {
+		t.Fatalf("reasoning final = %q, want final thought", inner.reasoningFinal)
+	}
+}
+
+func TestGetStreamer_PreservesModelNameSetter(t *testing.T) {
+	m := newTestManager()
+	inner := &modelTrackingReasoningStreamer{}
+	ch := &mockStreamingChannel{
+		streamer: inner,
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	setter, ok := streamer.(interface{ SetModelName(modelName string) })
+	if !ok {
+		t.Fatal("manager-wrapped streamer should preserve SetModelName")
+	}
+	setter.SetModelName("gpt-5.4")
+	if err := streamer.Update(context.Background(), "hello"); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	reasoningStreamer, ok := streamer.(bus.ReasoningStreamer)
+	if !ok {
+		t.Fatal("manager-wrapped streamer should preserve ReasoningStreamer")
+	}
+	setter.SetModelName("gpt-5.4")
+	if err := reasoningStreamer.UpdateReasoning(context.Background(), "thinking"); err != nil {
+		t.Fatalf("UpdateReasoning() error = %v", err)
+	}
+	if len(inner.modelNames) != 2 {
+		t.Fatalf("model name calls = %v, want 2 forwarded calls", inner.modelNames)
+	}
+	if inner.modelNames[0] != "gpt-5.4" || inner.modelNames[1] != "gpt-5.4" {
+		t.Fatalf("model name calls = %v, want both forwarded as gpt-5.4", inner.modelNames)
+	}
+}
+
+func TestGetStreamer_SplitOnMarkerStreamsSeparateSegments(t *testing.T) {
+	m := newTestManager()
+	m.config = &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				SplitOnMarker: true,
+			},
+		},
+	}
+
+	var segments []*recordingStreamSegment
+	ch := &mockStreamingChannel{
+		beginStreamFn: func(context.Context, string) (Streamer, error) {
+			segment := &recordingStreamSegment{}
+			segments = append(segments, segment)
+			return segment, nil
+		},
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "session-1")
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	contextStreamer, ok := streamer.(bus.ContextUsageStreamer)
+	if !ok {
+		t.Fatal("split streamer should preserve ContextUsageStreamer")
+	}
+
+	if err := streamer.Update(context.Background(), "hello"); err != nil {
+		t.Fatalf("Update(first) error = %v", err)
+	}
+	if err := streamer.Update(context.Background(), "hello<|[SPLIT]|>world"); err != nil {
+		t.Fatalf("Update(split) error = %v", err)
+	}
+	if err := streamer.Update(context.Background(), "hello<|[SPLIT]|>world!"); err != nil {
+		t.Fatalf("Update(second segment) error = %v", err)
+	}
+	usage := &bus.ContextUsage{UsedTokens: 10, TotalTokens: 100}
+	if err := contextStreamer.FinalizeWithContext(
+		context.Background(),
+		"hello<|[SPLIT]|>world!",
+		usage,
+	); err != nil {
+		t.Fatalf("FinalizeWithContext() error = %v", err)
+	}
+
+	if len(segments) != 2 {
+		t.Fatalf("segments = %d, want 2", len(segments))
+	}
+	if got := segments[0].updates; len(got) != 1 || got[0] != "hello" {
+		t.Fatalf("segment 0 updates = %v, want [hello]", got)
+	}
+	if got := segments[0].finals; len(got) != 1 || got[0] != "hello" {
+		t.Fatalf("segment 0 finals = %v, want [hello]", got)
+	}
+	if got := segments[1].updates; len(got) != 2 || got[0] != "world" || got[1] != "world!" {
+		t.Fatalf("segment 1 updates = %v, want [world world!]", got)
+	}
+	if got := segments[1].finals; len(got) != 1 || got[0] != "world!" {
+		t.Fatalf("segment 1 finals = %v, want [world!]", got)
+	}
+	if segments[1].finalUsage != usage {
+		t.Fatalf("final usage = %#v, want original usage", segments[1].finalUsage)
+	}
+	if _, ok := m.streamActive.Load("test:123:session-1"); !ok {
+		t.Fatal("expected streamActive marker to be recorded after split stream finalize")
+	}
+}
+
+func TestGetStreamer_SplitOnMarkerKeepsReasoningOnInitialStreamer(t *testing.T) {
+	m := newTestManager()
+	m.config = &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				SplitOnMarker: true,
+			},
+		},
+	}
+
+	initial := &mockReasoningStreamer{}
+	next := &recordingStreamSegment{}
+	callCount := 0
+	ch := &mockStreamingChannel{
+		beginStreamFn: func(context.Context, string) (Streamer, error) {
+			callCount++
+			if callCount == 1 {
+				return initial, nil
+			}
+			return next, nil
+		},
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	if err := streamer.Update(context.Background(), "hello<|[SPLIT]|>world"); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	reasoningStreamer, ok := streamer.(bus.ReasoningStreamer)
+	if !ok {
+		t.Fatal("split streamer should preserve ReasoningStreamer")
+	}
+	if err := reasoningStreamer.UpdateReasoning(context.Background(), "thinking"); err != nil {
+		t.Fatalf("UpdateReasoning() error = %v", err)
+	}
+	if err := reasoningStreamer.FinalizeReasoning(context.Background(), "final thought"); err != nil {
+		t.Fatalf("FinalizeReasoning() error = %v", err)
+	}
+
+	if got := initial.reasoningUpdates; len(got) != 1 || got[0] != "thinking" {
+		t.Fatalf("initial reasoning updates = %v, want [thinking]", got)
+	}
+	if initial.reasoningFinal != "final thought" {
+		t.Fatalf("initial reasoning final = %q, want final thought", initial.reasoningFinal)
+	}
+}
+
+func TestGetStreamer_SplitOnMarkerPreservesModelNameSetter(t *testing.T) {
+	m := newTestManager()
+	m.config = &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				SplitOnMarker: true,
+			},
+		},
+	}
+
+	initial := &modelTrackingReasoningStreamer{}
+	next := &recordingStreamSegment{}
+	callCount := 0
+	ch := &mockStreamingChannel{
+		beginStreamFn: func(context.Context, string) (Streamer, error) {
+			callCount++
+			if callCount == 1 {
+				return initial, nil
+			}
+			return next, nil
+		},
+	}
+	m.channels["test"] = ch
+
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
+	if !ok {
+		t.Fatal("expected streamer to be available")
+	}
+	setter, ok := streamer.(interface{ SetModelName(modelName string) })
+	if !ok {
+		t.Fatal("split streamer should preserve SetModelName")
+	}
+	setter.SetModelName("gpt-5.4-mini")
+	if err := streamer.Update(context.Background(), "hello<|[SPLIT]|>world"); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	reasoningStreamer, ok := streamer.(bus.ReasoningStreamer)
+	if !ok {
+		t.Fatal("split streamer should preserve ReasoningStreamer")
+	}
+	if err := reasoningStreamer.UpdateReasoning(context.Background(), "thinking"); err != nil {
+		t.Fatalf("UpdateReasoning() error = %v", err)
+	}
+
+	if len(initial.modelNames) == 0 || initial.modelNames[0] != "gpt-5.4-mini" {
+		t.Fatalf("initial model names = %v, want forwarded gpt-5.4-mini", initial.modelNames)
+	}
+	if len(next.modelNames) == 0 || next.modelNames[0] != "gpt-5.4-mini" {
+		t.Fatalf("next model names = %v, want forwarded gpt-5.4-mini", next.modelNames)
 	}
 }
 
@@ -1499,7 +2315,7 @@ func TestGetStreamer_FinalizeSeparateMessagesClearsTrackedToolFeedback(t *testin
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -1541,7 +2357,7 @@ func TestGetStreamer_FinalizeDismissesResolvedTrackedToolFeedback(t *testing.T) 
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "-100123/42")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "-100123/42", "")
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -1610,7 +2426,7 @@ func TestGetStreamer_FinalizeFailureDoesNotDismissTrackedToolFeedback(t *testing
 	}
 	m.channels["test"] = ch
 
-	streamer, ok := m.GetStreamer(context.Background(), "test", "123")
+	streamer, ok := m.GetStreamer(context.Background(), "test", "123", "")
 	if !ok {
 		t.Fatal("expected streamer to be available")
 	}
@@ -1685,6 +2501,68 @@ func TestRunWorker_ToolFeedbackSkipsMarkerSplitting(t *testing.T) {
 	}
 	if received[0] != content {
 		t.Fatalf("received[0] = %q, want %q", received[0], content)
+	}
+}
+
+func TestRunWorker_FinalizedStreamSuppressesMarkerSplitBeforeSending(t *testing.T) {
+	m := newTestManager()
+	m.config = &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				SplitOnMarker: true,
+			},
+		},
+	}
+
+	var (
+		mu       sync.Mutex
+		received []string
+	)
+	ch := &mockChannel{
+		sendFn: func(_ context.Context, msg bus.OutboundMessage) error {
+			mu.Lock()
+			received = append(received, msg.Content)
+			mu.Unlock()
+			return nil
+		},
+	}
+
+	w := &channelWorker{
+		ch:      ch,
+		queue:   make(chan bus.OutboundMessage, 1),
+		done:    make(chan struct{}),
+		limiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.runWorker(ctx, "test", w)
+
+	streamKey := streamSuppressionKey("test", "123", "session-1")
+	m.streamActive.Store(streamKey, true)
+	w.queue <- testOutboundMessage(bus.OutboundMessage{
+		Channel:    "test",
+		ChatID:     "123",
+		SessionKey: "session-1",
+		Content:    "streamed full reply<|[SPLIT]|>duplicate chunk",
+		Context: bus.InboundContext{
+			Channel: "test",
+			ChatID:  "123",
+			Raw: map[string]string{
+				"outbound_kind": "final",
+			},
+		},
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 0 {
+		t.Fatalf("received split duplicate messages = %v, want none", received)
+	}
+	if _, ok := m.streamActive.Load(streamKey); ok {
+		t.Fatal("expected finalized stream marker to be consumed")
 	}
 }
 

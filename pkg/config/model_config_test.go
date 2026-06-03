@@ -7,6 +7,7 @@ package config
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -144,6 +145,47 @@ func TestGetModelConfig_Concurrent(t *testing.T) {
 	}
 }
 
+func TestModelConfig_StreamingConfig(t *testing.T) {
+	t.Run("loads streaming enabled", func(t *testing.T) {
+		var cfg ModelConfig
+		err := json.Unmarshal([]byte(`{
+			"model_name": "stream-model",
+			"model": "openai/gpt-5.4",
+			"streaming": {"enabled": true}
+		}`), &cfg)
+		if err != nil {
+			t.Fatalf("Unmarshal() error = %v", err)
+		}
+		if !cfg.Streaming.Enabled {
+			t.Fatal("Streaming.Enabled = false, want true")
+		}
+	})
+
+	t.Run("defaults disabled", func(t *testing.T) {
+		var cfg ModelConfig
+		err := json.Unmarshal([]byte(`{
+			"model_name": "plain-model",
+			"model": "openai/gpt-5.4"
+		}`), &cfg)
+		if err != nil {
+			t.Fatalf("Unmarshal() error = %v", err)
+		}
+		if cfg.Streaming.Enabled {
+			t.Fatal("Streaming.Enabled = true, want false by default")
+		}
+	})
+
+	t.Run("model streaming only has enabled", func(t *testing.T) {
+		typ := reflect.TypeOf(ModelStreamingConfig{})
+		if typ.NumField() != 1 {
+			t.Fatalf("ModelStreamingConfig field count = %d, want 1", typ.NumField())
+		}
+		if _, ok := typ.FieldByName("Enabled"); !ok {
+			t.Fatal("ModelStreamingConfig missing Enabled field")
+		}
+	})
+}
+
 func TestModelConfig_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -155,6 +197,15 @@ func TestModelConfig_Validate(t *testing.T) {
 			config: ModelConfig{
 				ModelName: "test",
 				Model:     "openai/gpt-4o",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid tool schema transform",
+			config: ModelConfig{
+				ModelName:           "test",
+				Model:               "openai/gpt-4o",
+				ToolSchemaTransform: "simple",
 			},
 			wantErr: false,
 		},
@@ -175,6 +226,15 @@ func TestModelConfig_Validate(t *testing.T) {
 		{
 			name:    "empty config",
 			config:  ModelConfig{},
+			wantErr: true,
+		},
+		{
+			name: "invalid tool schema transform",
+			config: ModelConfig{
+				ModelName:           "test",
+				Model:               "openai/gpt-4o",
+				ToolSchemaTransform: "invalid",
+			},
 			wantErr: true,
 		},
 	}
