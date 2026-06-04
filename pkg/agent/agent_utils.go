@@ -216,6 +216,15 @@ func toolFeedbackArgsPreview(args map[string]any, maxLen int) string {
 	return utils.Truncate(argsJSON, maxLen)
 }
 
+func toolFeedbackArgsPreviewWithOptions(args map[string]any, maxLen int, prettyPrint, disableEscapeHTML bool) string {
+	if args == nil {
+		args = map[string]any{}
+	}
+
+	argsJSON := utils.FormatArgsJSON(args, prettyPrint, disableEscapeHTML)
+	return utils.Truncate(argsJSON, maxLen)
+}
+
 func shouldPublishToolFeedback(cfg *config.Config, ts *turnState) bool {
 	if ts == nil || ts.channel == "" || ts.opts.SuppressToolFeedback {
 		return false
