@@ -23,6 +23,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/constants"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/health"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
@@ -40,6 +41,8 @@ const (
 	janitorInterval = 10 * time.Second
 	typingStopTTL   = 5 * time.Minute
 	placeholderTTL  = 10 * time.Minute
+
+	streamAuxiliaryTombstoneTTL = 30 * time.Second
 )
 
 // typingEntry wraps a typing stop function with a creation timestamp for TTL eviction.
@@ -81,21 +84,53 @@ type channelWorker struct {
 }
 
 type Manager struct {
-	channels      map[string]Channel
-	workers       map[string]*channelWorker
-	bus           *bus.MessageBus
-	config        *config.Config
-	mediaStore    media.MediaStore
-	dispatchTask  *asyncTask
-	mux           *dynamicServeMux
-	httpServer    *http.Server
-	httpListeners []net.Listener
-	mu            sync.RWMutex
-	placeholders  sync.Map          // "channel:chatID" → placeholderID (string)
-	typingStops   sync.Map          // "channel:chatID" → func()
-	reactionUndos sync.Map          // "channel:chatID" → reactionEntry
-	streamActive  sync.Map          // "channel:chatID" → true (set when streamer.Finalize sent the message)
-	channelHashes map[string]string // channel name → config hash
+	channels                  map[string]Channel
+	workers                   map[string]*channelWorker
+	bus                       *bus.MessageBus
+	runtimeEvents             runtimeevents.Bus
+	config                    *config.Config
+	mediaStore                media.MediaStore
+	dispatchTask              *asyncTask
+	mux                       *dynamicServeMux
+	httpServer                *http.Server
+	httpListeners             []net.Listener
+	mu                        sync.RWMutex
+	placeholders              sync.Map          // "channel:chatID" → placeholderID (string)
+	typingStops               sync.Map          // "channel:chatID" → func()
+	reactionUndos             sync.Map          // "channel:chatID" → reactionEntry
+	streamActive              sync.Map          // streamSuppressionKey → true (set when streamer.Finalize sent the message)
+	streamAuxiliaryTombstones sync.Map          // streamSuppressionKey → time.Time (drops late auxiliary messages after stream final)
+	channelHashes             map[string]string // channel name → config hash
+}
+
+type mediaStoreSetter interface {
+	SetMediaStore(s media.MediaStore)
+}
+
+// ManagerOption configures a channel Manager.
+type ManagerOption func(*Manager)
+
+// WithRuntimeEvents injects the runtime event bus used for channel observations.
+func WithRuntimeEvents(eventBus runtimeevents.Bus) ManagerOption {
+	return func(m *Manager) {
+		m.runtimeEvents = eventBus
+	}
+}
+
+// ChannelLifecyclePayload describes channel lifecycle runtime events.
+type ChannelLifecyclePayload struct {
+	Type  string `json:"type,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// ChannelOutboundPayload describes channel outbound message runtime events.
+type ChannelOutboundPayload struct {
+	Media            bool     `json:"media,omitempty"`
+	ContentLen       int      `json:"content_len,omitempty"`
+	MessageIDs       []string `json:"message_ids,omitempty"`
+	ReplyToMessageID string   `json:"reply_to_message_id,omitempty"`
+	Error            string   `json:"error,omitempty"`
+	Retries          int      `json:"retries,omitempty"`
 }
 
 type toolFeedbackMessageTracker interface {
@@ -134,6 +169,20 @@ func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
 	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
 }
 
+func outboundMessageHasAuxiliaryKind(msg bus.OutboundMessage) bool {
+	if len(msg.Context.Raw) == 0 {
+		return false
+	}
+	return strings.TrimSpace(msg.Context.Raw["message_kind"]) != ""
+}
+
+func outboundMessageIsFinal(msg bus.OutboundMessage) bool {
+	if len(msg.Context.Raw) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["outbound_kind"]), "final")
+}
+
 func outboundMessageBypassesPlaceholderEdit(msg bus.OutboundMessage) bool {
 	if len(msg.Context.Raw) == 0 {
 		return false
@@ -142,12 +191,33 @@ func outboundMessageBypassesPlaceholderEdit(msg bus.OutboundMessage) bool {
 	return strings.EqualFold(kind, "thought") || strings.EqualFold(kind, "tool_calls")
 }
 
+func outboundMessageEditPayload(msg bus.OutboundMessage, content string) map[string]any {
+	payload := map[string]any{
+		"content": content,
+	}
+	if len(msg.Context.Raw) == 0 {
+		return payload
+	}
+	if modelName := strings.TrimSpace(msg.Context.Raw["model_name"]); modelName != "" {
+		payload["model_name"] = modelName
+	}
+	return payload
+}
+
 func outboundMediaChannel(msg bus.OutboundMediaMessage) string {
 	return msg.Context.Channel
 }
 
 func outboundMediaChatID(msg bus.OutboundMediaMessage) string {
 	return msg.ChatID
+}
+
+func streamSuppressionKey(channel, chatID, sessionKey string) string {
+	key := channel + ":" + chatID
+	if strings.TrimSpace(sessionKey) == "" {
+		return key
+	}
+	return key + ":" + sessionKey
 }
 
 func trackedToolFeedbackMessageChatID(ch Channel, chatID string, outboundCtx *bus.InboundContext) string {
@@ -292,6 +362,7 @@ func (m *Manager) RecordReactionUndo(channel, chatID string, undo func()) {
 func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMessage, ch Channel) ([]string, bool) {
 	chatID := outboundMessageChatID(msg)
 	key := name + ":" + chatID
+	streamKey := streamSuppressionKey(name, chatID, msg.SessionKey)
 
 	// 1. Stop typing
 	if v, loaded := m.typingStops.LoadAndDelete(key); loaded {
@@ -308,38 +379,67 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 	}
 
 	isToolFeedback := outboundMessageIsToolFeedback(msg)
+	isAuxiliaryMessage := outboundMessageHasAuxiliaryKind(msg)
+	isFinalMessage := outboundMessageIsFinal(msg)
 	separateToolFeedbackMessages := m.toolFeedbackSeparateMessagesEnabled()
 
-	// 3. If a stream already finalized this chat, stale tool feedback must be
-	// dropped without consuming the final-response marker. Streaming finalization
-	// bypasses the worker queue, so older queued feedback can arrive before the
-	// normal final outbound message that cleans up the marker and placeholder.
-	if isToolFeedback {
-		if _, loaded := m.streamActive.Load(key); loaded {
+	// 3. If a stream already finalized this chat, stale auxiliary messages must
+	// be dropped without consuming the final-response marker. Streaming
+	// finalization bypasses the worker queue, so older queued feedback/thoughts
+	// can arrive before the normal final outbound message that cleans up the
+	// marker and placeholder.
+	if isAuxiliaryMessage {
+		if _, loaded := m.streamActive.Load(streamKey); loaded {
+			return nil, true
+		}
+		if m.streamAuxiliaryTombstoneActive(streamKey) {
 			return nil, true
 		}
 	}
 
-	// 4. If a stream already finalized this message, delete the placeholder and skip send
-	if _, loaded := m.streamActive.LoadAndDelete(key); loaded {
-		if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
-			if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
-				// Prefer deleting the placeholder (cleaner UX than editing to same content)
-				if deleter, ok := ch.(MessageDeleter); ok {
-					deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
-				} else if editor, ok := ch.(MessageEditor); ok {
-					editor.EditMessage(ctx, chatID, entry.id, msg.Content) // fallback
+	// 4. If a stream already finalized this turn, skip only the duplicate final
+	// outbound. Earlier queued visible messages must still be delivered.
+	if isFinalMessage {
+		if _, loaded := m.streamActive.LoadAndDelete(streamKey); loaded {
+			if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
+				if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
+					// Prefer deleting the placeholder (cleaner UX than editing to same content)
+					if deleter, ok := ch.(MessageDeleter); ok {
+						deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
+					} else if editor, ok := ch.(MessageEditor); ok {
+						if payloadEditor, ok := ch.(MessageEditorWithPayload); ok {
+							_ = payloadEditor.EditMessageWithPayload(
+								ctx,
+								chatID,
+								entry.id,
+								outboundMessageEditPayload(msg, msg.Content),
+							)
+						} else {
+							editor.EditMessage(ctx, chatID, entry.id, msg.Content) // fallback
+						}
+					}
 				}
 			}
-		}
-		if !isToolFeedback {
-			if separateToolFeedbackMessages {
-				clearTrackedToolFeedbackMessage(ch, chatID, &msg.Context)
-			} else {
-				dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
+			if !isToolFeedback {
+				if separateToolFeedbackMessages {
+					clearTrackedToolFeedbackMessage(ch, chatID, &msg.Context)
+				} else {
+					dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
+				}
 			}
+			return nil, true
 		}
-		return nil, true
+	}
+
+	if _, loaded := m.streamActive.Load(streamKey); loaded {
+		return nil, false
+	}
+	if m.streamActiveForChat(name, chatID) {
+		return nil, false
+	}
+
+	if !isAuxiliaryMessage {
+		m.streamAuxiliaryTombstones.Delete(streamKey)
 	}
 
 	if separateToolFeedbackMessages {
@@ -368,7 +468,18 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 					trackedContent = prepareToolFeedbackMessageContent(ch, msg.Content)
 					content = InitialAnimatedToolFeedbackContent(trackedContent)
 				}
-				if err := editor.EditMessage(ctx, chatID, entry.id, content); err == nil {
+				err := func() error {
+					if payloadEditor, ok := ch.(MessageEditorWithPayload); ok {
+						return payloadEditor.EditMessageWithPayload(
+							ctx,
+							chatID,
+							entry.id,
+							outboundMessageEditPayload(msg, content),
+						)
+					}
+					return editor.EditMessage(ctx, chatID, entry.id, content)
+				}()
+				if err == nil {
 					trackedChatID := trackedToolFeedbackMessageChatID(ch, chatID, &msg.Context)
 					if tracker, ok := ch.(toolFeedbackMessageTracker); ok && isToolFeedback {
 						tracker.RecordToolFeedbackMessage(trackedChatID, entry.id, trackedContent)
@@ -392,6 +503,7 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 func (m *Manager) preSendMedia(ctx context.Context, name string, msg bus.OutboundMediaMessage, ch Channel) {
 	chatID := outboundMediaChatID(msg)
 	key := name + ":" + chatID
+	streamKey := streamSuppressionKey(name, chatID, msg.SessionKey)
 
 	// 1. Stop typing
 	if v, loaded := m.typingStops.LoadAndDelete(key); loaded {
@@ -407,8 +519,9 @@ func (m *Manager) preSendMedia(ctx context.Context, name string, msg bus.Outboun
 		}
 	}
 
-	// 3. Clear any finalized stream marker for this chat before media delivery.
-	m.streamActive.LoadAndDelete(key)
+	// 3. Clear any finalized stream markers for this chat before media delivery.
+	m.streamActive.LoadAndDelete(streamKey)
+	m.streamAuxiliaryTombstones.Delete(streamKey)
 
 	if m.toolFeedbackSeparateMessagesEnabled() {
 		clearTrackedToolFeedbackMessage(ch, chatID, &msg.Context)
@@ -424,7 +537,12 @@ func (m *Manager) preSendMedia(ctx context.Context, name string, msg bus.Outboun
 	}
 }
 
-func NewManager(cfg *config.Config, messageBus *bus.MessageBus, store media.MediaStore) (*Manager, error) {
+func NewManager(
+	cfg *config.Config,
+	messageBus *bus.MessageBus,
+	store media.MediaStore,
+	opts ...ManagerOption,
+) (*Manager, error) {
 	m := &Manager{
 		channels:      make(map[string]Channel),
 		workers:       make(map[string]*channelWorker),
@@ -432,6 +550,11 @@ func NewManager(cfg *config.Config, messageBus *bus.MessageBus, store media.Medi
 		config:        cfg,
 		mediaStore:    store,
 		channelHashes: make(map[string]string),
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(m)
+		}
 	}
 
 	// Register as streaming delegate so the agent loop can obtain streamers
@@ -447,9 +570,25 @@ func NewManager(cfg *config.Config, messageBus *bus.MessageBus, store media.Medi
 	return m, nil
 }
 
+// SetMediaStore updates the store used by the manager and every channel that
+// accepts media store injection. Gateway reload creates a fresh store, so
+// keeping existing channels on the same store as the agent is required for
+// inbound media refs to remain resolvable after reload.
+func (m *Manager) SetMediaStore(store media.MediaStore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.mediaStore = store
+	for _, ch := range m.channels {
+		if setter, ok := ch.(mediaStoreSetter); ok {
+			setter.SetMediaStore(store)
+		}
+	}
+}
+
 // GetStreamer implements bus.StreamDelegate.
 // It checks if the named channel supports streaming and returns a Streamer.
-func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID string) (bus.Streamer, bool) {
+func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionKey string) (bus.Streamer, bool) {
 	m.mu.RLock()
 	ch, exists := m.channels[channelName]
 	m.mu.RUnlock()
@@ -473,49 +612,321 @@ func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID string) (
 	}
 
 	// Mark streamActive on Finalize so preSend knows to clean up the placeholder
-	key := channelName + ":" + chatID
-	return &finalizeHookStreamer{
-		Streamer: streamer,
-		onFinalize: func(finalizeCtx context.Context) {
-			if m.toolFeedbackSeparateMessagesEnabled() {
-				clearTrackedToolFeedbackMessage(
-					ch,
-					chatID,
-					&bus.InboundContext{
-						Channel: channelName,
-						ChatID:  chatID,
-					},
-				)
-			} else {
-				dismissTrackedToolFeedbackMessage(
-					finalizeCtx,
-					ch,
-					chatID,
-					&bus.InboundContext{
-						Channel: channelName,
-						ChatID:  chatID,
-					},
-				)
+	// and late auxiliary messages cannot leak after streaming produced a final.
+	streamKey := streamSuppressionKey(channelName, chatID, sessionKey)
+	placeholderKey := channelName + ":" + chatID
+	clearMarker := func() {
+		m.streamActive.Delete(streamKey)
+	}
+	onFinalize := func(finalizeCtx context.Context, finalContent string) {
+		if m.toolFeedbackSeparateMessagesEnabled() {
+			clearTrackedToolFeedbackMessage(
+				ch,
+				chatID,
+				&bus.InboundContext{
+					Channel: channelName,
+					ChatID:  chatID,
+				},
+			)
+		} else {
+			dismissTrackedToolFeedbackMessage(
+				finalizeCtx,
+				ch,
+				chatID,
+				&bus.InboundContext{
+					Channel: channelName,
+					ChatID:  chatID,
+				},
+			)
+		}
+		if v, loaded := m.placeholders.LoadAndDelete(placeholderKey); loaded {
+			if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
+				if deleter, ok := ch.(MessageDeleter); ok {
+					deleter.DeleteMessage(finalizeCtx, chatID, entry.id) // best effort
+				} else if editor, ok := ch.(MessageEditor); ok {
+					editor.EditMessage(finalizeCtx, chatID, entry.id, finalContent) // best effort fallback
+				}
 			}
-			m.streamActive.Store(key, true)
-		},
+		}
+		m.streamActive.Store(streamKey, true)
+		m.streamAuxiliaryTombstones.Store(streamKey, time.Now())
+	}
+
+	if m.config != nil && m.config.Agents.Defaults.SplitOnMarker {
+		return &splitMarkerStreamer{
+			current:     streamer,
+			reasoning:   reasoningStreamerFrom(streamer),
+			begin:       func(beginCtx context.Context) (bus.Streamer, error) { return sc.BeginStream(beginCtx, chatID) },
+			onFinalize:  onFinalize,
+			clearMarker: clearMarker,
+		}, true
+	}
+
+	return &finalizeHookStreamer{
+		Streamer:    streamer,
+		clearMarker: clearMarker,
+		onFinalize:  onFinalize,
 	}, true
+}
+
+func reasoningStreamerFrom(streamer bus.Streamer) bus.ReasoningStreamer {
+	if reasoningStreamer, ok := streamer.(bus.ReasoningStreamer); ok {
+		return reasoningStreamer
+	}
+	return nil
+}
+
+type modelNameStreamer interface {
+	SetModelName(modelName string)
+}
+
+func setStreamerModelName(streamer any, modelName string) {
+	setter, ok := streamer.(modelNameStreamer)
+	if !ok {
+		return
+	}
+	setter.SetModelName(modelName)
+}
+
+// splitMarkerStreamer turns accumulated streaming text containing
+// MessageSplitMarker into separate channel stream messages.
+type splitMarkerStreamer struct {
+	mu             sync.Mutex
+	current        bus.Streamer
+	reasoning      bus.ReasoningStreamer
+	begin          func(context.Context) (bus.Streamer, error)
+	completedParts int
+	finalized      bool
+	onFinalize     func(context.Context, string)
+	clearMarker    func()
+	modelName      string
+}
+
+func (s *splitMarkerStreamer) Update(ctx context.Context, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updateLocked(ctx, content)
+}
+
+func (s *splitMarkerStreamer) Finalize(ctx context.Context, content string) error {
+	return s.FinalizeWithContext(ctx, content, nil)
+}
+
+func (s *splitMarkerStreamer) FinalizeWithContext(ctx context.Context, content string, usage *bus.ContextUsage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.finalizeLocked(ctx, content, usage); err != nil {
+		return err
+	}
+	s.runFinalizeHook(ctx, content)
+	return nil
+}
+
+func (s *splitMarkerStreamer) UpdateReasoning(ctx context.Context, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reasoning == nil {
+		return nil
+	}
+	setStreamerModelName(s.reasoning, s.modelName)
+	return s.reasoning.UpdateReasoning(ctx, content)
+}
+
+func (s *splitMarkerStreamer) FinalizeReasoning(ctx context.Context, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reasoning == nil {
+		return nil
+	}
+	setStreamerModelName(s.reasoning, s.modelName)
+	return s.reasoning.FinalizeReasoning(ctx, content)
+}
+
+func (s *splitMarkerStreamer) SetModelName(modelName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.modelName = strings.TrimSpace(modelName)
+	setStreamerModelName(s.current, s.modelName)
+	setStreamerModelName(s.reasoning, s.modelName)
+}
+
+func (s *splitMarkerStreamer) Cancel(ctx context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.current != nil {
+		s.current.Cancel(ctx)
+	}
+}
+
+func (s *splitMarkerStreamer) ClearFinalizedStreamMarker() {
+	if s.clearMarker != nil {
+		s.clearMarker()
+	}
+}
+
+func (s *splitMarkerStreamer) updateLocked(ctx context.Context, content string) error {
+	parts := strings.Split(content, MessageSplitMarker)
+	completedLimit := len(parts) - 1
+	if err := s.finalizeCompletedPartsLocked(ctx, parts, completedLimit, nil); err != nil {
+		return err
+	}
+	active := strings.TrimSpace(parts[len(parts)-1])
+	if active == "" {
+		return nil
+	}
+	if err := s.ensureCurrentLocked(ctx); err != nil {
+		return err
+	}
+	return s.current.Update(ctx, active)
+}
+
+func (s *splitMarkerStreamer) finalizeLocked(ctx context.Context, content string, usage *bus.ContextUsage) error {
+	parts := strings.Split(content, MessageSplitMarker)
+	return s.finalizeCompletedPartsLocked(ctx, parts, len(parts), usage)
+}
+
+func (s *splitMarkerStreamer) finalizeCompletedPartsLocked(
+	ctx context.Context,
+	parts []string,
+	limit int,
+	usage *bus.ContextUsage,
+) error {
+	for s.completedParts < limit {
+		content := strings.TrimSpace(parts[s.completedParts])
+		isLast := s.completedParts == limit-1
+		if content != "" {
+			if err := s.ensureCurrentLocked(ctx); err != nil {
+				return err
+			}
+			if isLast && usage != nil {
+				if contextStreamer, ok := s.current.(bus.ContextUsageStreamer); ok {
+					if err := contextStreamer.FinalizeWithContext(ctx, content, usage); err != nil {
+						return err
+					}
+				} else if err := s.current.Finalize(ctx, content); err != nil {
+					return err
+				}
+			} else if err := s.current.Finalize(ctx, content); err != nil {
+				return err
+			}
+			s.current = nil
+		}
+		s.completedParts++
+	}
+	return nil
+}
+
+func (s *splitMarkerStreamer) ensureCurrentLocked(ctx context.Context) error {
+	if s.current != nil {
+		return nil
+	}
+	if s.begin == nil {
+		return fmt.Errorf("streamer is not initialized")
+	}
+	streamer, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	s.current = streamer
+	setStreamerModelName(s.current, s.modelName)
+	return nil
+}
+
+func (s *splitMarkerStreamer) runFinalizeHook(ctx context.Context, content string) {
+	if s.finalized {
+		return
+	}
+	s.finalized = true
+	if s.onFinalize != nil {
+		s.onFinalize(ctx, content)
+	}
+}
+
+func (m *Manager) streamAuxiliaryTombstoneActive(key string) bool {
+	v, ok := m.streamAuxiliaryTombstones.Load(key)
+	if !ok {
+		return false
+	}
+	createdAt, ok := v.(time.Time)
+	if !ok || time.Since(createdAt) > streamAuxiliaryTombstoneTTL {
+		m.streamAuxiliaryTombstones.Delete(key)
+		return false
+	}
+	return true
+}
+
+func (m *Manager) streamActiveForChat(channel, chatID string) bool {
+	chatKey := streamSuppressionKey(channel, chatID, "")
+	found := false
+	m.streamActive.Range(func(key, _ any) bool {
+		keyString, ok := key.(string)
+		if !ok {
+			return true
+		}
+		if keyString == chatKey || strings.HasPrefix(keyString, chatKey+":") {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // finalizeHookStreamer wraps a Streamer to run a hook on Finalize.
 type finalizeHookStreamer struct {
 	Streamer
-	onFinalize func(context.Context)
+	onFinalize  func(context.Context, string)
+	clearMarker func()
 }
 
 func (s *finalizeHookStreamer) Finalize(ctx context.Context, content string) error {
 	if err := s.Streamer.Finalize(ctx, content); err != nil {
 		return err
 	}
-	if s.onFinalize != nil {
-		s.onFinalize(ctx)
+	s.runFinalizeHook(ctx, content)
+	return nil
+}
+
+func (s *finalizeHookStreamer) FinalizeWithContext(ctx context.Context, content string, usage *bus.ContextUsage) error {
+	if streamer, ok := s.Streamer.(bus.ContextUsageStreamer); ok {
+		if err := streamer.FinalizeWithContext(ctx, content, usage); err != nil {
+			return err
+		}
+	} else if err := s.Streamer.Finalize(ctx, content); err != nil {
+		return err
+	}
+	s.runFinalizeHook(ctx, content)
+	return nil
+}
+
+func (s *finalizeHookStreamer) UpdateReasoning(ctx context.Context, content string) error {
+	if streamer, ok := s.Streamer.(bus.ReasoningStreamer); ok {
+		return streamer.UpdateReasoning(ctx, content)
 	}
 	return nil
+}
+
+func (s *finalizeHookStreamer) FinalizeReasoning(ctx context.Context, content string) error {
+	if streamer, ok := s.Streamer.(bus.ReasoningStreamer); ok {
+		return streamer.FinalizeReasoning(ctx, content)
+	}
+	return nil
+}
+
+func (s *finalizeHookStreamer) SetModelName(modelName string) {
+	setStreamerModelName(s.Streamer, strings.TrimSpace(modelName))
+}
+
+func (s *finalizeHookStreamer) runFinalizeHook(ctx context.Context, content string) {
+	if s.onFinalize != nil {
+		s.onFinalize(ctx, content)
+	}
+}
+
+func (s *finalizeHookStreamer) ClearFinalizedStreamMarker() {
+	if s.clearMarker != nil {
+		s.clearMarker()
+	}
 }
 
 // initChannel is a helper that looks up a factory by type name and creates the channel.
@@ -544,7 +955,7 @@ func (m *Manager) initChannel(typeName, channelName string) {
 	} else {
 		// Inject MediaStore if channel supports it
 		if m.mediaStore != nil {
-			if setter, ok := ch.(interface{ SetMediaStore(s media.MediaStore) }); ok {
+			if setter, ok := ch.(mediaStoreSetter); ok {
 				setter.SetMediaStore(m.mediaStore)
 			}
 		}
@@ -557,6 +968,13 @@ func (m *Manager) initChannel(typeName, channelName string) {
 			setter.SetOwner(ch)
 		}
 		m.channels[channelName] = ch
+		m.publishChannelEvent(
+			runtimeevents.KindChannelLifecycleInitialized,
+			channelName,
+			runtimeevents.Scope{Channel: channelName},
+			runtimeevents.SeverityInfo,
+			ChannelLifecyclePayload{Type: typeName},
+		)
 		logger.InfoCF("channels", "Channel enabled successfully", map[string]any{
 			"channel": channelName,
 			"type":    typeName,
@@ -623,10 +1041,14 @@ func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channe
 		return bc, true
 	case *config.TeamsWebhookSettings:
 		return bc, true
+	case *config.SlackWebhookSettings:
+		return bc, true
 	case *config.DiscordSettings:
 		return bc, settings.Token.String() != ""
 	case *config.VKSettings:
 		return bc, settings.GroupID != 0 && settings.Token.String() != ""
+	case *config.MQTTSettings:
+		return bc, settings.Broker != "" && settings.AgentID != ""
 	}
 
 	return bc, bc.Enabled
@@ -702,6 +1124,13 @@ func (m *Manager) registerHTTPHandlersLocked() {
 func (m *Manager) registerChannelHTTPHandler(name string, ch Channel) {
 	if wh, ok := ch.(WebhookHandler); ok {
 		m.mux.Handle(wh.WebhookPath(), wh)
+		m.publishChannelEvent(
+			runtimeevents.KindChannelWebhookRegistered,
+			name,
+			runtimeevents.Scope{Channel: name},
+			runtimeevents.SeverityInfo,
+			ChannelLifecyclePayload{Type: channelTypeForEvent(m, name)},
+		)
 		logger.InfoCF("channels", "Webhook handler registered", map[string]any{
 			"channel": name,
 			"path":    wh.WebhookPath(),
@@ -721,6 +1150,13 @@ func (m *Manager) registerChannelHTTPHandler(name string, ch Channel) {
 func (m *Manager) unregisterChannelHTTPHandler(name string, ch Channel) {
 	if wh, ok := ch.(WebhookHandler); ok {
 		m.mux.Unhandle(wh.WebhookPath())
+		m.publishChannelEvent(
+			runtimeevents.KindChannelWebhookUnregistered,
+			name,
+			runtimeevents.Scope{Channel: name},
+			runtimeevents.SeverityInfo,
+			ChannelLifecyclePayload{Type: channelTypeForEvent(m, name)},
+		)
 		logger.InfoCF("channels", "Webhook handler unregistered", map[string]any{
 			"channel": name,
 			"path":    wh.WebhookPath(),
@@ -759,6 +1195,13 @@ func (m *Manager) StartAll(ctx context.Context) error {
 				"channel": name,
 				"error":   err.Error(),
 			})
+			m.publishChannelEvent(
+				runtimeevents.KindChannelLifecycleStartFailed,
+				name,
+				runtimeevents.Scope{Channel: name},
+				runtimeevents.SeverityError,
+				ChannelLifecyclePayload{Type: channelTypeForEvent(m, name), Error: err.Error()},
+			)
 			failedStarts = append(failedStarts, fmt.Errorf("channel %s: %w", name, err))
 			failedNames = append(failedNames, name)
 			continue
@@ -774,6 +1217,13 @@ func (m *Manager) StartAll(ctx context.Context) error {
 		m.workers[name] = w
 		go m.runWorker(dispatchCtx, name, w)
 		go m.runMediaWorker(dispatchCtx, name, w)
+		m.publishChannelEvent(
+			runtimeevents.KindChannelLifecycleStarted,
+			name,
+			runtimeevents.Scope{Channel: name},
+			runtimeevents.SeverityInfo,
+			ChannelLifecyclePayload{Type: channelType},
+		)
 	}
 
 	if len(m.channels) > 0 && len(m.workers) == 0 {
@@ -910,7 +1360,15 @@ func (m *Manager) StopAll(ctx context.Context) error {
 				"channel": name,
 				"error":   err.Error(),
 			})
+			continue
 		}
+		m.publishChannelEvent(
+			runtimeevents.KindChannelLifecycleStopped,
+			name,
+			runtimeevents.Scope{Channel: name},
+			runtimeevents.SeverityInfo,
+			ChannelLifecyclePayload{Type: channelTypeForEvent(m, name)},
+		)
 	}
 
 	logger.InfoC("channels", "All channels stopped")
@@ -958,7 +1416,11 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 
 			// Step 1: Try marker-based splitting if enabled.
 			// Tool feedback must stay a single message, so it skips marker splitting.
-			if m.config != nil && m.config.Agents.Defaults.SplitOnMarker && !outboundMessageIsToolFeedback(msg) {
+			// Stream-final duplicate responses must also stay intact so preSend can
+			// consume the whole final message before any marker chunk leaks.
+			if m.finalizedStreamActiveForMessage(name, msg) {
+				chunks = []string{msg.Content}
+			} else if m.config != nil && m.config.Agents.Defaults.SplitOnMarker && !outboundMessageIsToolFeedback(msg) {
 				if markerChunks := SplitByMarker(msg.Content); len(markerChunks) > 1 {
 					for _, chunk := range markerChunks {
 						chunkMsg := msg
@@ -983,6 +1445,18 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 			return
 		}
 	}
+}
+
+func (m *Manager) finalizedStreamActiveForMessage(channelName string, msg bus.OutboundMessage) bool {
+	if m == nil || !outboundMessageIsFinal(msg) {
+		return false
+	}
+	chatID := outboundMessageChatID(msg)
+	if strings.TrimSpace(channelName) == "" || strings.TrimSpace(chatID) == "" {
+		return false
+	}
+	_, active := m.streamActive.Load(streamSuppressionKey(channelName, chatID, msg.SessionKey))
+	return active
 }
 
 // splitOutboundMessageContent splits regular outbound content by maxLen, but
@@ -1020,11 +1494,23 @@ func (m *Manager) sendWithRetry(
 	// Rate limit: wait for token
 	if err := w.limiter.Wait(ctx); err != nil {
 		// ctx canceled, shutting down
+		m.publishChannelEvent(
+			runtimeevents.KindChannelRateLimited,
+			name,
+			scopeFromOutboundContext(msg.Context),
+			runtimeevents.SeverityWarn,
+			ChannelOutboundPayload{
+				ContentLen:       len([]rune(msg.Content)),
+				ReplyToMessageID: msg.ReplyToMessageID,
+				Error:            err.Error(),
+			},
+		)
 		return nil, false
 	}
 
 	// Pre-send: stop typing and try to edit placeholder
 	if msgIDs, handled := m.preSend(ctx, name, msg, w.ch); handled {
+		m.publishOutboundSent(name, msg, msgIDs)
 		return msgIDs, true
 	}
 
@@ -1033,6 +1519,7 @@ func (m *Manager) sendWithRetry(
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		msgIDs, lastErr = w.ch.Send(ctx, msg)
 		if lastErr == nil {
+			m.publishOutboundSent(name, msg, msgIDs)
 			return msgIDs, true
 		}
 
@@ -1072,6 +1559,7 @@ func (m *Manager) sendWithRetry(
 		"error":   lastErr.Error(),
 		"retries": maxRetries,
 	})
+	m.publishOutboundFailed(name, msg, lastErr, false)
 
 	return nil, false
 }
@@ -1134,6 +1622,7 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 		func(ctx context.Context, w *channelWorker, msg bus.OutboundMessage) bool {
 			select {
 			case w.queue <- msg:
+				m.publishOutboundQueued(outboundMessageChannel(msg), msg)
 				return true
 			case <-ctx.Done():
 				return false
@@ -1154,6 +1643,7 @@ func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
 		func(ctx context.Context, w *channelWorker, msg bus.OutboundMediaMessage) bool {
 			select {
 			case w.mediaQueue <- msg:
+				m.publishOutboundMediaQueued(outboundMediaChannel(msg), msg)
 				return true
 			case <-ctx.Done():
 				return false
@@ -1203,6 +1693,16 @@ func (m *Manager) sendMediaWithRetry(
 
 	// Rate limit: wait for token
 	if err := w.limiter.Wait(ctx); err != nil {
+		m.publishChannelEvent(
+			runtimeevents.KindChannelRateLimited,
+			name,
+			scopeFromOutboundContext(msg.Context),
+			runtimeevents.SeverityWarn,
+			ChannelOutboundPayload{
+				Media: true,
+				Error: err.Error(),
+			},
+		)
 		return nil, err
 	}
 
@@ -1214,6 +1714,7 @@ func (m *Manager) sendMediaWithRetry(
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		msgIDs, lastErr = ms.SendMedia(ctx, msg)
 		if lastErr == nil {
+			m.publishOutboundMediaSent(name, msg, msgIDs)
 			return msgIDs, nil
 		}
 
@@ -1253,12 +1754,13 @@ func (m *Manager) sendMediaWithRetry(
 		"error":   lastErr.Error(),
 		"retries": maxRetries,
 	})
+	m.publishOutboundMediaFailed(name, msg, lastErr)
 	return nil, lastErr
 }
 
-// runTTLJanitor periodically scans the typingStops and placeholders maps
-// and evicts entries that have exceeded their TTL. This prevents memory
-// accumulation when outbound paths fail to trigger preSend (e.g. LLM errors).
+// runTTLJanitor periodically scans the typingStops, placeholders, and stream
+// tombstone maps and evicts entries that have exceeded their TTL. This prevents
+// memory accumulation when outbound paths fail to trigger preSend (e.g. LLM errors).
 func (m *Manager) runTTLJanitor(ctx context.Context) {
 	ticker := time.NewTicker(janitorInterval)
 	defer ticker.Stop()
@@ -1293,6 +1795,12 @@ func (m *Manager) runTTLJanitor(ctx context.Context) {
 					if now.Sub(entry.createdAt) > placeholderTTL {
 						m.placeholders.Delete(key)
 					}
+				}
+				return true
+			})
+			m.streamAuxiliaryTombstones.Range(func(key, value any) bool {
+				if createdAt, ok := value.(time.Time); !ok || now.Sub(createdAt) > streamAuxiliaryTombstoneTTL {
+					m.streamAuxiliaryTombstones.Delete(key)
 				}
 				return true
 			})
@@ -1390,6 +1898,13 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 				"channel": name,
 				"error":   err.Error(),
 			})
+			m.publishChannelEvent(
+				runtimeevents.KindChannelLifecycleStartFailed,
+				name,
+				runtimeevents.Scope{Channel: name},
+				runtimeevents.SeverityError,
+				ChannelLifecyclePayload{Type: channelTypeForEvent(m, name), Error: err.Error()},
+			)
 			continue
 		}
 		// Lazily create worker only after channel starts successfully
@@ -1403,6 +1918,13 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 		m.workers[name] = w
 		go m.runWorker(dispatchCtx, name, w)
 		go m.runMediaWorker(dispatchCtx, name, w)
+		m.publishChannelEvent(
+			runtimeevents.KindChannelLifecycleStarted,
+			name,
+			runtimeevents.Scope{Channel: name},
+			runtimeevents.SeverityInfo,
+			ChannelLifecyclePayload{Type: channelType},
+		)
 		deferFuncs = append(deferFuncs, func() {
 			m.RegisterChannel(name, channel)
 		})
@@ -1525,6 +2047,7 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 	if wExists && w != nil {
 		select {
 		case w.queue <- msg:
+			m.publishOutboundQueued(channelName, msg)
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()

@@ -15,8 +15,13 @@ import rehypeRaw from "rehype-raw"
 import rehypeSanitize from "rehype-sanitize"
 import remarkGfm from "remark-gfm"
 
+import {
+  MessageCodeBlock,
+  MarkdownCodeBlock,
+} from "@/components/chat/message-code-block"
 import { Button } from "@/components/ui/button"
 import { formatMessageTime } from "@/hooks/use-pico-chat"
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard"
 import { cn } from "@/lib/utils"
 import {
   type AssistantMessageKind,
@@ -28,6 +33,7 @@ interface AssistantMessageProps {
   content: string
   attachments?: ChatAttachment[]
   kind?: AssistantMessageKind
+  modelName?: string
   toolCalls?: ChatToolCall[]
   timestamp?: string | number
 }
@@ -36,11 +42,12 @@ export function AssistantMessage({
   content,
   attachments = [],
   kind = "normal",
+  modelName,
   toolCalls = [],
   timestamp = "",
 }: AssistantMessageProps) {
   const { t } = useTranslation()
-  const [isCopied, setIsCopied] = useState(false)
+  const { copy, isCopied } = useCopyToClipboard()
   const isThought = kind === "thought"
   const isToolCalls = kind === "tool_calls"
   const isCollapsedBlock = isThought || isToolCalls
@@ -55,24 +62,26 @@ export function AssistantMessage({
   const [isExpanded, setIsExpanded] = useState(true)
   const formattedTimestamp =
     timestamp !== "" ? formatMessageTime(timestamp) : ""
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(content).then(() => {
-      setIsCopied(true)
-      setTimeout(() => setIsCopied(false), 2000)
-    })
-  }
-
   const collapsedLabel = isThought
     ? t("chat.reasoningLabel")
     : t("chat.toolCallsLabel")
+  const copyMessageLabel = isCopied
+    ? t("chat.copiedLabel")
+    : t("chat.copyMessage")
+  const trimmedModelName = modelName?.trim() ?? ""
 
   return (
     <div className="group flex w-full flex-col gap-1.5">
       {!isCollapsedBlock && (
-        <div className="text-muted-foreground/60 flex items-center justify-between gap-2 px-1 text-xs opacity-70">
+          <div className="text-muted-foreground/60 flex items-center justify-between gap-2 px-1 text-xs opacity-70">
           <div className="flex items-center gap-2">
             <span>PicoClaw</span>
+            {trimmedModelName && (
+              <>
+                <span className="opacity-50">•</span>
+                <span>{trimmedModelName}</span>
+              </>
+            )}
             {formattedTimestamp && (
               <>
                 <span className="opacity-50">•</span>
@@ -104,6 +113,9 @@ export function AssistantMessage({
                   <IconTool className="size-3.5" />
                 )}
                 <span>{collapsedLabel}</span>
+                {trimmedModelName && (
+                  <span className="text-muted-foreground/45">{trimmedModelName}</span>
+                )}
               </div>
               <IconChevronDown
                 className={cn(
@@ -147,6 +159,9 @@ export function AssistantMessage({
                               rehypeSanitize,
                               rehypeHighlight,
                             ]}
+                            components={{
+                              pre: MarkdownCodeBlock,
+                            }}
                           >
                             {explanation}
                           </ReactMarkdown>
@@ -165,15 +180,20 @@ export function AssistantMessage({
                           {t("chat.toolCallFunctionLabel")}
                         </div>
                         <div className="bg-background/55 border-border/25 space-y-2 rounded-lg border px-3 py-2.5">
-                          {toolName && (
+                          {toolName && !toolArguments && (
                             <div className="text-foreground/75 font-mono text-[12px] font-semibold">
                               {toolName}
                             </div>
                           )}
                           {toolArguments && (
-                            <pre className="text-muted-foreground/75 overflow-x-auto font-mono text-[12px] leading-relaxed break-words whitespace-pre-wrap">
-                              {toolArguments}
-                            </pre>
+                            <MessageCodeBlock
+                              code={toolArguments}
+                              language="json"
+                              label={toolName || t("chat.toolCallArgumentsLabel")}
+                              className="my-0 shadow-none"
+                              bodyClassName="px-3 py-2 text-[12px] leading-relaxed"
+                              wrapLongLines
+                            />
                           )}
                         </div>
                       </div>
@@ -195,6 +215,9 @@ export function AssistantMessage({
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 rehypePlugins={[rehypeRaw, rehypeSanitize, rehypeHighlight]}
+                components={{
+                  pre: MarkdownCodeBlock,
+                }}
               >
                 {content}
               </ReactMarkdown>
@@ -208,7 +231,9 @@ export function AssistantMessage({
               className={cn(
                 "bg-background/50 hover:bg-background/80 absolute top-2 right-2 h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100",
               )}
-              onClick={handleCopy}
+              onClick={() => void copy(content)}
+              aria-label={copyMessageLabel}
+              title={copyMessageLabel}
             >
               {isCopied ? (
                 <IconCheck className="h-4 w-4 text-green-500" />

@@ -35,6 +35,11 @@ type LLMResponse struct {
 	ReasoningDetails []ReasoningDetail `json:"reasoning_details"`
 }
 
+type StreamChunk struct {
+	Content          string
+	ReasoningContent string
+}
+
 type ReasoningDetail struct {
 	Format string `json:"format"`
 	Index  int    `json:"index"`
@@ -81,6 +86,7 @@ type Attachment struct {
 type Message struct {
 	Role             string         `json:"role"`
 	Content          string         `json:"content"`
+	ModelName        string         `json:"model_name,omitempty"`
 	Media            []string       `json:"media,omitempty"`
 	Attachments      []Attachment   `json:"attachments,omitempty"`
 	ReasoningContent string         `json:"reasoning_content,omitempty"`

@@ -20,11 +20,54 @@ export interface CoreConfigForm {
   maxToolIterations: string
   summarizeMessageThreshold: string
   summarizeTokenPercent: string
+  turnProfile: TurnProfileForm
   dmScope: string
   heartbeatEnabled: boolean
   heartbeatInterval: string
   devicesEnabled: boolean
   monitorUSB: boolean
+  mcpEnabled: boolean
+  mcpDiscoveryEnabled: boolean
+  mcpDiscoveryTTL: string
+  mcpDiscoveryMaxSearchResults: string
+  mcpDiscoveryUseBM25: boolean
+  mcpDiscoveryUseRegex: boolean
+  mcpServers: MCPServerForm[]
+  evolutionEnabled: boolean
+  evolutionMode: string
+  evolutionStateDir: string
+  evolutionMinTaskCount: string
+  evolutionMinSuccessRatio: string
+  evolutionColdPathTrigger: string
+  evolutionColdPathTimesText: string
+}
+
+export type MCPServerType = "http" | "sse" | "stdio"
+
+export type TurnProfileMode = "default" | "off" | "custom"
+
+export interface TurnProfileForm {
+  enabled: boolean
+  historyMode: Exclude<TurnProfileMode, "custom">
+  systemPromptMode: Exclude<TurnProfileMode, "custom">
+  skillsMode: TurnProfileMode
+  skillsAllowText: string
+  toolsMode: TurnProfileMode
+  toolsAllowText: string
+}
+
+export interface MCPServerForm {
+  id: string
+  name: string
+  enabled: boolean
+  deferredOverride: boolean | null
+  type: MCPServerType
+  url: string
+  command: string
+  argsText: string
+  envText: string
+  envFile: string
+  headersText: string
 }
 
 export interface LauncherForm {
@@ -86,11 +129,34 @@ export const EMPTY_FORM: CoreConfigForm = {
   maxToolIterations: "50",
   summarizeMessageThreshold: "20",
   summarizeTokenPercent: "75",
+  turnProfile: {
+    enabled: false,
+    historyMode: "default",
+    systemPromptMode: "default",
+    skillsMode: "default",
+    skillsAllowText: "",
+    toolsMode: "default",
+    toolsAllowText: "",
+  },
   dmScope: "per-channel-peer",
   heartbeatEnabled: true,
   heartbeatInterval: "30",
   devicesEnabled: false,
   monitorUSB: true,
+  mcpEnabled: false,
+  mcpDiscoveryEnabled: false,
+  mcpDiscoveryTTL: "5",
+  mcpDiscoveryMaxSearchResults: "5",
+  mcpDiscoveryUseBM25: true,
+  mcpDiscoveryUseRegex: false,
+  mcpServers: [],
+  evolutionEnabled: false,
+  evolutionMode: "observe",
+  evolutionStateDir: "",
+  evolutionMinTaskCount: "2",
+  evolutionMinSuccessRatio: "0.7",
+  evolutionColdPathTrigger: "after_turn",
+  evolutionColdPathTimesText: "",
 }
 
 export const EMPTY_LAUNCHER_FORM: LauncherForm = {
@@ -116,6 +182,10 @@ function asBool(value: unknown): boolean {
   return value === true
 }
 
+function asOptionalBool(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null
+}
+
 function asNumberString(value: unknown, fallback: string): string {
   if (typeof value === "number" && Number.isFinite(value)) {
     return String(value)
@@ -126,6 +196,94 @@ function asNumberString(value: unknown, fallback: string): string {
   return fallback
 }
 
+function toMCPServerType(value: unknown): MCPServerType {
+  if (value === "http" || value === "sse") {
+    return value
+  }
+  return "stdio"
+}
+
+function makeMCPServerID(name: string): string {
+  const encoded = encodeURIComponent(name)
+  if (encoded.length > 0) {
+    return `mcp-${encoded}`
+  }
+  return `mcp-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function mapMCPServers(value: unknown): MCPServerForm[] {
+  const servers = asRecord(value)
+  return Object.entries(servers).map(([name, rawConfig]) => {
+    const cfg = asRecord(rawConfig)
+    const argsList = Array.isArray(cfg.args)
+      ? cfg.args.filter((item): item is string => typeof item === "string")
+      : []
+    const url = asString(cfg.url)
+    const type =
+      cfg.type === undefined
+        ? url
+          ? "sse"
+          : "stdio"
+        : toMCPServerType(cfg.type)
+    const env = asRecord(cfg.env)
+    const headers = asRecord(cfg.headers)
+
+    return {
+      id: makeMCPServerID(name),
+      name,
+      enabled: cfg.enabled !== false,
+      deferredOverride: asOptionalBool(cfg.deferred),
+      type,
+      url,
+      command: asString(cfg.command),
+      argsText: argsList.join("\n"),
+      envText: JSON.stringify(env, null, 2),
+      envFile: asString(cfg.env_file),
+      headersText: JSON.stringify(headers, null, 2),
+    }
+  })
+}
+
+function toTurnProfileMode(value: unknown): TurnProfileMode {
+  if (value === "off" || value === "custom") {
+    return value
+  }
+  return "default"
+}
+
+function toBasicTurnProfileMode(
+  value: unknown,
+): Exclude<TurnProfileMode, "custom"> {
+  return value === "off" ? "off" : "default"
+}
+
+function allowListText(value: unknown): string {
+  if (!Array.isArray(value)) {
+    return ""
+  }
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .join("\n")
+}
+
+function mapTurnProfile(value: unknown): TurnProfileForm {
+  const profile = asRecord(value)
+  const history = asRecord(profile.history)
+  const systemPrompt = asRecord(profile.system_prompt)
+  const skills = asRecord(profile.skills)
+  const tools = asRecord(profile.tools)
+
+  return {
+    enabled: asBool(profile.enabled),
+    historyMode: toBasicTurnProfileMode(history.mode),
+    systemPromptMode: toBasicTurnProfileMode(systemPrompt.mode),
+    skillsMode: toTurnProfileMode(skills.mode),
+    skillsAllowText: allowListText(skills.allow),
+    toolsMode: toTurnProfileMode(tools.mode),
+    toolsAllowText: allowListText(tools.allow),
+  }
+}
+
 export function buildFormFromConfig(config: unknown): CoreConfigForm {
   const root = asRecord(config)
   const agents = asRecord(root.agents)
@@ -133,7 +291,10 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
   const session = asRecord(root.session)
   const heartbeat = asRecord(root.heartbeat)
   const devices = asRecord(root.devices)
+  const evolution = asRecord(root.evolution)
   const tools = asRecord(root.tools)
+  const mcp = asRecord(tools.mcp)
+  const mcpDiscovery = asRecord(mcp.discovery)
   const cron = asRecord(tools.cron)
   const exec = asRecord(tools.exec)
   const toolFeedback = asRecord(defaults.tool_feedback)
@@ -211,6 +372,7 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
       defaults.summarize_token_percent,
       EMPTY_FORM.summarizeTokenPercent,
     ),
+    turnProfile: mapTurnProfile(defaults.turn_profile),
     dmScope: asString(session.dm_scope) || EMPTY_FORM.dmScope,
     heartbeatEnabled:
       heartbeat.enabled === undefined
@@ -228,6 +390,52 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
       devices.monitor_usb === undefined
         ? EMPTY_FORM.monitorUSB
         : asBool(devices.monitor_usb),
+    mcpEnabled:
+      mcp.enabled === undefined ? EMPTY_FORM.mcpEnabled : asBool(mcp.enabled),
+    mcpDiscoveryEnabled:
+      mcpDiscovery.enabled === undefined
+        ? EMPTY_FORM.mcpDiscoveryEnabled
+        : asBool(mcpDiscovery.enabled),
+    mcpDiscoveryTTL: asNumberString(
+      mcpDiscovery.ttl,
+      EMPTY_FORM.mcpDiscoveryTTL,
+    ),
+    mcpDiscoveryMaxSearchResults: asNumberString(
+      mcpDiscovery.max_search_results,
+      EMPTY_FORM.mcpDiscoveryMaxSearchResults,
+    ),
+    mcpDiscoveryUseBM25:
+      mcpDiscovery.use_bm25 === undefined
+        ? EMPTY_FORM.mcpDiscoveryUseBM25
+        : asBool(mcpDiscovery.use_bm25),
+    mcpDiscoveryUseRegex:
+      mcpDiscovery.use_regex === undefined
+        ? EMPTY_FORM.mcpDiscoveryUseRegex
+        : asBool(mcpDiscovery.use_regex),
+    mcpServers: mapMCPServers(mcp.servers),
+    evolutionEnabled:
+      evolution.enabled === undefined
+        ? EMPTY_FORM.evolutionEnabled
+        : asBool(evolution.enabled),
+    evolutionMode: asString(evolution.mode) || EMPTY_FORM.evolutionMode,
+    evolutionStateDir:
+      asString(evolution.state_dir) || EMPTY_FORM.evolutionStateDir,
+    evolutionMinTaskCount: asNumberString(
+      evolution.min_task_count,
+      EMPTY_FORM.evolutionMinTaskCount,
+    ),
+    evolutionMinSuccessRatio: asNumberString(
+      evolution.min_success_ratio,
+      EMPTY_FORM.evolutionMinSuccessRatio,
+    ),
+    evolutionColdPathTrigger:
+      asString(evolution.cold_path_trigger) ||
+      EMPTY_FORM.evolutionColdPathTrigger,
+    evolutionColdPathTimesText: Array.isArray(evolution.cold_path_times)
+      ? evolution.cold_path_times
+          .filter((value): value is string => typeof value === "string")
+          .join("\n")
+      : EMPTY_FORM.evolutionColdPathTimesText,
   }
 }
 
@@ -239,6 +447,24 @@ export function parseIntField(
   const value = Number(rawValue)
   if (!Number.isInteger(value)) {
     throw new Error(`${label} must be an integer.`)
+  }
+  if (options.min !== undefined && value < options.min) {
+    throw new Error(`${label} must be >= ${options.min}.`)
+  }
+  if (options.max !== undefined && value > options.max) {
+    throw new Error(`${label} must be <= ${options.max}.`)
+  }
+  return value
+}
+
+export function parseFloatField(
+  rawValue: string,
+  label: string,
+  options: { min?: number; max?: number } = {},
+): number {
+  const value = Number(rawValue)
+  if (!Number.isFinite(value)) {
+    throw new Error(`${label} must be a number.`)
   }
   if (options.min !== undefined && value < options.min) {
     throw new Error(`${label} must be >= ${options.min}.`)
@@ -267,4 +493,35 @@ export function parseMultilineList(raw: string): string[] {
     .split("\n")
     .map((value) => value.trim())
     .filter((value) => value.length > 0)
+}
+
+export function parseJSONObjectField(
+  rawValue: string,
+  label: string,
+): Record<string, string> {
+  const trimmed = rawValue.trim()
+  if (trimmed === "") {
+    return {}
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    throw new Error(`${label} must be valid JSON.`)
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${label} must be a JSON object.`)
+  }
+
+  const entries = Object.entries(parsed as Record<string, unknown>)
+  const result: Record<string, string> = {}
+  for (const [key, value] of entries) {
+    if (typeof value !== "string") {
+      throw new Error(`${label}.${key} must be a string.`)
+    }
+    result[key] = value
+  }
+  return result
 }

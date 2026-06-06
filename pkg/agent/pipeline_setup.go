@@ -34,14 +34,19 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	}
 	ts.captureRestorePoint(history, summary)
 
-	messages := ts.agent.ContextBuilder.BuildMessagesFromPrompt(
-		promptBuildRequestForTurn(ts, history, summary, ts.userMessage, ts.media),
-	)
+	contextualSkills := ts.activeSkills
+	if ts.agent.ContextBuilder != nil {
+		contextualSkills = ts.agent.ContextBuilder.ResolveActiveSkillsForContext(ts.activeSkills)
+	}
+	ts.recordSkillContextSnapshot(skillContextTriggerInitialBuild, contextualSkills)
+	initialPromptReq := promptBuildRequestForTurn(ts, history, summary, ts.userMessage, ts.media, cfg)
+	initialPromptReq.ActiveSkills = append([]string(nil), contextualSkills...)
+	messages := ts.agent.ContextBuilder.BuildMessagesFromPrompt(initialPromptReq)
 
 	messages = resolveMediaRefs(messages, p.MediaStore, maxMediaSize)
 
 	if !ts.opts.NoHistory {
-		toolDefs := ts.agent.Tools.ToProviderDefs()
+		toolDefs := filterToolsByTurnProfile(ts.agent.Tools.ToProviderDefs(), ts.profile)
 		if isOverContextBudget(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens) {
 			logger.WarnCF("agent", "Proactive compression: context budget exceeded before LLM call",
 				map[string]any{"session_key": ts.sessionKey})
@@ -72,9 +77,9 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 				history = resp.History
 				summary = resp.Summary
 			}
-			messages = ts.agent.ContextBuilder.BuildMessagesFromPrompt(
-				promptBuildRequestForTurn(ts, history, summary, ts.userMessage, ts.media),
-			)
+			rebuildPromptReq := promptBuildRequestForTurn(ts, history, summary, ts.userMessage, ts.media, cfg)
+			rebuildPromptReq.ActiveSkills = append([]string(nil), contextualSkills...)
+			messages = ts.agent.ContextBuilder.BuildMessagesFromPrompt(rebuildPromptReq)
 			messages = resolveMediaRefs(messages, p.MediaStore, maxMediaSize)
 		}
 	}
@@ -102,6 +107,11 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 			activeProvider = ts.agent.MediumProvider
 		}
 	}
+	activeModelName := strings.TrimSpace(ts.agent.Model)
+	if tier == routing.TierLight {
+		activeModelName = strings.TrimSpace(sideQuestionModelName(ts.agent, routing.TierLight))
+	}
+	activeModelName = resolvedCandidateModelName(activeCandidates, activeModelName)
 
 	exec := newTurnExecution(
 		ts.agent,
@@ -112,6 +122,14 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	)
 	exec.activeCandidates = activeCandidates
 	exec.activeModel = activeModel
+	exec.activeModelConfig = resolveActiveModelConfig(
+		p.Cfg,
+		ts.agent.Workspace,
+		activeCandidates,
+		activeModel,
+		p.Cfg.Agents.Defaults.Provider,
+	)
+	exec.llmModelName = activeModelName
 	exec.activeProvider = activeProvider
 	exec.tier = tier
 

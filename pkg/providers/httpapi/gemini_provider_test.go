@@ -3,10 +3,13 @@ package httpapi
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestGeminiProvider_ChatSeparatesThoughtAndToolCall(t *testing.T) {
@@ -212,6 +215,109 @@ func TestGeminiProvider_ChatStreamParsesThoughtTextAndToolCalls(t *testing.T) {
 	}
 }
 
+func TestGeminiProvider_ChatStreamEventsStreamsThoughtBeforeContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, ":streamGenerateContent") {
+			t.Fatalf("path = %s, expected streamGenerateContent endpoint", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer is not flushable")
+		}
+
+		chunk := map[string]any{
+			"candidates": []any{map[string]any{
+				"content": map[string]any{
+					"parts": []any{
+						map[string]any{"text": "think", "thought": true},
+						map[string]any{"text": "answer"},
+					},
+				},
+				"finishReason": "STOP",
+			}},
+		}
+		raw, err := json.Marshal(chunk)
+		if err != nil {
+			t.Fatalf("marshal chunk: %v", err)
+		}
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", raw)
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	provider := NewGeminiProvider("test-key", server.URL, "", "", 0, nil, nil)
+	events := make([]string, 0)
+	resp, err := provider.ChatStreamEvents(
+		t.Context(),
+		[]Message{{Role: "user", Content: "hello"}},
+		nil,
+		"gemini-2.5-flash",
+		nil,
+		func(chunk StreamChunk) {
+			if chunk.ReasoningContent != "" {
+				events = append(events, "reasoning:"+chunk.ReasoningContent)
+			}
+			if chunk.Content != "" {
+				events = append(events, "content:"+chunk.Content)
+			}
+		},
+	)
+	if err != nil {
+		t.Fatalf("ChatStreamEvents() error = %v", err)
+	}
+	if resp.Content != "answer" {
+		t.Fatalf("Content = %q, want %q", resp.Content, "answer")
+	}
+	if resp.ReasoningContent != "think" {
+		t.Fatalf("ReasoningContent = %q, want %q", resp.ReasoningContent, "think")
+	}
+	want := []string{"reasoning:think", "content:answer"}
+	if len(events) != len(want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("events = %#v, want %#v", events, want)
+		}
+	}
+}
+
+type geminiBlockingReadCloser struct {
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func newGeminiBlockingReadCloser() *geminiBlockingReadCloser {
+	return &geminiBlockingReadCloser{closed: make(chan struct{})}
+}
+
+func (r *geminiBlockingReadCloser) Read([]byte) (int, error) {
+	<-r.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (r *geminiBlockingReadCloser) Close() error {
+	r.closeOnce.Do(func() {
+		close(r.closed)
+	})
+	return nil
+}
+
+func TestGeminiStreamingReadIdleTimeoutClosesStalledBody(t *testing.T) {
+	body := newGeminiBlockingReadCloser()
+	wrapped := withGeminiStreamingReadIdleTimeout(body, 10*time.Millisecond)
+
+	_, err := wrapped.Read(make([]byte, 1))
+	if err == nil {
+		t.Fatal("expected stalled stream read to return an error")
+	}
+	if !strings.Contains(err.Error(), "gemini stream idle timeout") {
+		t.Fatalf("error = %v, want gemini stream idle timeout", err)
+	}
+}
+
 func TestGeminiProvider_ChatStreamSkipsEmptyDataFrames(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -256,6 +362,64 @@ func TestGeminiProvider_ChatStreamSkipsEmptyDataFrames(t *testing.T) {
 	}
 	if resp.Content != "ok" {
 		t.Fatalf("Content = %q, want %q", resp.Content, "ok")
+	}
+}
+
+func TestGeminiProvider_BuildRequestBody_PreservesComplexToolSchemasByDefault(t *testing.T) {
+	provider := NewGeminiProvider("test-key", "https://example.com/v1beta", "", "", 0, nil, nil)
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"parent": map[string]any{
+				"anyOf": []any{
+					map[string]any{"$ref": "#/$defs/pageParent"},
+					map[string]any{"$ref": "#/$defs/databaseParent"},
+				},
+			},
+		},
+		"$defs": map[string]any{
+			"pageParent": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"page_id": map[string]any{"type": "string"},
+				},
+				"required": []any{"page_id"},
+			},
+			"databaseParent": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"database_id": map[string]any{"type": "string"},
+				},
+				"required": []any{"database_id"},
+			},
+		},
+	}
+
+	body := provider.buildRequestBody(
+		[]Message{{Role: "user", Content: "hello"}},
+		[]ToolDefinition{{
+			Type: "function",
+			Function: ToolFunctionDefinition{
+				Name:        "mcp_notion_create",
+				Description: "Create a Notion object",
+				Parameters:  schema,
+			},
+		}},
+		"gemini-3-flash-preview",
+		nil,
+	)
+
+	tools, ok := body["tools"].([]geminiTool)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one geminiTool", body["tools"])
+	}
+	got, ok := tools[0].FunctionDeclarations[0].Parameters.(map[string]any)
+	if !ok {
+		t.Fatalf("parameters = %#v, want map", tools[0].FunctionDeclarations[0].Parameters)
+	}
+
+	if got["$defs"] == nil {
+		t.Fatalf("parameters = %#v, want raw schema with $defs preserved by default", got)
 	}
 }
 

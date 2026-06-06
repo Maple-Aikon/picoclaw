@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +48,7 @@ var (
 	probeTCPServiceFunc            = probeTCPService
 	probeOllamaModelFunc           = probeOllamaModel
 	probeOpenAICompatibleModelFunc = probeOpenAICompatibleModel
+	probeCommandAvailableFunc      = probeCommandAvailable
 	modelProbeNowFunc              = time.Now
 	modelProbeState                = newModelProbeCacheState()
 )
@@ -83,17 +85,23 @@ func (s *modelProbeCacheState) resetForTest() {
 }
 
 func hasModelConfiguration(m *config.ModelConfig) bool {
+	protocol := modelProtocol(m)
 	authMethod := strings.ToLower(strings.TrimSpace(m.AuthMethod))
 	apiKey := strings.TrimSpace(m.APIKey())
 
 	if authMethod == "oauth" || authMethod == "token" {
-		if provider, ok := oauthProviderForModel(m); ok {
-			cred, err := oauthGetCredential(provider)
-			if err != nil || cred == nil {
-				return false
-			}
-			return strings.TrimSpace(cred.AccessToken) != "" || strings.TrimSpace(cred.RefreshToken) != ""
+		if configured, checked := hasStoredOAuthCredential(m); checked {
+			return configured
 		}
+	}
+
+	if authMethod == "" && providerUsesImplicitOAuth(protocol) {
+		if configured, checked := hasStoredOAuthCredential(m); checked {
+			return configured
+		}
+	}
+
+	if providerUsesAmbientCredentials(protocol) {
 		return true
 	}
 
@@ -102,6 +110,40 @@ func hasModelConfiguration(m *config.ModelConfig) bool {
 	}
 
 	return apiKey != ""
+}
+
+func hasStoredOAuthCredential(m *config.ModelConfig) (bool, bool) {
+	provider, ok := oauthProviderForModel(m)
+	if !ok {
+		return false, false
+	}
+	cred, err := oauthGetCredential(provider)
+	if err != nil || cred == nil {
+		return false, true
+	}
+	return strings.TrimSpace(cred.AccessToken) != "" || strings.TrimSpace(cred.RefreshToken) != "", true
+}
+
+func providerUsesImplicitOAuth(protocol string) bool {
+	switch protocol {
+	case "antigravity":
+		return true
+	default:
+		return false
+	}
+}
+
+func providerUsesAmbientCredentials(protocol string) bool {
+	switch protocol {
+	case "bedrock":
+		// Bedrock relies on the AWS SDK credential chain instead of an explicit
+		// API key stored in ModelConfig. We cannot reliably preflight every AWS
+		// credential source here, so avoid misclassifying valid environments as
+		// "unconfigured" and defer concrete credential failures to runtime.
+		return true
+	default:
+		return false
+	}
 }
 
 func modelConfigurationStatus(m *config.ModelConfig) modelConfigurationSummary {
@@ -126,11 +168,11 @@ func requiresRuntimeProbe(m *config.ModelConfig) bool {
 	protocol := modelProtocol(m)
 
 	switch protocol {
-	case "claude-cli", "claudecli", "codex-cli", "codexcli", "github-copilot", "copilot":
+	case "claude-cli", "codex-cli", "github-copilot":
 		return true
 	}
 
-	if providers.IsEmptyAPIKeyAllowedForProtocol(protocol) {
+	if providers.IsHTTPAPIProtocol(protocol) && providers.IsEmptyAPIKeyAllowedForProtocol(protocol) {
 		apiBase := strings.TrimSpace(m.APIBase)
 		return apiBase == "" || hasLocalAPIBase(apiBase)
 	}
@@ -176,18 +218,25 @@ func runLocalModelProbe(m *config.ModelConfig) bool {
 	switch protocol {
 	case "ollama":
 		return probeOllamaModelFunc(apiBase, modelID)
-	case "vllm", "lmstudio":
+	case "vllm", "lmstudio", "gpt4free":
 		return probeOpenAICompatibleModelFunc(apiBase, modelID, m.APIKey())
-	case "github-copilot", "copilot":
+	case "github-copilot":
 		return probeTCPServiceFunc(apiBase)
-	case "claude-cli", "claudecli", "codex-cli", "codexcli":
-		return true
+	case "claude-cli":
+		return probeCommandAvailableFunc("claude")
+	case "codex-cli":
+		return probeCommandAvailableFunc("codex")
 	default:
 		if hasLocalAPIBase(apiBase) {
 			return probeOpenAICompatibleModelFunc(apiBase, modelID, m.APIKey())
 		}
 		return false
 	}
+}
+
+func probeCommandAvailable(command string) bool {
+	_, err := exec.LookPath(command)
+	return err == nil
 }
 
 func modelProbeCacheKey(m *config.ModelConfig) string {
@@ -385,12 +434,15 @@ func modelProbeAPIBase(m *config.ModelConfig) string {
 	}
 
 	protocol := modelProtocol(m)
-	if providers.IsEmptyAPIKeyAllowedForProtocol(protocol) {
-		return providers.DefaultAPIBaseForProtocol(protocol)
+
+	// Resolve the default API base for any known protocol so that probes
+	// work even when the config stores only a provider without an explicit api_base.
+	if defaultBase := providers.DefaultAPIBaseForProtocol(protocol); defaultBase != "" {
+		return normalizeModelProbeAPIBase(defaultBase)
 	}
 
 	switch protocol {
-	case "github-copilot", "copilot":
+	case "github-copilot":
 		return "localhost:4321"
 	default:
 		return ""
@@ -425,7 +477,7 @@ func oauthProviderForModel(m *config.ModelConfig) (string, bool) {
 		return oauthProviderOpenAI, true
 	case "anthropic":
 		return oauthProviderAnthropic, true
-	case "antigravity", "google-antigravity":
+	case "antigravity":
 		return oauthProviderGoogleAntigravity, true
 	default:
 		return "", false
@@ -511,16 +563,29 @@ func probeOpenAICompatibleModel(apiBase, modelID, apiKey string) bool {
 		return false
 	}
 
-	var resp struct {
+	var respEnvelope struct {
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := getJSON(strings.TrimRight(strings.TrimSpace(apiBase), "/")+"/models", &resp, apiKey); err != nil {
+	fetchURL := strings.TrimRight(strings.TrimSpace(apiBase), "/") + "/models"
+	if err := getJSON(fetchURL, &respEnvelope, apiKey); err == nil {
+		for _, model := range respEnvelope.Data {
+			if strings.EqualFold(strings.TrimSpace(model.ID), modelID) {
+				return true
+			}
+		}
 		return false
 	}
 
-	for _, model := range resp.Data {
+	var respArray []struct {
+		ID string `json:"id"`
+	}
+	if err := getJSON(fetchURL, &respArray, apiKey); err != nil {
+		return false
+	}
+
+	for _, model := range respArray {
 		if strings.EqualFold(strings.TrimSpace(model.ID), modelID) {
 			return true
 		}

@@ -13,10 +13,10 @@ import (
 )
 
 func TestGetConfigPath(t *testing.T) {
-	t.Setenv("HOME", "/tmp/home")
+	t.Setenv(config.EnvHome, "/tmp/home/picoclaw")
 
 	got := GetConfigPath()
-	want := filepath.Join("/tmp/home", ".picoclaw", "config.json")
+	want := filepath.Join("/tmp/home/picoclaw", "config.json")
 
 	assert.Equal(t, want, got)
 }

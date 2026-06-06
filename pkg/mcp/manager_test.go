@@ -5,16 +5,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 )
 
 func TestLoadEnvFile(t *testing.T) {
@@ -248,6 +252,95 @@ func TestNewManager_InitialState(t *testing.T) {
 	}
 }
 
+func TestConnectServerPublishesRuntimeEvents(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() {
+		connectServerFunc = originalConnectServerFunc
+	})
+
+	eventBus := runtimeevents.NewBus()
+	defer func() {
+		if err := eventBus.Close(); err != nil {
+			t.Errorf("event bus close failed: %v", err)
+		}
+	}()
+
+	_, eventsCh, err := eventBus.Channel().OfKind(
+		runtimeevents.KindMCPServerConnected,
+		runtimeevents.KindMCPServerFailed,
+	).SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "mcp-events", Buffer: 2})
+	if err != nil {
+		t.Fatalf("SubscribeChan failed: %v", err)
+	}
+
+	connectServerFunc = func(
+		_ context.Context,
+		name string,
+		cfg config.MCPServerConfig,
+	) (*ServerConnection, error) {
+		if name == "bad" {
+			return nil, fmt.Errorf("connect failed")
+		}
+		return &ServerConnection{
+			Name:   name,
+			Config: cfg,
+			Tools:  []*sdkmcp.Tool{{Name: "echo"}},
+		}, nil
+	}
+
+	mgr := NewManager(WithRuntimeEvents(eventBus))
+	err = mgr.ConnectServer(context.Background(), "good", config.MCPServerConfig{
+		Type:    "stdio",
+		Command: "echo",
+	})
+	if err != nil {
+		t.Fatalf("ConnectServer(good) error = %v", err)
+	}
+	connected := receiveMCPRuntimeEvent(t, eventsCh)
+	if connected.Kind != runtimeevents.KindMCPServerConnected ||
+		connected.Source.Name != "good" ||
+		connected.Severity != runtimeevents.SeverityInfo {
+		t.Fatalf("connected event = %+v", connected)
+	}
+	if connected.Attrs["server"] != "good" ||
+		connected.Attrs["type"] != "stdio" ||
+		connected.Attrs["tool_count"] != 1 {
+		t.Fatalf("connected attrs = %#v", connected.Attrs)
+	}
+
+	err = mgr.ConnectServer(context.Background(), "bad", config.MCPServerConfig{
+		Type:    "stdio",
+		Command: "echo",
+	})
+	if err == nil {
+		t.Fatal("expected ConnectServer(bad) to fail")
+	}
+	failed := receiveMCPRuntimeEvent(t, eventsCh)
+	if failed.Kind != runtimeevents.KindMCPServerFailed ||
+		failed.Source.Name != "bad" ||
+		failed.Severity != runtimeevents.SeverityError {
+		t.Fatalf("failed event = %+v", failed)
+	}
+	if failed.Attrs["server"] != "bad" || failed.Attrs["error"] != "connect failed" {
+		t.Fatalf("failed attrs = %#v", failed.Attrs)
+	}
+}
+
+func receiveMCPRuntimeEvent(t *testing.T, ch <-chan runtimeevents.Event) runtimeevents.Event {
+	t.Helper()
+
+	select {
+	case evt, ok := <-ch:
+		if !ok {
+			t.Fatal("runtime event channel closed before expected event")
+		}
+		return evt
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runtime event")
+		return runtimeevents.Event{}
+	}
+}
+
 func TestLoadFromMCPConfig_DisabledOrEmptyServers(t *testing.T) {
 	mgr := NewManager()
 
@@ -315,6 +408,133 @@ func TestCallTool_ErrorsForClosedOrMissingServer(t *testing.T) {
 			t.Fatalf("expected server not found error, got: %v", err)
 		}
 	})
+}
+
+func TestConnectServer_StreamableHTTPRequestResponseMode(t *testing.T) {
+	t.Parallel()
+
+	for _, transportType := range []string{"http", "streamable-http"} {
+		t.Run(transportType, func(t *testing.T) {
+			t.Parallel()
+
+			server := sdkmcp.NewServer(&sdkmcp.Implementation{
+				Name:    "streamable-test-server",
+				Version: "1.0.0",
+			}, nil)
+			sdkmcp.AddTool(server, &sdkmcp.Tool{
+				Name:        "echo",
+				Description: "Echo test tool",
+			}, func(ctx context.Context, req *sdkmcp.CallToolRequest, args map[string]any) (*sdkmcp.CallToolResult, any, error) {
+				return &sdkmcp.CallToolResult{
+					Content: []sdkmcp.Content{
+						&sdkmcp.TextContent{Text: "ok"},
+					},
+				}, nil, nil
+			})
+
+			type observedRequest struct {
+				Method        string
+				SessionID     string
+				Authorization string
+			}
+
+			var (
+				mu       sync.Mutex
+				observed []observedRequest
+			)
+
+			handler := sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server {
+				return server
+			}, nil)
+			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				observed = append(observed, observedRequest{
+					Method:        r.Method,
+					SessionID:     r.Header.Get("Mcp-Session-Id"),
+					Authorization: r.Header.Get("Authorization"),
+				})
+				mu.Unlock()
+				handler.ServeHTTP(w, r)
+			}))
+			defer httpServer.Close()
+
+			conn, err := connectServer(context.Background(), "streamable", config.MCPServerConfig{
+				Enabled: true,
+				Type:    transportType,
+				URL:     httpServer.URL,
+				Headers: map[string]string{
+					"Authorization": "Bearer test-token",
+				},
+			})
+			if err != nil {
+				t.Fatalf("connectServer(%q) error = %v", transportType, err)
+			}
+			if got := len(conn.Tools); got != 1 {
+				t.Fatalf("len(conn.Tools) = %d, want 1", got)
+			}
+			if got := conn.Session.ID(); got == "" {
+				t.Fatal("expected non-empty streamable session ID")
+			}
+			if err := conn.Session.Close(); err != nil {
+				t.Fatalf("Session.Close() error = %v", err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			var (
+				getCount            int
+				postCount           int
+				deleteCount         int
+				postWithSession     bool
+				deleteWithSession   bool
+				requestsWithAuth    int
+				requestsWithoutAuth []string
+			)
+
+			for _, req := range observed {
+				switch req.Method {
+				case http.MethodGet:
+					getCount++
+				case http.MethodPost:
+					postCount++
+					if req.SessionID != "" {
+						postWithSession = true
+					}
+				case http.MethodDelete:
+					deleteCount++
+					if req.SessionID != "" {
+						deleteWithSession = true
+					}
+				}
+
+				if req.Authorization == "Bearer test-token" {
+					requestsWithAuth++
+				} else {
+					requestsWithoutAuth = append(requestsWithoutAuth, req.Method)
+				}
+			}
+
+			if getCount != 0 {
+				t.Fatalf("expected no standalone GET requests for %q transport, saw %d", transportType, getCount)
+			}
+			if postCount == 0 {
+				t.Fatal("expected POST requests during streamable HTTP handshake")
+			}
+			if deleteCount != 1 {
+				t.Fatalf("DELETE count = %d, want 1", deleteCount)
+			}
+			if !postWithSession {
+				t.Fatal("expected at least one POST request with Mcp-Session-Id")
+			}
+			if !deleteWithSession {
+				t.Fatal("expected DELETE request with Mcp-Session-Id")
+			}
+			if requestsWithAuth != len(observed) {
+				t.Fatalf("Authorization header missing on requests: %v", requestsWithoutAuth)
+			}
+		})
+	}
 }
 
 func TestCallTool_ReconnectsWhenHTTPServerLosesSession(t *testing.T) {
