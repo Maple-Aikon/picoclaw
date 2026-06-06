@@ -672,10 +672,10 @@ func extractProvider(registry *AgentRegistry) (providers.LLMProvider, bool) {
 }
 
 func truncateToolResult(content string, limit int, suggest string) string {
-	if limit <= 0 || len(content) <= limit {
+	runes := []rune(content)
+	if limit <= 0 || len(runes) <= limit {
 		return content
 	}
 	warning := fmt.Sprintf("\n\n[SYSTEM WARNING: Tool result was truncated because it exceeded the %d character limit. Please use a different approach to limit the returned data (e.g., use %s).]", limit, suggest)
-	runes := []rune(content)
 	return string(runes[:limit]) + warning
 }
