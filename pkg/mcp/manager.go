@@ -132,9 +132,9 @@ type Manager struct {
 	servers            map[string]*ServerConnection
 	runtimeEvents      runtimeevents.Bus
 	mu                 sync.RWMutex
-	closed             atomic.Bool         // changed from bool to atomic.Bool to avoid TOCTOU race
-	wg                 sync.WaitGroup      // tracks in-flight CallTool calls
-	defaultCallTimeout time.Duration       // default timeout for tool calls (0 = use fallback)
+	closed             atomic.Bool    // changed from bool to atomic.Bool to avoid TOCTOU race
+	wg                 sync.WaitGroup // tracks in-flight CallTool calls
+	defaultCallTimeout time.Duration  // default timeout for tool calls (0 = use fallback)
 }
 
 var connectServerFunc = connectServer
@@ -547,8 +547,11 @@ func (m *Manager) CallTool(
 	}
 
 	// Preemptive watchdog: force-kill the subprocess if CallTool doesn't return
-	// within timeout + 5s grace period. This is the nuclear fallback that ensures
-	// MCP hangs can always be recovered, even when context propagation fails.
+	// within timeout + 5s grace period. The 5s grace is intentional — it gives
+	// the MCP subprocess time to flush + self-exit on the SDK's notifications/cancelled
+	// path (which fires at `timeout` via callCtx cancellation) before we force-close.
+	// If the subprocess ignores cancellation and hangs, the force-close at +5s
+	// guarantees we always recover within bounded time.
 	watchConn := conn
 	done := make(chan struct{})
 	defer close(done)
@@ -592,15 +595,22 @@ func (m *Manager) CallTool(
 			case <-time.After(3 * time.Second):
 			}
 
-			reconnectedConn, reconnectErr := m.reconnectServer(ctx, serverName, conn)
+			// Reconnect with its own bounded timeout — never use parent ctx (may have
+			// no deadline, or be cancelled already). Cap at 30s to avoid hanging on
+			// a stuck subprocess during reconnect (covers cold start, FS lock, etc.).
+			reconnectCtx, reconnectCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			reconnectedConn, reconnectErr := m.reconnectServer(reconnectCtx, serverName, conn)
+			reconnectCancel()
 			if reconnectErr != nil {
 				return nil, fmt.Errorf("tool %q timed out after %v and reconnect failed: %w",
 					toolName, timeout, reconnectErr)
 			}
 			// Update conn reference for the retry
 			conn = reconnectedConn
-			// Retry once with a fresh timeout context
-			retryCtx, retryCancel := context.WithTimeout(ctx, timeout)
+			// Retry once with a fresh timeout context tied to Background, not parent
+			// ctx — parent ctx may already be cancelled, but the retry should still
+			// have its full timeout window since the user paid for it.
+			retryCtx, retryCancel := context.WithTimeout(context.Background(), timeout)
 			defer retryCancel()
 			result, err = conn.Session.CallTool(retryCtx, params)
 			if err != nil {

@@ -523,6 +523,7 @@ func (p *Pipeline) CallLLM(
 
 	// AfterLLM hook
 	if p.Hooks != nil {
+		originalResponseContent := exec.response.Content // Save before hook may overwrite — needed by HookActionReplay
 		llmResp, decision := p.Hooks.AfterLLM(turnCtx, &LLMHookResponse{
 			Meta:     ts.eventMeta("runTurn", "turn.llm.response"),
 			Context:  cloneTurnContext(ts.turnCtx),
@@ -534,6 +535,32 @@ func (p *Pipeline) CallLLM(
 			if llmResp != nil && llmResp.Response != nil {
 				exec.response = llmResp.Response
 			}
+		case HookActionReplay:
+			// Diagnostic auto-recovery (Step 2): hook detected malformed tool call,
+			// injects recovery message via response.Content, and requests retry.
+			// Append original LLM output as assistant message + recovery prompt as user
+			// message, then loop to CallLLM (coordinator handles ControlContinue).
+			cancelConfiguredStreamingLLM(turnCtx, exec)
+			if llmResp != nil && llmResp.Response != nil {
+				exec.response = llmResp.Response
+			}
+			if originalResponseContent != "" {
+				exec.messages = append(exec.messages, providers.Message{
+					Role:    "assistant",
+					Content: originalResponseContent,
+				})
+			}
+			recoveryContent := ""
+			if exec.response.Content != "" {
+				recoveryContent = exec.response.Content
+			}
+			if recoveryContent != "" {
+				exec.messages = append(exec.messages, providers.Message{
+					Role:    "user",
+					Content: recoveryContent,
+				})
+			}
+			return ControlContinue, nil
 		case HookActionAbortTurn:
 			cancelConfiguredStreamingLLM(turnCtx, exec)
 			exec.abortedByHook = true

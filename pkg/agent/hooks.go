@@ -27,7 +27,8 @@ type HookAction string
 const (
 	HookActionContinue  HookAction = "continue"
 	HookActionModify    HookAction = "modify"
-	HookActionRespond   HookAction = "respond" // Return result directly, skip tool execution. SECURITY: This bypasses ApproveTool checks, allowing hooks to return results for any tool (including sensitive ones like bash) without approval. Use with caution.
+	HookActionReplay    HookAction = "replay"   // AfterLLM: inject recovery message + loop to retry LLM call (Step 2 auto-recovery)
+	HookActionRespond   HookAction = "respond"  // Return result directly, skip tool execution. SECURITY: This bypasses ApproveTool checks, allowing hooks to return results for any tool (including sensitive ones like bash) without approval. Use with caution.
 	HookActionDenyTool  HookAction = "deny_tool"
 	HookActionAbortTurn HookAction = "abort_turn"
 	HookActionHardAbort HookAction = "hard_abort"
