@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -123,8 +124,9 @@ type ServerConnection struct {
 	Config      config.MCPServerConfig
 	Client      *mcp.Client
 	Session     *mcp.ClientSession
-	Tools       []*mcp.Tool
-	reconnectMu sync.Mutex
+	Tools         []*mcp.Tool
+	SubprocessPID int // PID of underlying stdio subprocess (0 = not stdio / not tracked)
+	reconnectMu   sync.Mutex
 }
 
 // Manager manages multiple MCP server connections
@@ -478,12 +480,17 @@ func connectServer(
 		return nil, err
 	}
 
+	var subprocessPID int
+	if ict, ok := transport.(*isolatedCommandTransport); ok && ict.Command != nil && ict.Command.Process != nil {
+		subprocessPID = ict.Command.Process.Pid
+	}
 	return &ServerConnection{
-		Name:    name,
-		Config:  cfg,
-		Client:  client,
-		Session: session,
-		Tools:   tools,
+		Name:          name,
+		Config:        cfg,
+		Client:        client,
+		Session:       session,
+		Tools:         tools,
+		SubprocessPID: subprocessPID,
 	}, nil
 }
 
@@ -558,14 +565,28 @@ func (m *Manager) CallTool(
 	go func() {
 		select {
 		case <-time.After(timeout + 5*time.Second):
+			pid := watchConn.SubprocessPID
 			logger.WarnCF("mcp", "preemptive watchdog fired, force-killing MCP subprocess",
 				map[string]any{
 					"server":  serverName,
 					"tool":    toolName,
 					"timeout": timeout.String(),
+					"pid":     pid,
 				})
-			// Close the session to kill the subprocess and unblock any hanging I/O.
-			// Safe to call multiple times; Close is idempotent (uses closeOnce).
+			// Direct SIGKILL bypasses any stuck SDK state. Safe — even if it
+			// didn't hang on I/O, killing the subprocess causes pipe EOF, which
+			// unblocks the SDK's read loop.
+			if pid > 0 {
+				if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+					logger.ErrorCF("mcp", "direct SIGKILL failed, falling back",
+						map[string]any{"pid": pid, "err": err.Error()})
+				} else {
+					logger.InfoCF("mcp", "direct SIGKILL succeeded",
+						map[string]any{"pid": pid, "server": serverName})
+				}
+			}
+			// Always call Close to release SDK resources. Safe to call
+			// multiple times; Close is idempotent (uses closeOnce).
 			_ = watchConn.Session.Close()
 		case <-done:
 		}
