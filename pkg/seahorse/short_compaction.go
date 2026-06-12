@@ -695,13 +695,27 @@ func (e *CompactionEngine) generateCondensedSummary(ctx context.Context, summari
 }
 
 // runCondensedLoop runs condensed compaction in a loop until:
-// a) context tokens <= threshold (success), OR
-// b) No candidate found (nothing to condense), OR
-// c) tokensAfter >= tokensBefore (no progress this iteration), OR
-// d) tokensAfter >= previousTokens (no improvement over last iteration)
+// a) we hit MaxCompactIterations cap (safety net against runaway loops),
+// b) we hit a wall-clock timeout (condensedTimeout, fail-fast on slow iters),
+// c) ctx is cancelled (shutdown),
+// d) compactCondensed returns no candidate,
+// e) tokensAfter >= tokensBefore (no progress this iteration), OR
+// f) tokensAfter >= previousTokens (no improvement over last iteration)
 func (e *CompactionEngine) runCondensedLoop(ctx context.Context, sessionKey string, convID int64) {
 	var prevTokens int
-	for {
+	startTime := time.Now()
+	const condensedTimeout = 30 * time.Second // wall-clock cap; fail-fast if iters slow
+
+	for iter := 0; iter < MaxCompactIterations; iter++ {
+		// Wall-clock safety net (primary defense against runaway loops)
+		if time.Since(startTime) > condensedTimeout {
+			logger.WarnCF("seahorse", "condensed: wall-clock timeout", map[string]any{
+				"conv_id":    convID,
+				"iter":       iter,
+				"elapsed_ms": time.Since(startTime).Milliseconds(),
+			})
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -729,25 +743,43 @@ func (e *CompactionEngine) runCondensedLoop(ctx context.Context, sessionKey stri
 
 		if tokensAfter >= tokensBefore {
 			// No progress this iteration
-			logger.DebugCF(
+			logger.WarnCF(
 				"seahorse",
 				"condensed: no progress",
-				map[string]any{"conv_id": convID, "tokens_before": tokensBefore, "tokens_after": tokensAfter},
+				map[string]any{
+					"conv_id":       convID,
+					"iter":          iter,
+					"tokens_before": tokensBefore,
+					"tokens_after":  tokensAfter,
+					"elapsed_ms":    time.Since(startTime).Milliseconds(),
+				},
 			)
 			return
 		}
 		if tokensAfter >= prevTokens && prevTokens > 0 {
 			// No improvement over last iteration
-			logger.DebugCF(
+			logger.WarnCF(
 				"seahorse",
 				"condensed: no improvement",
-				map[string]any{"conv_id": convID, "tokens": tokensAfter},
+				map[string]any{
+					"conv_id":    convID,
+					"iter":       iter,
+					"elapsed_ms": time.Since(startTime).Milliseconds(),
+					"tokens":     tokensAfter,
+				},
 			)
 			return
 		}
 
 		prevTokens = tokensAfter
 	}
+
+	// Hit MaxCompactIterations cap (unusual — typical path exits via "no progress"/"no improvement")
+	logger.WarnCF("seahorse", "condensed: hit MaxCompactIterations cap", map[string]any{
+		"conv_id":    convID,
+		"iter":       MaxCompactIterations,
+		"elapsed_ms": time.Since(startTime).Milliseconds(),
+	})
 }
 
 // --- Helper functions ---
