@@ -1822,6 +1822,8 @@ func (t *ToolsConfig) IsToolEnabled(name string) bool {
 		return t.Message.Enabled
 	case "read_file":
 		return t.ReadFile.Enabled
+	case "reaction":
+		return false
 	case "serial":
 		return t.Serial.Enabled
 	case "spawn":
