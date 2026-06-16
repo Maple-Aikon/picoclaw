@@ -106,8 +106,13 @@ func (ms *MemoryStore) AppendToday(content string) error {
 }
 
 // GetRecentDailyNotes returns daily notes from the last N days.
+// N=0 means skip daily notes entirely (use long-term memory only).
+// N=1 returns today only; N=2 returns today + yesterday, etc.
 // Contents are joined with "---" separator.
 func (ms *MemoryStore) GetRecentDailyNotes(days int) string {
+	if days <= 0 {
+		return ""
+	}
 	var sb strings.Builder
 	first := true
 
@@ -130,22 +135,22 @@ func (ms *MemoryStore) GetRecentDailyNotes(days int) string {
 }
 
 // GetMemoryContext returns formatted memory context for the agent prompt.
-// Includes long-term memory and recent daily notes.
+// Includes long-term memory + recent daily notes (N=0 to skip notes entirely).
+// Pass N>0 to include the last N days of daily notes; pass N=0 to keep
+// the prompt lean (long-term memory only). See GetRecentDailyNotes for N semantics.
 func (ms *MemoryStore) GetMemoryContext() string {
 	longTerm := ms.ReadLongTerm()
-	recentNotes := ms.GetRecentDailyNotes(3)
+	recentNotes := ms.GetRecentDailyNotes(0) // 0 = skip; bump here to include N most recent days
 
 	if longTerm == "" && recentNotes == "" {
 		return ""
 	}
 
 	var sb strings.Builder
-
 	if longTerm != "" {
 		sb.WriteString("## Long-term Memory\n\n")
 		sb.WriteString(longTerm)
 	}
-
 	if recentNotes != "" {
 		if longTerm != "" {
 			sb.WriteString("\n\n---\n\n")
@@ -153,6 +158,5 @@ func (ms *MemoryStore) GetMemoryContext() string {
 		sb.WriteString("## Recent Daily Notes\n\n")
 		sb.WriteString(recentNotes)
 	}
-
 	return sb.String()
 }
