@@ -39,7 +39,7 @@ func newTestCompactionEngine(t *testing.T) (*CompactionEngine, *Store, int64) {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	ce := &CompactionEngine{
 		store:          s,
-		config:         Config{},
+		config:         Config{ContextThreshold: ContextThreshold, FreshTailCount: 32},
 		complete:       mockCompleteFn,
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
@@ -69,7 +69,7 @@ func newTestCompactionEngineWithStore(
 	shutdownCtx, cancel := context.WithCancel(context.Background())
 	return &CompactionEngine{
 		store:          s,
-		config:         Config{},
+		config:         Config{ContextThreshold: ContextThreshold, FreshTailCount: 32},
 		complete:       complete,
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: cancel,
@@ -299,7 +299,7 @@ func TestCompactCondensedDoesNotOrphanSummaryWhenCandidatesRemovedConcurrently(t
 	}
 	resultCh := make(chan compactResult, 1)
 	go func() {
-		sid, err := ce.compactCondensed(context.Background(), convID)
+		sid, err := ce.compactCondensed(context.Background(), "test-session", convID)
 		resultCh <- compactResult{summaryID: sid, err: err}
 	}()
 

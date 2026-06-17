@@ -31,7 +31,7 @@ func (p *Pipeline) CallLLM(
 
 	// PreLLM: resolve media refs (except on iteration 1 where user media is already resolved)
 	if iteration > 1 {
-		exec.messages = resolveMediaRefs(exec.messages, p.MediaStore, maxMediaSize)
+		exec.messages = resolveMediaRefs(exec.messages, p.MediaStore, maxMediaSize, exec.currentTurnStart)
 	}
 
 	// PreLLM: graceful terminal handling
@@ -130,6 +130,9 @@ func (p *Pipeline) CallLLM(
 		}
 		exec.callMessages = append(append([]providers.Message(nil), exec.callMessages...), reminderMsg)
 	}
+	if err := p.routeMediaTurn(ts, exec); err != nil {
+		return ControlBreak, err
+	}
 
 	exec.llmOpts = map[string]any{
 		"max_tokens":       ts.agent.MaxTokens,
@@ -223,8 +226,8 @@ func (p *Pipeline) CallLLM(
 			ts.clearProviderCancel(providerCancel)
 		}()
 
-		al.activeRequests.Add(1)
-		defer al.activeRequests.Done()
+		al.activeRequestsInc()
+		defer al.activeRequestsDec()
 
 		if response, handled, streamErr := p.tryConfiguredStreamingLLM(
 			providerCtx,
@@ -236,36 +239,62 @@ func (p *Pipeline) CallLLM(
 			return response, streamErr
 		}
 
-		if len(exec.activeCandidates) > 1 && p.Fallback != nil {
-			fbResult, fbErr := p.Fallback.ExecuteCandidate(
-				providerCtx,
+		runCandidate := func(
+			ctx context.Context,
+			candidate providers.FallbackCandidate,
+		) (*providers.LLMResponse, error) {
+			candidateProvider, err := providerForFallbackCandidate(
+				ts.agent,
+				exec.activeProvider,
 				exec.activeCandidates,
-				func(ctx context.Context, candidate providers.FallbackCandidate) (*providers.LLMResponse, error) {
-					candidateProvider, err := providerForFallbackCandidate(
-						ts.agent,
-						exec.activeProvider,
-						exec.activeCandidates,
-						candidate.Provider,
-						candidate.Model,
-					)
-					if err != nil {
-						return nil, err
-					}
-					callOpts := shallowCloneLLMOptions(exec.llmOpts)
-					delete(callOpts, "thinking_level")
-					candidateCfg := resolveActiveModelConfig(
-						p.Cfg,
-						ts.agent.Workspace,
-						[]providers.FallbackCandidate{candidate},
-						candidate.Model,
-						p.Cfg.Agents.Defaults.Provider,
-					)
-					candidateThinking := thinkingSettingsFromModelConfig(candidateCfg)
-					applyThinkingOption(callOpts, candidateProvider, candidateThinking, true, ts.agent.ID)
-					exec.suppressReasoning = shouldSuppressReasoningFor(candidateThinking)
-					return candidateProvider.Chat(ctx, messagesForCall, toolDefsForCall, candidate.Model, callOpts)
-				},
+				candidate.Provider,
+				candidate.Model,
 			)
+			if err != nil {
+				return nil, err
+			}
+			callOpts := shallowCloneLLMOptions(exec.llmOpts)
+			delete(callOpts, "thinking_level")
+			candidateCfg := resolveActiveModelConfig(
+				p.Cfg,
+				ts.agent.Workspace,
+				[]providers.FallbackCandidate{candidate},
+				candidate.Model,
+				p.Cfg.Agents.Defaults.Provider,
+			)
+			candidateThinking := thinkingSettingsFromModelConfig(candidateCfg)
+			applyThinkingOption(callOpts, candidateProvider, candidateThinking, true, ts.agent.ID)
+			exec.suppressReasoning = shouldSuppressReasoningFor(candidateThinking)
+			return candidateProvider.Chat(ctx, messagesForCall, toolDefsForCall, candidate.Model, callOpts)
+		}
+
+		if len(exec.activeCandidates) > 1 && p.Fallback != nil {
+			var (
+				fbResult *providers.FallbackResult
+				fbErr    error
+			)
+			if hasMediaRefs(messagesForCall) {
+				fbResult, fbErr = p.Fallback.ExecuteImage(
+					providerCtx,
+					exec.activeCandidates,
+					func(ctx context.Context, provider, model string) (*providers.LLMResponse, error) {
+						candidate := providers.FallbackCandidate{Provider: provider, Model: model}
+						for _, configured := range exec.activeCandidates {
+							if configured.Provider == provider && configured.Model == model {
+								candidate = configured
+								break
+							}
+						}
+						return runCandidate(ctx, candidate)
+					},
+				)
+			} else {
+				fbResult, fbErr = p.Fallback.ExecuteCandidate(
+					providerCtx,
+					exec.activeCandidates,
+					runCandidate,
+				)
+			}
 			if fbErr != nil {
 				return nil, fbErr
 			}
@@ -316,52 +345,16 @@ func (p *Pipeline) CallLLM(
 			break
 		}
 
-		// Retry without media if vision is unsupported
-		if hasMediaRefs(exec.callMessages) && isVisionUnsupportedError(err) && retry < maxRetries {
-			al.emitEvent(
-				runtimeevents.KindAgentLLMRetry,
-				ts.eventMeta("runTurn", "turn.llm.retry"),
-				LLMRetryPayload{
-					Attempt:    retry + 1,
-					MaxRetries: maxRetries,
-					Reason:     "vision_unsupported",
-					Error:      err.Error(),
-					Backoff:    0,
-				},
+		if hasMediaRefs(exec.callMessages) && isVisionUnsupportedError(err) {
+			return ControlBreak, visionUnsupportedModelError(
+				exec.llmModelName,
+				len(ts.agent.ImageCandidates) > 0,
 			)
-			logger.WarnCF("agent", "Vision unsupported, retrying without media", map[string]any{
-				"error": err.Error(),
-				"retry": retry,
-			})
-			exec.callMessages = stripMessageMedia(exec.callMessages)
-			if !ts.opts.NoHistory {
-				exec.history = stripMessageMedia(exec.history)
-				ts.agent.Sessions.SetHistory(ts.sessionKey, exec.history)
-				for i := range ts.persistedMessages {
-					ts.persistedMessages[i].Media = nil
-				}
-				ts.refreshRestorePointFromSession(ts.agent)
-			}
-			continue
 		}
 
 		errMsg := strings.ToLower(err.Error())
-		isTimeoutError := errors.Is(err, context.DeadlineExceeded) ||
-			strings.Contains(errMsg, "deadline exceeded") ||
-			strings.Contains(errMsg, "client.timeout") ||
-			strings.Contains(errMsg, "timed out") ||
-			strings.Contains(errMsg, "timeout exceeded")
-
-		isNetworkError := !isTimeoutError && (strings.Contains(errMsg, "connection reset") ||
-			strings.Contains(errMsg, "connection refused") ||
-			strings.Contains(errMsg, "broken pipe") ||
-			strings.Contains(errMsg, "no such host") ||
-			strings.Contains(errMsg, "network is unreachable") ||
-			strings.Contains(errMsg, "read tcp") ||
-			strings.Contains(errMsg, "write tcp") ||
-			strings.Contains(errMsg, "eof"))
-
-		isContextError := !isTimeoutError && (strings.Contains(errMsg, "context_length_exceeded") ||
+		retryReason, isTransientError := transientLLMRetryReason(err)
+		isContextError := !isTransientError && (strings.Contains(errMsg, "context_length_exceeded") ||
 			strings.Contains(errMsg, "context window") ||
 			strings.Contains(errMsg, "context_window") ||
 			strings.Contains(errMsg, "maximum context length") ||
@@ -372,7 +365,7 @@ func (p *Pipeline) CallLLM(
 			strings.Contains(errMsg, "prompt is too long") ||
 			strings.Contains(errMsg, "request too large"))
 
-		if isTimeoutError && retry < maxRetries {
+		if isTransientError && retry < maxRetries {
 			backoff := time.Duration(retry+1) * time.Duration(backoffSecs) * time.Second
 			al.emitEvent(
 				runtimeevents.KindAgentLLMRetry,
@@ -380,42 +373,14 @@ func (p *Pipeline) CallLLM(
 				LLMRetryPayload{
 					Attempt:    retry + 1,
 					MaxRetries: maxRetries,
-					Reason:     "timeout",
+					Reason:     retryReason,
 					Error:      err.Error(),
 					Backoff:    backoff,
 				},
 			)
-			logger.WarnCF("agent", "Timeout error, retrying after backoff", map[string]any{
+			logger.WarnCF("agent", "Transient LLM error, retrying after backoff", map[string]any{
 				"error":   err.Error(),
-				"retry":   retry,
-				"backoff": backoff.String(),
-			})
-			if sleepErr := sleepWithContext(turnCtx, backoff); sleepErr != nil {
-				if ts.hardAbortRequested() {
-					_ = ts.requestHardAbort()
-					return ControlBreak, nil
-				}
-				err = sleepErr
-				break
-			}
-			continue
-		}
-
-		if isNetworkError && retry < maxRetries {
-			backoff := time.Duration(retry+1) * time.Duration(backoffSecs) * time.Second
-			al.emitEvent(
-				runtimeevents.KindAgentLLMRetry,
-				ts.eventMeta("runTurn", "turn.llm.retry"),
-				LLMRetryPayload{
-					Attempt:    retry + 1,
-					MaxRetries: maxRetries,
-					Reason:     "network",
-					Error:      err.Error(),
-					Backoff:    backoff,
-				},
-			)
-			logger.WarnCF("agent", "Network error, retrying after backoff", map[string]any{
-				"error":   err.Error(),
+				"reason":  retryReason,
 				"retry":   retry,
 				"backoff": backoff.String(),
 			})
@@ -489,13 +454,71 @@ func (p *Pipeline) CallLLM(
 				contextualSkills = ts.agent.ContextBuilder.ResolveActiveSkillsForContext(ts.activeSkills)
 			}
 			ts.recordSkillContextSnapshot(skillContextTriggerContextRetryRebuild, contextualSkills)
-			rebuildPromptReq := promptBuildRequestForTurn(ts, exec.history, exec.summary, "", nil, p.Cfg)
-			rebuildPromptReq.ActiveSkills = append([]string(nil), contextualSkills...)
-			exec.messages = ts.agent.ContextBuilder.BuildMessagesFromPrompt(rebuildPromptReq)
-			exec.callMessages = exec.messages
+			stableHistory, protectedTurnTail := splitHistoryForActiveTurn(
+				exec.history,
+				ts.persistedMessagesSnapshot(),
+			)
+			buildMessages := func(trimmedHistory []providers.Message) []providers.Message {
+				fullHistory := append(append([]providers.Message(nil), trimmedHistory...), protectedTurnTail...)
+				rebuildPromptReq := promptBuildRequestForTurn(ts, fullHistory, exec.summary, "", nil, p.Cfg)
+				rebuildPromptReq.ActiveSkills = append([]string(nil), contextualSkills...)
+				rebuilt := ts.agent.ContextBuilder.BuildMessagesFromPrompt(rebuildPromptReq)
+				return resolveMediaRefs(
+					rebuilt,
+					p.MediaStore,
+					maxMediaSize,
+					len(rebuilt)-len(protectedTurnTail),
+				)
+			}
+			originalHistoryCount := len(exec.history)
+			var fit bool
+			var trimmedStableHistory []providers.Message
+			trimmedStableHistory, exec.callMessages, fit = trimHistoryToFitContextWindow(
+				stableHistory,
+				func(trimmedHistory []providers.Message) []providers.Message {
+					rebuilt := buildMessages(trimmedHistory)
+					if exec.gracefulTerminal {
+						return append(append([]providers.Message(nil), rebuilt...), ts.interruptHintMessage())
+					}
+					return rebuilt
+				},
+				ts.agent.ContextWindow,
+				exec.providerToolDefs,
+				ts.agent.MaxTokens,
+			)
+			exec.history = append(trimmedStableHistory, protectedTurnTail...)
+			exec.messages = buildMessages(trimmedStableHistory)
+			exec.currentTurnStart = len(exec.messages) - len(protectedTurnTail)
 			if exec.gracefulTerminal {
 				msgs := append([]providers.Message(nil), exec.messages...)
 				exec.callMessages = append(msgs, ts.interruptHintMessage())
+			}
+			if dropped := originalHistoryCount - len(exec.history); dropped > 0 {
+				logger.WarnCF("agent", "Trimmed rebuilt history after context retry compaction", map[string]any{
+					"session_key":     ts.sessionKey,
+					"retry":           retry,
+					"dropped_msgs":    dropped,
+					"remaining_msgs":  len(exec.history),
+					"context_window":  ts.agent.ContextWindow,
+					"max_tokens":      ts.agent.MaxTokens,
+					"still_overlimit": !fit,
+				})
+			} else if !fit {
+				logger.WarnCF("agent", "Context still exceeds budget after retry compaction rebuild", map[string]any{
+					"session_key":         ts.sessionKey,
+					"retry":               retry,
+					"history_msgs":        len(exec.history),
+					"protected_turn_msgs": len(protectedTurnTail),
+					"context_window":      ts.agent.ContextWindow,
+					"max_tokens":          ts.agent.MaxTokens,
+				})
+			}
+			if !fit {
+				err = fmt.Errorf(
+					"context window still exceeded after retry compaction; refusing to drop active turn messages: %w",
+					err,
+				)
+				break
 			}
 			continue
 		}
@@ -784,4 +807,46 @@ func providerForFallbackCandidate(
 		return nil, fmt.Errorf("fallback model %q has no active provider", model)
 	}
 	return activeProvider, nil
+}
+
+func transientLLMRetryReason(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+
+	if failErr := providers.ClassifyError(err, "", ""); failErr != nil {
+		switch failErr.Reason {
+		case providers.FailoverTimeout:
+			if failErr.Status >= 500 {
+				return "server_error", true
+			}
+			return "timeout", true
+		case providers.FailoverNetwork:
+			return "network", true
+		case providers.FailoverRateLimit, providers.FailoverOverloaded:
+			return "rate_limit", true
+		}
+	}
+
+	errMsg := strings.ToLower(err.Error())
+	if errors.Is(err, context.DeadlineExceeded) ||
+		strings.Contains(errMsg, "deadline exceeded") ||
+		strings.Contains(errMsg, "client.timeout") ||
+		strings.Contains(errMsg, "timed out") ||
+		strings.Contains(errMsg, "timeout exceeded") {
+		return "timeout", true
+	}
+
+	if strings.Contains(errMsg, "connection reset") ||
+		strings.Contains(errMsg, "connection refused") ||
+		strings.Contains(errMsg, "broken pipe") ||
+		strings.Contains(errMsg, "no such host") ||
+		strings.Contains(errMsg, "network is unreachable") ||
+		strings.Contains(errMsg, "read tcp") ||
+		strings.Contains(errMsg, "write tcp") ||
+		strings.Contains(errMsg, "eof") {
+		return "network", true
+	}
+
+	return "", false
 }

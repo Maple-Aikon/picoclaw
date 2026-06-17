@@ -171,6 +171,30 @@ func TestCreateProviderFromConfig_UsesExplicitProvider(t *testing.T) {
 	}
 }
 
+func TestCreateProviderFromConfig_DeepSeekSupportsThinking(t *testing.T) {
+	cfg := &config.ModelConfig{
+		ModelName: "deepseek-v4-flash",
+		Provider:  "deepseek",
+		Model:     "deepseek-v4-flash",
+	}
+	cfg.SetAPIKey("test-key")
+
+	provider, modelID, err := CreateProviderFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("CreateProviderFromConfig() error = %v", err)
+	}
+	if modelID != "deepseek-v4-flash" {
+		t.Fatalf("modelID = %q, want %q", modelID, "deepseek-v4-flash")
+	}
+	tc, ok := provider.(ThinkingCapable)
+	if !ok {
+		t.Fatalf("provider %T should implement ThinkingCapable for DeepSeek", provider)
+	}
+	if !tc.SupportsThinking() {
+		t.Fatalf("DeepSeek provider SupportsThinking() = false, want true")
+	}
+}
+
 func TestCreateProviderFromConfig_PreservesExplicitProviderPrefixedModel(t *testing.T) {
 	cfg := &config.ModelConfig{
 		ModelName: "test-openai",
@@ -846,8 +870,11 @@ func TestCreateProviderFromConfig_AzureMissingAPIKey(t *testing.T) {
 	}
 
 	_, _, err := CreateProviderFromConfig(cfg)
-	if err == nil {
-		t.Fatal("CreateProviderFromConfig() expected error for missing API key")
+	// Without api_key the factory falls back to identity auth, which in the
+	// default build is stubbed out and surfaces a build-tag error. With the
+	// azidentity tag, the call succeeds and is covered by a separate test.
+	if err != nil && !strings.Contains(err.Error(), "azidentity") {
+		t.Fatalf("CreateProviderFromConfig() unexpected error = %v", err)
 	}
 }
 
@@ -1053,6 +1080,21 @@ func TestModelProviderOptions(t *testing.T) {
 		t.Fatal("anthropic option missing")
 	} else if option.DefaultAPIBase != "https://api.anthropic.com/v1" {
 		t.Fatalf("anthropic default_api_base = %q, want %q", option.DefaultAPIBase, "https://api.anthropic.com/v1")
+	}
+	// First-party Claude API model IDs use hyphenated formats such as
+	// claude-{name}-{major}-{minor} or claude-{name}-{major}-{minor}-{YYYYMMDD};
+	// dotted provider prefixes are for platform-specific IDs such as Bedrock.
+	// https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions
+	for _, provider := range []string{"anthropic", "anthropic-messages"} {
+		option, ok := seen[provider]
+		if !ok {
+			t.Fatalf("%s option missing", provider)
+		}
+		for _, model := range option.CommonModels {
+			if strings.Contains(model, ".") {
+				t.Fatalf("%s common_model %q uses dotted ID", provider, model)
+			}
+		}
 	}
 	if _, ok := seen["azure"]; !ok {
 		t.Fatal("azure option missing")

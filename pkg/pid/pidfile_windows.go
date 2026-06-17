@@ -3,8 +3,7 @@
 package pid
 
 import (
-	"os"
-	"path/filepath"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -14,21 +13,10 @@ var (
 	procOpenProcess                = kernel32.NewProc("OpenProcess")
 	procGetExitCodeProcess         = kernel32.NewProc("GetExitCodeProcess")
 	procCloseHandle                = kernel32.NewProc("CloseHandle")
+	procQueryFullProcessImageNameW = kernel32.NewProc("QueryFullProcessImageNameW")
 	processQueryLimitedInformation = uint32(0x1000)
 	stillActive                    = uint32(259)
 )
-
-// isOurGateway reports whether a live gateway process is bound to
-// the given PID. On Windows there is no /proc filesystem, so we
-// fall back to the OpenProcess + GetExitCodeProcess check that
-// isProcessRunning already performs. Identity verification is not
-// available; this is an inherent platform limitation.
-func isOurGateway(pid int, hint IdentityHint) PidCheckResult {
-	if isProcessRunning(pid) {
-		return AliveOurs
-	}
-	return Stale
-}
 
 // isProcessRunning checks whether a process with the given PID is alive
 // on Windows using OpenProcess + GetExitCodeProcess.
@@ -55,21 +43,32 @@ func isProcessRunning(pid int) bool {
 	return exitCode == stillActive
 }
 
-// currentBinaryName returns the basename of the running binary.
-// On Windows, " (deleted)" markers are not used, so the value is
-// returned as-is. Falls back to "" if the value cannot be
-// determined.
-func currentBinaryName() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
+// isPicoclawProcess uses QueryFullProcessImageNameW to confirm the
+// process image name contains "picoclaw". Returns false when the name
+// clearly does not match. Returns true if the query fails, falling
+// back to trusting the liveness check alone.
+func isPicoclawProcess(pid int) bool {
+	handle, _, _ := procOpenProcess.Call(
+		uintptr(processQueryLimitedInformation),
+		0,
+		uintptr(pid),
+	)
+	if handle == 0 {
+		return true // cannot open — trust liveness check
 	}
-	return filepath.Base(exe)
-}
+	defer procCloseHandle.Call(handle)
 
-// currentComm returns the process name as Windows exposes it. There
-// is no /proc/self/comm equivalent, so we fall back to the binary
-// basename. The identity check is not enabled on Windows anyway.
-func currentComm() string {
-	return currentBinaryName()
+	var buf [260]uint16
+	var size uint32 = 260
+	ret, _, _ := procQueryFullProcessImageNameW.Call(
+		uintptr(handle),
+		0, // WIN32_NAME_FORMAT
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&size)),
+	)
+	if ret == 0 {
+		return true // cannot verify — trust liveness check
+	}
+	name := strings.ToLower(syscall.UTF16ToString(buf[:size]))
+	return strings.Contains(name, "picoclaw")
 }
