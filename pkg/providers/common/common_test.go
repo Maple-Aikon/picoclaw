@@ -800,3 +800,173 @@ func TestParseResponse_WithFunctionThoughtSignature(t *testing.T) {
 		)
 	}
 }
+
+// --- parseImageDataURLMime tests ---
+
+func TestParseImageDataURLMime(t *testing.T) {
+	tests := []struct {
+		name    string
+		dataURL string
+		want    string
+	}{
+		{"png data url", "data:image/png;base64,iVBORw0KGgo=", "image/png"},
+		{"jpeg data url", "data:image/jpeg;base64,/9j/4AAQ", "image/jpeg"},
+		{"webp data url", "data:image/webp;base64,UklGRiQ=", "image/webp"},
+		{"gif data url", "data:image/gif;base64,R0lGODlh", "image/gif"},
+		{"https url passes through", "https://example.com/cat.png", ""},
+		{"empty string", "", ""},
+		{"data url no comma", "data:image/png;base64", ""},
+		{"non-image data url", "data:application/octet-stream;base64,abc", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseImageDataURLMime(tt.dataURL)
+			if err != nil {
+				t.Fatalf("parseImageDataURLMime(%q) error = %v", tt.dataURL, err)
+			}
+			if got != tt.want {
+				t.Errorf("parseImageDataURLMime(%q) = %q, want %q", tt.dataURL, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- ParseResponse image tests ---
+
+func TestParseResponse_WithImages(t *testing.T) {
+	// Mirrors the real shape returned by LiteLLM proxying gemini-image-ai
+	// (verified 2026-06-17 against http://localhost:4000/v1/chat/completions).
+	body := `{
+		"choices":[{
+			"message":{
+				"content":"",
+				"images":[
+					{"type":"image_url","index":0,"image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}
+				]
+			},
+			"finish_reason":"stop"
+		}]
+	}`
+	out, err := ParseResponse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("ParseResponse() error = %v", err)
+	}
+	if len(out.Images) != 1 {
+		t.Fatalf("len(Images) = %d, want 1", len(out.Images))
+	}
+	img := out.Images[0]
+	if img.Type != "image_url" {
+		t.Errorf("Type = %q, want %q", img.Type, "image_url")
+	}
+	if img.Index != 0 {
+		t.Errorf("Index = %d, want 0", img.Index)
+	}
+	if img.URL != "data:image/png;base64,iVBORw0KGgo=" {
+		t.Errorf("URL = %q, want data URL preserved", img.URL)
+	}
+	if img.Mime != "image/png" {
+		t.Errorf("Mime = %q, want %q", img.Mime, "image/png")
+	}
+	if img.Ref != "" {
+		t.Errorf("Ref = %q, want empty (Ref is set later by MediaStore)", img.Ref)
+	}
+}
+
+func TestParseResponse_WithMultipleImages(t *testing.T) {
+	body := `{
+		"choices":[{
+			"message":{
+				"content":"",
+				"images":[
+					{"type":"image_url","index":0,"image_url":{"url":"data:image/png;base64,AAA"}},
+					{"type":"image_url","index":1,"image_url":{"url":"data:image/jpeg;base64,BBB"}}
+				]
+			},
+			"finish_reason":"stop"
+		}]
+	}`
+	out, err := ParseResponse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("ParseResponse() error = %v", err)
+	}
+	if len(out.Images) != 2 {
+		t.Fatalf("len(Images) = %d, want 2", len(out.Images))
+	}
+	if out.Images[0].Mime != "image/png" {
+		t.Errorf("Images[0].Mime = %q, want %q", out.Images[0].Mime, "image/png")
+	}
+	if out.Images[1].Mime != "image/jpeg" {
+		t.Errorf("Images[1].Mime = %q, want %q", out.Images[1].Mime, "image/jpeg")
+	}
+	if out.Images[1].Index != 1 {
+		t.Errorf("Images[1].Index = %d, want 1", out.Images[1].Index)
+	}
+}
+
+func TestParseResponse_WithRemoteImageURL(t *testing.T) {
+	body := `{
+		"choices":[{
+			"message":{
+				"content":"",
+				"images":[
+					{"type":"image_url","index":0,"image_url":{"url":"https://cdn.example.com/cat.png"}}
+				]
+			},
+			"finish_reason":"stop"
+		}]
+	}`
+	out, err := ParseResponse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("ParseResponse() error = %v", err)
+	}
+	if len(out.Images) != 1 {
+		t.Fatalf("len(Images) = %d, want 1", len(out.Images))
+	}
+	if out.Images[0].URL != "https://cdn.example.com/cat.png" {
+		t.Errorf("URL = %q, want remote URL preserved", out.Images[0].URL)
+	}
+	if out.Images[0].Mime != "" {
+		t.Errorf("Mime = %q, want empty for remote URL (no data: prefix)", out.Images[0].Mime)
+	}
+}
+
+func TestParseResponse_NoImages(t *testing.T) {
+	body := `{"choices":[{"message":{"content":"just text"},"finish_reason":"stop"}]}`
+	out, err := ParseResponse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("ParseResponse() error = %v", err)
+	}
+	if out.Images == nil {
+		t.Error("Images is nil, want empty slice (zero-value invariant for consumers)")
+	}
+	if len(out.Images) != 0 {
+		t.Errorf("len(Images) = %d, want 0", len(out.Images))
+	}
+}
+
+func TestParseResponse_ImageWithNilImageURL(t *testing.T) {
+	// Defensive: provider may emit an images[] entry without image_url
+	// (e.g. partial streaming state). Must not panic; URL should be "".
+	body := `{
+		"choices":[{
+			"message":{
+				"content":"",
+				"images":[{"type":"image_url","index":0}]
+			},
+			"finish_reason":"stop"
+		}]
+	}`
+	out, err := ParseResponse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("ParseResponse() error = %v", err)
+	}
+	if len(out.Images) != 1 {
+		t.Fatalf("len(Images) = %d, want 1", len(out.Images))
+	}
+	if out.Images[0].URL != "" {
+		t.Errorf("URL = %q, want empty for nil image_url", out.Images[0].URL)
+	}
+	if out.Images[0].Mime != "" {
+		t.Errorf("Mime = %q, want empty for nil image_url", out.Images[0].Mime)
+	}
+}

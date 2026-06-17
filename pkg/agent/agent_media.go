@@ -8,17 +8,24 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/h2non/filetype"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/constants"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
 // genericPlaceholderRegex matches generic media placeholders emitted by various
@@ -285,4 +292,192 @@ func injectPathTags(content string, tags []string) string {
 func looksLikeJSON(s string) bool {
 	s = strings.TrimSpace(s)
 	return len(s) > 1 && s[0] == '{'
+}
+
+// parseImageDataURLBytes extracts the raw bytes and mime from a data URL of the
+// form "data:<mime>;base64,<data>". Empty inputs return ("", nil, false) so the
+// caller can skip non-data URLs (http/https) without logging a warning.
+func parseImageDataURLBytes(dataURL string) (string, []byte, bool) {
+	if !strings.HasPrefix(dataURL, "data:") {
+		return "", nil, false
+	}
+	// header = "data:<mime>;base64"
+	header, payload, ok := strings.Cut(dataURL, ",")
+	if !ok {
+		return "", nil, false
+	}
+	mime := strings.TrimPrefix(header, "data:")
+	mime = strings.TrimSuffix(mime, ";base64")
+	bytes, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return "", nil, false
+	}
+	return mime, bytes, true
+}
+
+// imageExtFromMIME returns a conventional file extension for a MIME type, or
+// "bin" when nothing matches. Used to choose filenames for stored images.
+func imageExtFromMIME(mime string) string {
+	switch {
+	case strings.HasSuffix(mime, "png"):
+		return "png"
+	case strings.HasSuffix(mime, "jpeg"), strings.HasSuffix(mime, "jpg"):
+		return "jpg"
+	case strings.HasSuffix(mime, "gif"):
+		return "gif"
+	case strings.HasSuffix(mime, "webp"):
+		return "webp"
+	case strings.HasSuffix(mime, "svg+xml"):
+		return "svg"
+	default:
+		return "bin"
+	}
+}
+
+// storeImageFromDataURL writes the decoded bytes to a temp file and registers
+// it with the MediaStore under the given scope. Returns a media:// ref.
+func storeImageFromDataURL(store media.MediaStore, scope, filename, mime, dataURL string) (string, error) {
+	_, raw, ok := parseImageDataURLBytes(dataURL)
+	if !ok {
+		return "", nil
+	}
+	tmp, err := os.CreateTemp("", "picoclaw-img-*"+filepath.Ext(filename))
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return "", err
+	}
+	ref, err := store.Store(tmpPath, media.MediaMeta{
+		Filename:    filename,
+		ContentType: mime,
+		Source:      "llm:image-gen",
+	}, scope)
+	if err != nil {
+		os.Remove(tmpPath)
+		return "", err
+	}
+	return ref, nil
+}
+
+// publishAssistantImages consumes LLMResponse.Images (from image generation
+// providers such as Gemini via LiteLLM) and dispatches each as an outbound
+// media message via the channel manager. Data URLs are decoded to bytes,
+// stored via the MediaStore, and the resolved refs are attached as
+// MediaParts so channels (Telegram, Discord, etc.) can deliver them.
+//
+// Internal channels (pico, cli) are skipped — they have no media delivery
+// path. Errors are logged but not returned: a single bad image must not
+// abort the rest of the assistant turn.
+//
+// agentID is passed explicitly because AgentLoop itself is per-agent scoped
+// at construction time but not all helpers carry the bound agent instance;
+// passing it from the turn state keeps the helper stateless w.r.t. identity.
+func (al *AgentLoop) publishAssistantImages(
+	ctx context.Context,
+	images []protocoltypes.ImageContent,
+	channel, chatID, sessionKey, scope, agentID string,
+	inboundCtx *bus.InboundContext,
+	replyToMessageID string,
+) {
+	if al.mediaStore == nil || len(images) == 0 {
+		return
+	}
+	if channel == "" || chatID == "" {
+		return
+	}
+	if constants.IsInternalChannel(channel) {
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
+
+	pubCtx, pubCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer pubCancel()
+
+	parts := make([]bus.MediaPart, 0, len(images))
+	for idx, im := range images {
+		if im.URL == "" {
+			continue
+		}
+		mime := im.Mime
+		if mime == "" {
+			// Fall back to parsing from data URL when not prefilled.
+			if parsed, _, ok := parseImageDataURLBytes(im.URL); ok {
+				mime = parsed
+			}
+		}
+		ext := imageExtFromMIME(mime)
+		filename := fmt.Sprintf("generated-%d-%d.%s", time.Now().UnixNano(), idx, ext)
+
+		var ref string
+		if strings.HasPrefix(im.URL, "data:") {
+			r, err := storeImageFromDataURL(al.mediaStore, scope, filename, mime, im.URL)
+			if err != nil {
+				logger.WarnCF("agent", "Failed to store generated image", map[string]any{
+					"channel": channel,
+					"index":   idx,
+					"error":   err.Error(),
+				})
+				continue
+			}
+			ref = r
+		} else {
+			// Remote URL: skip MediaStore (no local bytes to register) and
+			// hand the URL to channels that can fetch it themselves.
+			ref = im.URL
+		}
+
+		parts = append(parts, bus.MediaPart{
+			Type:        inferMediaType(filename, mime),
+			Ref:         ref,
+			ContentType: mime,
+			Filename:    filename,
+		})
+	}
+
+	if len(parts) == 0 {
+		return
+	}
+
+	msg := bus.OutboundMediaMessage{
+		Channel: channel,
+		ChatID:  chatID,
+		Context: outboundContextFromInbound(
+			inboundCtx,
+			channel,
+			chatID,
+			replyToMessageID,
+		),
+		AgentID:    agentID,
+		SessionKey: sessionKey,
+		Parts:      parts,
+	}
+	if al.channelManager != nil {
+		if err := al.channelManager.SendMedia(pubCtx, msg); err != nil {
+			logger.WarnCF("agent", "Failed to deliver generated images", map[string]any{
+				"channel":  channel,
+				"agent_id": agentID,
+				"parts":    len(parts),
+				"error":    err.Error(),
+			})
+		}
+		return
+	}
+	// Fallback: no channel manager wired, log and drop. We do not
+	// PublishOutboundMedia to the bus because the bus has no subscriber
+	// for media in this code path; channels consume SendMedia directly.
+	logger.WarnCF("agent", "No channel manager available, dropping generated images", map[string]any{
+		"channel":  channel,
+		"agent_id": agentID,
+		"parts":    len(parts),
+	})
 }

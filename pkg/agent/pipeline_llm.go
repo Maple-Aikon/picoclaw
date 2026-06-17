@@ -659,6 +659,23 @@ func (p *Pipeline) CallLLM(
 		}
 
 		exec.finalContent = responseContent
+		if len(exec.response.Images) > 0 {
+			imageScope := ts.sessionKey
+			if imageScope == "" {
+				imageScope = ts.channel + ":" + ts.chatID
+			}
+			al.publishAssistantImages(
+				turnCtx,
+				exec.response.Images,
+				ts.channel,
+				ts.chatID,
+				ts.sessionKey,
+				imageScope,
+				ts.agent.ID,
+				ts.opts.Dispatch.InboundContext,
+				ts.opts.Dispatch.ReplyToMessageID(),
+			)
+		}
 		logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
 			map[string]any{
 				"agent_id":      ts.agent.ID,

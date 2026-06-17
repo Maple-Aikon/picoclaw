@@ -571,6 +571,7 @@ func parseStreamResponse(
 	var reasoningContent strings.Builder
 	var reasoning strings.Builder
 	var reasoningDetails []ReasoningDetail
+	var streamImages []protocoltypes.ImageContent
 	var finishReason string
 	var usage *UsageInfo
 
@@ -597,7 +598,14 @@ func parseStreamResponse(
 					ReasoningContent string            `json:"reasoning_content"`
 					Reasoning        string            `json:"reasoning"`
 					ReasoningDetails []ReasoningDetail `json:"reasoning_details"`
-					ToolCalls        []struct {
+					Images           []struct {
+						Type     string `json:"type"`
+						Index    int    `json:"index"`
+						ImageURL *struct {
+							URL string `json:"url"`
+						} `json:"image_url"`
+					} `json:"images"`
+					ToolCalls []struct {
 						Index    int    `json:"index"`
 						ID       string `json:"id"`
 						Function *struct {
@@ -646,6 +654,31 @@ func parseStreamResponse(
 			textContent.WriteString(choice.Delta.Content)
 			if onChunk != nil {
 				onChunk(StreamChunk{Content: textContent.String()})
+			}
+		}
+
+		// Accumulate image deltas (e.g. Gemini image generation). Each delta may
+		// carry one or more images via delta.images[]; we forward them as a
+		// StreamChunk so streaming consumers can observe events in real time, and
+		// also retain them for the final LLMResponse.Images.
+		if len(choice.Delta.Images) > 0 {
+			for _, im := range choice.Delta.Images {
+				url := ""
+				if im.ImageURL != nil {
+					url = im.ImageURL.URL
+				}
+				streamImages = append(streamImages, protocoltypes.ImageContent{
+					Type:  im.Type,
+					URL:   url,
+					Index: im.Index,
+					Mime:  parseStreamImageDataURLMime(url),
+				})
+			}
+			if onChunk != nil {
+				chunk := StreamChunk{}
+				chunk.Images = make([]protocoltypes.ImageContent, len(streamImages))
+				copy(chunk.Images, streamImages)
+				onChunk(chunk)
 			}
 		}
 
@@ -754,6 +787,7 @@ func parseStreamResponse(
 		Reasoning:        reasoning.String(),
 		ReasoningDetails: reasoningDetails,
 		ToolCalls:        toolCalls,
+		Images:           streamImages,
 		FinishReason:     finishReason,
 		Usage:            usage,
 	}, nil
@@ -816,4 +850,29 @@ func isNativeSearchHost(apiBase string) bool {
 // (Mistral, Gemini, DeepSeek, Groq, etc.) reject unknown fields with 422 errors.
 func supportsPromptCacheKey(apiBase string) bool {
 	return isNativeOpenAIOrAzureEndpoint(apiBase)
+}
+
+// parseStreamImageDataURLMime extracts the mime type from a data URL of the
+// form "data:image/<fmt>;base64,<payload>". Returns empty string if the URL is
+// not a data URL or does not advertise an image/<fmt> prefix. Mirrors
+// common.parseImageDataURLMime so the openai_compat package does not need to
+// import an internal helper.
+func parseStreamImageDataURLMime(url string) string {
+	const prefix = "data:"
+	if len(url) < len(prefix) || url[:len(prefix)] != prefix {
+		return ""
+	}
+	rest := url[len(prefix):]
+	comma := strings.Index(rest, ",")
+	if comma < 0 {
+		return ""
+	}
+	header := rest[:comma]
+	if semi := strings.Index(header, ";"); semi >= 0 {
+		header = header[:semi]
+	}
+	if len(header) < len("image/") || header[:6] != "image/" {
+		return ""
+	}
+	return header
 }

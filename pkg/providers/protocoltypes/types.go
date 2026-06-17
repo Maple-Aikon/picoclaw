@@ -33,11 +33,42 @@ type LLMResponse struct {
 	Usage            *UsageInfo        `json:"usage,omitempty"`
 	Reasoning        string            `json:"reasoning"`
 	ReasoningDetails []ReasoningDetail `json:"reasoning_details"`
+
+	// Images are media items returned by the model (e.g. image generation
+	// backends). Each entry carries a stable Ref resolved against a
+	// MediaStore ("media://<id>") and the original data URL or remote URL.
+	//
+	// Ref is preferred when set (it survives serialization across
+	// processes). URL is preserved verbatim from the provider response so
+	// callers that bypass MediaStore (debug tooling, tests) still see the
+	// source data:base64 URL.
+	Images []ImageContent `json:"images,omitempty"`
 }
 
 type StreamChunk struct {
 	Content          string
 	ReasoningContent string
+
+	// Images received in this SSE chunk. The provider's delta may include
+	// image content independent of text (e.g. Gemini image generation).
+	// The full set for a turn is accumulated in LLMResponse.Images by
+	// parseStreamResponse; StreamChunk.Images lets streaming consumers
+	// observe individual image events in real time.
+	Images []ImageContent
+}
+
+// ImageContent represents a single image returned by the model.
+//
+// Ref is the canonical handle for MediaStore resolution ("media://<id>").
+// URL is the original provider URL, typically "data:image/<fmt>;base64,<...>"
+// for image generation backends (LiteLLM gemini-image-ai, OpenAI gpt-image-1).
+// Index preserves the provider's ordering across streaming chunks.
+type ImageContent struct {
+	Type  string `json:"type,omitempty"` // "image_url" | "image"
+	URL   string `json:"url,omitempty"`  // data:base64 or http(s)://
+	Ref   string `json:"ref,omitempty"`  // media://<id> (after MediaStore.Store)
+	Index int    `json:"index,omitempty"`
+	Mime  string `json:"mime,omitempty"` // parsed from data URL "image/<fmt>" when available
 }
 
 type ReasoningDetail struct {

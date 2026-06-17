@@ -34,6 +34,7 @@ type (
 	ExtraContent           = protocoltypes.ExtraContent
 	GoogleExtra            = protocoltypes.GoogleExtra
 	ReasoningDetail        = protocoltypes.ReasoningDetail
+	ImageContent           = protocoltypes.ImageContent
 )
 
 const DefaultRequestTimeout = 120 * time.Second
@@ -226,6 +227,23 @@ func ParseDataAudioURL(mediaURL string) (format, data string, ok bool) {
 	return format, data, true
 }
 
+// parseImageDataURLMime extracts the "image/<fmt>" mime from a data: URL.
+// Returns empty string if the URL is not a data: URL or has no recognizable
+// image mime prefix. Used by ParseResponse to populate ImageContent.Mime so
+// downstream consumers (channels, tools) can pick a filename extension.
+func parseImageDataURLMime(dataURL string) (string, error) {
+	if !strings.HasPrefix(dataURL, "data:image/") {
+		return "", nil
+	}
+	payload := strings.TrimPrefix(dataURL, "data:image/")
+	meta, _, found := strings.Cut(payload, ",")
+	if !found {
+		return "", nil
+	}
+	mime, _, _ := strings.Cut(meta, ";")
+	return "image/" + strings.TrimSpace(mime), nil
+}
+
 // --- Response parsing ---
 
 // ParseResponse parses a JSON chat completion response body into an LLMResponse.
@@ -237,7 +255,14 @@ func ParseResponse(body io.Reader) (*LLMResponse, error) {
 				ReasoningContent string            `json:"reasoning_content"`
 				Reasoning        string            `json:"reasoning"`
 				ReasoningDetails []ReasoningDetail `json:"reasoning_details"`
-				ToolCalls        []struct {
+				Images           []struct {
+					Type     string `json:"type"`
+					Index    int    `json:"index"`
+					ImageURL *struct {
+						URL string `json:"url"`
+					} `json:"image_url"`
+				} `json:"images"`
+				ToolCalls []struct {
 					ID       string `json:"id"`
 					Type     string `json:"type"`
 					Function *struct {
@@ -315,12 +340,28 @@ func ParseResponse(body io.Reader) (*LLMResponse, error) {
 		toolCalls = append(toolCalls, toolCall)
 	}
 
+	images := make([]ImageContent, 0, len(choice.Message.Images))
+	for _, im := range choice.Message.Images {
+		url := ""
+		if im.ImageURL != nil {
+			url = im.ImageURL.URL
+		}
+		mime, _ := parseImageDataURLMime(url)
+		images = append(images, ImageContent{
+			Type:  im.Type,
+			URL:   url,
+			Index: im.Index,
+			Mime:  mime,
+		})
+	}
+
 	return &LLMResponse{
 		Content:          choice.Message.Content,
 		ReasoningContent: choice.Message.ReasoningContent,
 		Reasoning:        choice.Message.Reasoning,
 		ReasoningDetails: choice.Message.ReasoningDetails,
 		ToolCalls:        toolCalls,
+		Images:           images,
 		FinishReason:     normalizeFinishReason(choice.FinishReason),
 		Usage:            apiResponse.Usage,
 	}, nil
