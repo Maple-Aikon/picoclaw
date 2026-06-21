@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -3129,15 +3130,23 @@ func newChatCompletionTestServer(
 		if r.URL.Path != "/chat/completions" {
 			t.Fatalf("%s server path = %q, want /chat/completions", label, r.URL.Path)
 		}
-		*calls = *calls + 1
 		defer r.Body.Close()
 
+		// Skip the call counter for task-extraction calls (pipeline_setup.go:SetupTurn
+		// spawns a background goroutine that calls Chat with max_tokens=256 and a
+		// single user message). Tests using this server count only main-flow calls.
+		bodyBytes, _ := io.ReadAll(r.Body)
 		var req struct {
-			Model string `json:"model"`
+			Model     string            `json:"model"`
+			Messages  []json.RawMessage `json:"messages"`
+			MaxTokens json.Number       `json:"max_tokens"`
 		}
-		decodeErr := json.NewDecoder(r.Body).Decode(&req)
-		if decodeErr != nil {
-			t.Fatalf("decode %s request: %v", label, decodeErr)
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
+			t.Fatalf("decode %s request: %v", label, err)
+		}
+		isExtraction := len(req.Messages) == 1 && req.MaxTokens.String() == "256"
+		if !isExtraction {
+			*calls = *calls + 1
 		}
 		*model = req.Model
 

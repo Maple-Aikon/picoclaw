@@ -120,9 +120,18 @@ func (m *seahorseContextManager) Assemble(ctx context.Context, req *AssembleRequ
 		effectiveBudget = budget / 2
 	}
 
+	// MaxChatSizeWhenCompact may be zero when agent config did not override the
+	// defaults (e.g. direct struct construction in tests). The seahorse assembler
+	// already falls back to 8000 for non-positive values (short_assembler.go:67),
+	// so passing 0 here is safe and keeps the contract identical.
+	maxChatSizeWhenCompact := 0
+	if m.agent != nil {
+		maxChatSizeWhenCompact = m.agent.MaxChatSizeWhenCompact
+	}
+
 	result, err := m.engine.Assemble(ctx, req.SessionKey, seahorse.AssembleInput{
 		Budget:                 effectiveBudget,
-		MaxChatSizeWhenCompact: m.agent.MaxChatSizeWhenCompact,
+		MaxChatSizeWhenCompact: maxChatSizeWhenCompact,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("seahorse assemble: %w", err)
