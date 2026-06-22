@@ -449,12 +449,16 @@ Updated content.`
 // (~/.picoclaw/skills) invalidates the cached system prompt.
 func TestGlobalSkillFileContentChange(t *testing.T) {
 	tmpHome := t.TempDir()
+	// getGlobalConfigDir() reads PICOCLAW_HOME first (returns the .picoclaw
+	// dir directly, no implicit join). Set PICOCLAW_HOME so the global skills
+	// directory is <tmpHome>/skills and matches NewContextBuilder's lookup.
+	t.Setenv("PICOCLAW_HOME", tmpHome)
 	t.Setenv("HOME", tmpHome)
 
 	tmpDir := setupWorkspace(t, nil)
 	defer os.RemoveAll(tmpDir)
 
-	globalSkillPath := filepath.Join(tmpHome, ".picoclaw", "skills", "global-skill", "SKILL.md")
+	globalSkillPath := filepath.Join(tmpHome, "skills", "global-skill", "SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(globalSkillPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
