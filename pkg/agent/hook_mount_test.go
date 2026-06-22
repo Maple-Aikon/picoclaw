@@ -41,6 +41,16 @@ func (h *builtinAutoHook) AfterLLM(
 	return next, HookDecision{Action: HookActionModify}, nil
 }
 
+// BeforeCompact satisfies the LLMInterceptor interface so the hook isn't
+// silently filtered out by the type-assertion at hooks.go when the
+// interface includes BeforeCompact.
+func (h *builtinAutoHook) BeforeCompact(
+	ctx context.Context,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, error) {
+	return req, HookDecision{Action: HookActionContinue}, nil
+}
+
 func newConfiguredHookLoop(t *testing.T, provider *llmHookTestProvider, hooks config.HooksConfig) *AgentLoop {
 	t.Helper()
 

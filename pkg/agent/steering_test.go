@@ -383,6 +383,9 @@ func (m *toolCallProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
@@ -420,6 +423,9 @@ func (p *gracefulCaptureProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls++
@@ -457,6 +463,9 @@ func (p *lateSteeringProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.mu.Lock()
 	p.calls++
 	call := p.calls
@@ -504,6 +513,9 @@ func (p *blockingDirectProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.mu.Lock()
 	p.calls++
 	call := p.calls
@@ -1863,6 +1875,9 @@ func (m *capturingMockProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.calls++
 	if m.captureFn != nil {
 		m.captureFn(messages)
