@@ -419,6 +419,10 @@ func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 		ReasoningContent: msg.ReasoningContent,
 		TokenCount:       tokenizer.EstimateMessageTokens(msg),
 	}
+	if msg.CreatedAt != nil {
+		truncated := msg.CreatedAt.Truncate(time.Second)
+		result.CreatedAt = truncated
+	}
 
 	// Convert ToolCalls → MessageParts
 	for _, tc := range msg.ToolCalls {
