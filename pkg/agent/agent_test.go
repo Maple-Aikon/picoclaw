@@ -31,6 +31,53 @@ import (
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
+// taskExtractionResponse returns a valid task-summary echo for background
+// extraction calls from pipeline_setup.go extractTaskWithFallback.
+func taskExtractionResponse(messages []providers.Message) string {
+	for _, m := range messages {
+		if m.Role == "user" && strings.Contains(m.Content, "<user_message>") {
+			inner := m.Content
+			inner = strings.ReplaceAll(inner, "<user_message>", "")
+			inner = strings.ReplaceAll(inner, "</user_message>", "")
+			inner = strings.TrimSpace(inner)
+			if len(inner) > 200 {
+				inner = inner[:200]
+			}
+			return inner
+		}
+	}
+	return "task summary"
+}
+
+// isTaskExtractionCall detects the background task-extraction LLM call from
+// pipeline_setup.go SetupTurn (extractTaskWithFallback).
+// Signature: 1 user message with <user_message> tag, 0 tools, max_tokens=256.
+func isTaskExtractionCall(messages []providers.Message, tools []providers.ToolDefinition, opts map[string]any) bool {
+	if len(messages) != 1 || len(tools) != 0 {
+		return false
+	}
+	if messages[0].Role != "user" || !strings.Contains(messages[0].Content, "<user_message>") {
+		return false
+	}
+	if opts == nil {
+		return false
+	}
+	v, ok := opts["max_tokens"]
+	if !ok {
+		return false
+	}
+	switch n := v.(type) {
+	case int:
+		return n == 256
+	case int64:
+		return n == 256
+	case float64:
+		return int(n) == 256
+	}
+	return false
+}
+
+
 type fakeChannel struct{ id string }
 
 func (f *fakeChannel) Name() string                    { return "fake" }
@@ -2389,6 +2436,9 @@ func (m *countingMockProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.calls++
 	return &providers.LLMResponse{
 		Content:   m.response,
@@ -2412,6 +2462,9 @@ func (m *handledMediaProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.calls++
 	m.toolCounts = append(m.toolCounts, len(tools))
 	if m.calls == 1 {
@@ -2443,6 +2496,9 @@ func (m *handledUserProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.calls++
 	if m.calls == 1 {
 		return &providers.LLMResponse{
@@ -2473,6 +2529,9 @@ func (m *messageToolProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.calls++
 	if m.calls == 1 {
 		return &providers.LLMResponse{
@@ -2504,6 +2563,9 @@ func (m *reasoningVisibleToolProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.calls++
 	if m.calls == 1 {
 		return &providers.LLMResponse{
@@ -2535,6 +2597,9 @@ func (m *artifactThenSendProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.calls++
 	if m.calls == 1 {
 		return &providers.LLMResponse{
@@ -2601,6 +2666,9 @@ func (m *toolFeedbackProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.calls++
 	if m.calls == 1 {
 		return &providers.LLMResponse{
@@ -2635,6 +2703,9 @@ func (m *toolFeedbackReasoningProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.calls++
 	if m.calls == 1 {
 		return &providers.LLMResponse{
@@ -2836,6 +2907,9 @@ func (m *picoInterleavedContentProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.calls++
 	if m.calls == 1 {
 		return &providers.LLMResponse{
@@ -2870,6 +2944,9 @@ func (m *picoDistinctToolCallContentProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.calls++
 	if m.calls == 1 {
 		return &providers.LLMResponse{
@@ -3000,6 +3077,9 @@ func (m *handledMediaWithSteeringProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.calls++
 	if m.calls == 1 {
 		return &providers.LLMResponse{
@@ -4412,6 +4492,9 @@ func (p *visionUnsupportedMediaProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.calls++
 
 	hasMedia := false
@@ -4457,6 +4540,9 @@ func (p *loadImagePlanningProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.calls++
 	p.models = append(p.models, model)
 
@@ -4496,6 +4582,9 @@ func (p *visionAnswerProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.calls++
 	p.models = append(p.models, model)
 
@@ -4541,6 +4630,9 @@ func (p *resolvedImagePathVisionProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.calls++
 	p.models = append(p.models, model)
 
@@ -4589,6 +4681,9 @@ func (p *unexpectedTextAttachmentProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.calls++
 	return &providers.LLMResponse{
 		Content:   "text model response",
@@ -4612,6 +4707,9 @@ func (p *unexpectedVisionProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.calls++
 	p.models = append(p.models, model)
 	return nil, fmt.Errorf("vision provider should not be called for this turn")
@@ -4636,6 +4734,9 @@ func (p *loadImageThenTextFollowUpProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.calls++
 	p.models = append(p.models, model)
 
@@ -7177,6 +7278,9 @@ func (p *overflowProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.calls++
 	p.lastMessages = append([]providers.Message(nil), messages...)
 
