@@ -201,6 +201,14 @@ func (r *recordingProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	// Skip background task-extraction calls so they don't overwrite the
+	// messages recorded from the main turn call.
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{
+			Content:   taskExtractionResponse(messages),
+			ToolCalls: []providers.ToolCall{},
+		}, nil
+	}
 	r.lastMessages = append([]providers.Message(nil), messages...)
 	r.lastModel = model
 	return &providers.LLMResponse{
@@ -3267,15 +3275,31 @@ func newStrictChatCompletionTestServer(
 		if r.URL.Path != "/chat/completions" {
 			t.Fatalf("%s server path = %q, want /chat/completions", label, r.URL.Path)
 		}
-		*calls = *calls + 1
 		defer r.Body.Close()
 
 		var req struct {
-			Model string `json:"model"`
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+			MaxTokens json.Number `json:"max_tokens"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode %s request: %v", label, err)
 		}
+
+		// Skip the background task-extraction call so it doesn't pollute
+		// call counters. Signature: 1 user message, contains <user_message>,
+		// max_tokens=256.
+		isExtraction := len(req.Messages) == 1 &&
+			req.Messages[0].Role == "user" &&
+			strings.Contains(req.Messages[0].Content, "<user_message>") &&
+			req.MaxTokens.String() == "256"
+		if !isExtraction {
+			*calls = *calls + 1
+		}
+
 		if req.Model != expectedModel {
 			t.Fatalf("%s server model = %q, want %q", label, req.Model, expectedModel)
 		}
@@ -4394,6 +4418,9 @@ func (m *failFirstMockProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	m.currentCall++
 	if m.currentCall <= m.failures {
 		return nil, m.failError
@@ -7340,8 +7367,8 @@ func TestProcessMessage_ContextOverflowRecovery(t *testing.T) {
 		t.Fatalf("response = %q, want %q", response, "Recovered from overflow")
 	}
 
-	if provider.calls != 3 {
-		t.Fatalf("expected 3 calls, got %d", provider.calls)
+	if provider.calls != 2 {
+		t.Fatalf("expected 2 calls, got %d", provider.calls)
 	}
 }
 
