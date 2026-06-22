@@ -224,6 +224,9 @@ func (r *thinkingRecordingProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	r.lastOptions = maps.Clone(opts)
 	return &providers.LLMResponse{
 		Content:   "Mock response",
@@ -250,6 +253,9 @@ func (r *thinkingOptionRecordingProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	r.lastOptions = maps.Clone(opts)
 	return &providers.LLMResponse{
 		Content:   "Mock response",
@@ -272,6 +278,9 @@ func (r *reasoningOptionRecordingProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	r.lastOptions = maps.Clone(opts)
 	return &providers.LLMResponse{
 		Content:          "final answer",
