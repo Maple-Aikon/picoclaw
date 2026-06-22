@@ -176,6 +176,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	exec.llmModelName = activeModelName
 	exec.activeProvider = activeProvider
 	exec.tier = tier
+	exec.usedLight = tier == routing.TierLight
 
 	// Background task extraction for goal-drift prevention.
 	// Spawn a goroutine to extract a concise task summary from the user's initial
