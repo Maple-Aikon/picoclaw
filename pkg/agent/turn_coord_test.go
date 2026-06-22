@@ -84,6 +84,9 @@ func (p *nativeSearchCaptureProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.messages = append([]providers.Message(nil), messages...)
 	p.tools = append([]providers.ToolDefinition(nil), tools...)
 	p.lastOpts = make(map[string]any, len(opts))

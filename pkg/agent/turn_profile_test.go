@@ -27,6 +27,9 @@ func (p *turnProfileCaptureProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.messages = append([]providers.Message(nil), messages...)
 	p.tools = append([]providers.ToolDefinition(nil), tools...)
 	return &providers.LLMResponse{Content: "profile response"}, nil
@@ -47,6 +50,9 @@ func (p *turnProfileSideQuestionCaptureProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.messages = append([]providers.Message(nil), messages...)
 	return &providers.LLMResponse{Content: "side answer"}, nil
 }
@@ -662,6 +668,13 @@ func (h turnProfileEnableNativeSearchHook) AfterLLM(
 	return resp, HookDecision{Action: HookActionContinue}, nil
 }
 
+func (h turnProfileEnableNativeSearchHook) BeforeCompact(
+	ctx context.Context,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, error) {
+	return req, HookDecision{Action: HookActionContinue}, nil
+}
+
 type turnProfileRespondToolHook struct{}
 
 func (h turnProfileRespondToolHook) BeforeTool(
@@ -692,6 +705,9 @@ func (p *turnProfileToolCallProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.calls++
 	p.messages = append([]providers.Message(nil), messages...)
 	if p.calls == 1 {
