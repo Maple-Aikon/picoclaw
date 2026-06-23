@@ -290,7 +290,12 @@ func NewAgentInstance(
 					} else {
 						mediumCandidates = resolved
 						mediumProvider = lp
-						populateCandidateProvidersFromNames(cfg, workspace, []string{rc.MediumModel}, candidateProviders)
+						populateCandidateProvidersFromNames(
+							cfg,
+							workspace,
+							[]string{rc.MediumModel},
+							candidateProviders,
+						)
 					}
 				}
 			}

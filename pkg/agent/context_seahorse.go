@@ -361,7 +361,10 @@ func (m *seahorseContextManager) bootstrapSession(ctx context.Context, sessionKe
 
 		if fileExists && !fileEmpty {
 			// File has content but yielded 0 messages — likely corrupted JSONL. Do not wipe SQLite.
-			err := fmt.Errorf("JSONL for session %q exists but yielded 0 parseable messages (possible corruption)", sessionKey)
+			err := fmt.Errorf(
+				"JSONL for session %q exists but yielded 0 parseable messages (possible corruption)",
+				sessionKey,
+			)
 			logger.WarnCF("seahorse", "bootstrap skipped to prevent data loss", map[string]any{
 				"session": sessionKey,
 				"error":   err.Error(),
@@ -378,7 +381,7 @@ func (m *seahorseContextManager) bootstrapSession(ctx context.Context, sessionKe
 			})
 			return 0, err
 		}
-		
+
 		// Note: we don't log a success here because it runs on every boot for missing files unless we check DB existence first,
 		// but ClearSession being a no-op is efficient enough (1 SELECT).
 		return 0, nil

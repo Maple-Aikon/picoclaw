@@ -417,11 +417,11 @@ type SubTurnConfig struct {
 }
 
 type ToolFeedbackConfig struct {
-	Enabled           bool   `json:"enabled"               env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_ENABLED"`
-	MaxArgsLength     int    `json:"max_args_length"       env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_MAX_ARGS_LENGTH"`
-	SeparateMessages  bool   `json:"separate_messages"    env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_SEPARATE_MESSAGES"`
-	PrettyPrint       bool   `json:"pretty_print"         env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_PRETTY_PRINT"`
-	DisableEscapeHTML bool   `json:"disable_escape_html"  env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_DISABLE_ESCAPE_HTML"`
+	Enabled           bool `json:"enabled"             env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_ENABLED"`
+	MaxArgsLength     int  `json:"max_args_length"     env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_MAX_ARGS_LENGTH"`
+	SeparateMessages  bool `json:"separate_messages"   env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_SEPARATE_MESSAGES"`
+	PrettyPrint       bool `json:"pretty_print"        env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_PRETTY_PRINT"`
+	DisableEscapeHTML bool `json:"disable_escape_html" env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_DISABLE_ESCAPE_HTML"`
 }
 
 type AgentDefaults struct {
@@ -443,7 +443,7 @@ type AgentDefaults struct {
 	Routing                   *RoutingConfig     `json:"routing,omitempty"`
 	SteeringMode              string             `json:"steering_mode,omitempty"          env:"PICOCLAW_AGENTS_DEFAULTS_STEERING_MODE"`      // "one-at-a-time" (default) or "all"
 	MaxParallelTurns          int                `json:"max_parallel_turns,omitempty"     env:"PICOCLAW_AGENTS_DEFAULTS_MAX_PARALLEL_TURNS"` // Max concurrent turns (0 or 1 = sequential)
-	SubTurn                   SubTurnConfig      `json:"subturn"                                                                                      envPrefix:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_"` 
+	SubTurn                   SubTurnConfig      `json:"subturn"                                                                                      envPrefix:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_"`
 	SummarizeTaskModel        string             `json:"summarize_task_model,omitempty"   env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_TASK_MODEL"`
 	ToolFeedback              ToolFeedbackConfig `json:"tool_feedback,omitempty"`
 	SplitOnMarker             bool               `json:"split_on_marker"                  env:"PICOCLAW_AGENTS_DEFAULTS_SPLIT_ON_MARKER"` // split messages on <|[SPLIT]|> marker
@@ -1099,33 +1099,33 @@ type ToolsConfig struct {
 	// MaxToolResultLength is the maximum length of a tool result sent to the LLM.
 	// If exceeded, the result is truncated and a warning is appended.
 	// Default: 10000
-	MaxToolResultLength int            `json:"max_tool_result_length" yaml:"max_tool_result_length,omitempty" env:"PICOCLAW_TOOLS_MAX_TOOL_RESULT_LENGTH"`
+	MaxToolResultLength int `json:"max_tool_result_length" yaml:"max_tool_result_length,omitempty" env:"PICOCLAW_TOOLS_MAX_TOOL_RESULT_LENGTH"`
 	// AltToolSuggest is an alternative suggestion message shown when a tool result is truncated.
-	AltToolSuggest string `json:"alt_tool_suggest" yaml:"alt_tool_suggest,omitempty" env:"PICOCLAW_TOOLS_ALT_TOOL_SUGGEST"`
-	Web                 WebToolsConfig `json:"web"                    yaml:"web,omitempty"`
-	Cron            CronToolsConfig    `json:"cron"              yaml:"-"`
-	Exec            ExecConfig         `json:"exec"              yaml:"-"`
-	Skills          SkillsToolsConfig  `json:"skills"            yaml:"skills,omitempty"`
-	MediaCleanup    MediaCleanupConfig `json:"media_cleanup"     yaml:"-"`
-	MCP             MCPConfig          `json:"mcp"               yaml:"-"`
-	AppendFile      ToolConfig         `json:"append_file"       yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_APPEND_FILE_"`
-	EditFile        ToolConfig         `json:"edit_file"         yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_EDIT_FILE_"`
-	FindSkills      ToolConfig         `json:"find_skills"       yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_FIND_SKILLS_"`
-	I2C             ToolConfig         `json:"i2c"               yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_I2C_"`
-	InstallSkill    ToolConfig         `json:"install_skill"     yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_INSTALL_SKILL_"`
-	ListDir         ToolConfig         `json:"list_dir"          yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_LIST_DIR_"`
-	LoadImage       ToolConfig         `json:"load_image"        yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_LOAD_IMAGE_"`
-	Message         MessageToolsConfig `json:"message"           yaml:"-"`
-	ReadFile        ReadFileToolConfig `json:"read_file"         yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_READ_FILE_"`
-	Serial          ToolConfig         `json:"serial"            yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SERIAL_"`
-	SendFile        ToolConfig         `json:"send_file"         yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
-	SendTTS         ToolConfig         `json:"send_tts"          yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SEND_TTS_"`
-	Spawn           ToolConfig         `json:"spawn"             yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPAWN_"`
-	SpawnStatus     ToolConfig         `json:"spawn_status"      yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
-	SPI             ToolConfig         `json:"spi"               yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SPI_"`
-	Subagent        ToolConfig         `json:"subagent"          yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
-	WebFetch        ToolConfig         `json:"web_fetch"         yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
-	WriteFile       ToolConfig         `json:"write_file"        yaml:"-"                                                       envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
+	AltToolSuggest string             `json:"alt_tool_suggest" yaml:"alt_tool_suggest,omitempty" env:"PICOCLAW_TOOLS_ALT_TOOL_SUGGEST"`
+	Web            WebToolsConfig     `json:"web"              yaml:"web,omitempty"`
+	Cron           CronToolsConfig    `json:"cron"             yaml:"-"`
+	Exec           ExecConfig         `json:"exec"             yaml:"-"`
+	Skills         SkillsToolsConfig  `json:"skills"           yaml:"skills,omitempty"`
+	MediaCleanup   MediaCleanupConfig `json:"media_cleanup"    yaml:"-"`
+	MCP            MCPConfig          `json:"mcp"              yaml:"-"`
+	AppendFile     ToolConfig         `json:"append_file"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_APPEND_FILE_"`
+	EditFile       ToolConfig         `json:"edit_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_EDIT_FILE_"`
+	FindSkills     ToolConfig         `json:"find_skills"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_FIND_SKILLS_"`
+	I2C            ToolConfig         `json:"i2c"              yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_I2C_"`
+	InstallSkill   ToolConfig         `json:"install_skill"    yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_INSTALL_SKILL_"`
+	ListDir        ToolConfig         `json:"list_dir"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_LIST_DIR_"`
+	LoadImage      ToolConfig         `json:"load_image"       yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_LOAD_IMAGE_"`
+	Message        MessageToolsConfig `json:"message"          yaml:"-"`
+	ReadFile       ReadFileToolConfig `json:"read_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_READ_FILE_"`
+	Serial         ToolConfig         `json:"serial"           yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SERIAL_"`
+	SendFile       ToolConfig         `json:"send_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
+	SendTTS        ToolConfig         `json:"send_tts"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SEND_TTS_"`
+	Spawn          ToolConfig         `json:"spawn"            yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPAWN_"`
+	SpawnStatus    ToolConfig         `json:"spawn_status"     yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
+	SPI            ToolConfig         `json:"spi"              yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPI_"`
+	Subagent       ToolConfig         `json:"subagent"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
+	WebFetch       ToolConfig         `json:"web_fetch"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
+	WriteFile      ToolConfig         `json:"write_file"       yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
 }
 
 // IsFilterSensitiveDataEnabled returns true if sensitive data filtering is enabled

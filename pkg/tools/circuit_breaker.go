@@ -85,7 +85,7 @@ func (cb *CircuitBreaker) RecordResult(toolName string, isError bool, kind Error
 	cb.failures++
 	if cb.state == StateClosed && cb.failures >= cb.failureThreshold {
 		logger.WarnCF("tool", "Circuit breaker opened (consecutive failures)", map[string]any{
-			"tool": toolName,
+			"tool":     toolName,
 			"failures": cb.failures,
 		})
 		cb.state = StateOpen

@@ -77,7 +77,6 @@ func isTaskExtractionCall(messages []providers.Message, tools []providers.ToolDe
 	return false
 }
 
-
 type fakeChannel struct{ id string }
 
 func (f *fakeChannel) Name() string                    { return "fake" }
@@ -6522,7 +6521,7 @@ func TestRun_PicoToolFeedbackSuppressesDuplicateInterimAssistantContent(t *testi
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
 				ToolFeedback: config.ToolFeedbackConfig{
-					Enabled: true,
+					Enabled:     true,
 					PrettyPrint: true,
 				},
 			},

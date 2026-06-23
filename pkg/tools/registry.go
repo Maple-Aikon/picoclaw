@@ -291,7 +291,12 @@ func (r *ToolRegistry) ExecuteWithContext(
 	if cb != nil && !cb.Allow() {
 		logger.WarnCF("tool", "Tool execution blocked by circuit breaker",
 			map[string]any{"tool": name})
-		return ErrorResult(fmt.Sprintf("System: Tool %q is temporarily disabled (Circuit Open) due to 3 consecutive failures. DO NOT attempt to call it again right now. You must inform the user that this tool is locked and explain why, then wait for the user's instructions on how to proceed.", name)).
+		return ErrorResult(
+			fmt.Sprintf(
+				"System: Tool %q is temporarily disabled (Circuit Open) due to 3 consecutive failures. DO NOT attempt to call it again right now. You must inform the user that this tool is locked and explain why, then wait for the user's instructions on how to proceed.",
+				name,
+			),
+		).
 			WithErrorKind(ErrDependencyDown).
 			WithError(fmt.Errorf("circuit breaker open for tool %q", name))
 	}
@@ -300,15 +305,15 @@ func (r *ToolRegistry) ExecuteWithContext(
 	if err := validateToolArgs(tool.Parameters(), args); err != nil {
 		logger.WarnCF("tool", "Tool argument validation failed",
 			map[string]any{"tool": name, "error": err.Error()})
-		
+
 		// Record validation error against circuit breaker
 		res := ErrorResult(fmt.Sprintf("invalid arguments for tool %q: %s", name, err)).
 			WithErrorKind(ErrInvalidInput).
 			WithError(fmt.Errorf("argument validation failed: %w", err))
-		
+
 		if cb != nil {
 			cb.RecordResult(name, true, res.ErrKind)
-			
+
 			// Add warnings for consecutive failures
 			failures := cb.Failures()
 			if failures == 1 {

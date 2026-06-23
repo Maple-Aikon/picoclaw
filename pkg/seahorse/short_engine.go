@@ -18,8 +18,8 @@ import (
 
 // Config holds engine configuration.
 type Config struct {
-	DBPath                   string   `json:"dbPath"` 
-	FreshTailCount           int      `json:"freshTailCount"` 
+	DBPath                   string   `json:"dbPath"`
+	FreshTailCount           int      `json:"freshTailCount"`
 	ContextThreshold         float64  `json:"contextThreshold"`
 	IgnoreSessionPatterns    []string `json:"ignoreSessionPatterns,omitempty"`
 	StatelessSessionPatterns []string `json:"statelessSessionPatterns,omitempty"`

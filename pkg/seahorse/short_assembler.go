@@ -77,14 +77,22 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 			truncated := false
 			if len(r.message.Content) > maxChars {
 				originalLen := len(r.message.Content)
-				r.message.Content = r.message.Content[:maxChars] + fmt.Sprintf("\n\n[... content truncated from %d to %d characters ...]", originalLen, maxChars)
+				r.message.Content = r.message.Content[:maxChars] + fmt.Sprintf(
+					"\n\n[... content truncated from %d to %d characters ...]",
+					originalLen,
+					maxChars,
+				)
 				truncated = true
 			}
 			for j := range r.message.Parts {
 				p := &r.message.Parts[j]
 				if len(p.Text) > maxChars {
 					originalLen := len(p.Text)
-					p.Text = p.Text[:maxChars] + fmt.Sprintf("\n\n[... content truncated from %d to %d characters ...]", originalLen, maxChars)
+					p.Text = p.Text[:maxChars] + fmt.Sprintf(
+						"\n\n[... content truncated from %d to %d characters ...]",
+						originalLen,
+						maxChars,
+					)
 					truncated = true
 				}
 			}

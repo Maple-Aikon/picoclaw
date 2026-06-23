@@ -43,8 +43,8 @@ func DefaultConfig() *Config {
 				},
 				SplitOnMarker:          false,
 				MaxChatSizeWhenCompact: 8000,
-				MaxLLMRetries:         2,
-				LLMRetryBackoffSecs:   2,
+				MaxLLMRetries:          2,
+				LLMRetryBackoffSecs:    2,
 			},
 		},
 		Session: SessionConfig{

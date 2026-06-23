@@ -170,7 +170,6 @@ func (h *dualRuntimeObserverHook) OnRuntimeEvent(ctx context.Context, evt runtim
 		}
 	}
 	return nil
-
 }
 
 type llmSystemRewriteHook struct{}
