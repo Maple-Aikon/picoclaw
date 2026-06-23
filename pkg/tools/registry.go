@@ -65,22 +65,45 @@ func (r *ToolRegistry) SetAllowlist(names []string) {
 func (r *ToolRegistry) Register(tool Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.registerLocked(tool, true)
+}
+
+// RegisterHidden saves hidden tools (visible only via TTL)
+func (r *ToolRegistry) RegisterHidden(tool Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.registerLocked(tool, false)
+}
+
+// registerLocked adds a tool under the registry's lock. The caller must hold
+// r.mu (write). isCore distinguishes core tools (always available) from hidden
+// tools (only reachable through TTL lookup).
+func (r *ToolRegistry) registerLocked(tool Tool, isCore bool) {
+	kind := "hidden"
+	logPrefix := "Hidden"
+	if isCore {
+		kind = "core"
+		logPrefix = "core"
+	}
 	name := tool.Name()
 	if !r.toolAllowedLocked(name) {
 		logger.DebugCF(
 			"tools",
-			"Skipped core tool registration by agent allowlist",
+			"Skipped "+kind+" tool registration by agent allowlist",
 			map[string]any{"name": name},
 		)
 		return
 	}
 	if _, exists := r.tools[name]; exists {
-		logger.WarnCF("tools", "Tool registration overwrites existing tool",
-			map[string]any{"name": name})
+		logger.WarnCF(
+			"tools",
+			logPrefix+" tool registration overwrites existing tool",
+			map[string]any{"name": name},
+		)
 	}
 	r.tools[name] = &ToolEntry{
 		Tool:   tool,
-		IsCore: true,
+		IsCore: isCore,
 		TTL:    0, // Core tools do not use TTL
 	}
 	if _, exists := r.breakers[name]; !exists {
@@ -90,39 +113,7 @@ func (r *ToolRegistry) Register(tool Tool) {
 		aware.SetMediaStore(r.mediaStore)
 	}
 	r.version.Add(1)
-	logger.DebugCF("tools", "Registered core tool", map[string]any{"name": name})
-}
-
-// RegisterHidden saves hidden tools (visible only via TTL)
-func (r *ToolRegistry) RegisterHidden(tool Tool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	name := tool.Name()
-	if !r.toolAllowedLocked(name) {
-		logger.DebugCF(
-			"tools",
-			"Skipped hidden tool registration by agent allowlist",
-			map[string]any{"name": name},
-		)
-		return
-	}
-	if _, exists := r.tools[name]; exists {
-		logger.WarnCF("tools", "Hidden tool registration overwrites existing tool",
-			map[string]any{"name": name})
-	}
-	r.tools[name] = &ToolEntry{
-		Tool:   tool,
-		IsCore: false,
-		TTL:    0,
-	}
-	if _, exists := r.breakers[name]; !exists {
-		r.breakers[name] = NewCircuitBreaker()
-	}
-	if aware, ok := tool.(mediaStoreAware); ok && r.mediaStore != nil {
-		aware.SetMediaStore(r.mediaStore)
-	}
-	r.version.Add(1)
-	logger.DebugCF("tools", "Registered hidden tool", map[string]any{"name": name})
+	logger.DebugCF("tools", "Registered "+kind+" tool", map[string]any{"name": name})
 }
 
 // SetMediaStore injects a MediaStore into all registered tools that can
