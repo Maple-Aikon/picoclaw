@@ -170,7 +170,6 @@ func (h *dualRuntimeObserverHook) OnRuntimeEvent(ctx context.Context, evt runtim
 		}
 	}
 	return nil
-
 }
 
 type llmSystemRewriteHook struct{}
@@ -698,6 +697,14 @@ func (p *toolHookProvider) Chat(
 ) (*providers.LLMResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	// Guard against the background task-extraction call from
+	// pipeline_setup.go SetupTurn (extractTaskWithFallback) — it shares this
+	// provider instance with the main turn, so without a guard the first call
+	// here is consumed by task extraction and the main loop sees call #2.
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 
 	p.calls++
 	if p.calls == 1 {
@@ -1363,6 +1370,14 @@ func (p *multiToolProvider) Chat(
 ) (*providers.LLMResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	// Guard against the background task-extraction call from
+	// pipeline_setup.go SetupTurn (extractTaskWithFallback) — it shares this
+	// provider instance with the main turn, so without a guard the first call
+	// here is consumed by task extraction and the main loop sees call #2.
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 
 	p.callCount++
 	if p.callCount == 1 && len(p.toolCalls) > 0 {

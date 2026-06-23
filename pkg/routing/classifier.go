@@ -49,7 +49,7 @@ func (c *RuleClassifier) Score(f Features) float64 {
 	// Code complexity score (0-0.45)
 	if f.IsCodeLike {
 		var codeScore float64
-		
+
 		switch {
 		case f.CodeLines >= 20:
 			codeScore += 0.20

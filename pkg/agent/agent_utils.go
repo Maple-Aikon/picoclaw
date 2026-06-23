@@ -13,6 +13,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/commands"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
@@ -610,6 +611,77 @@ func closeProviderIfStateful(provider providers.LLMProvider) {
 	}
 }
 
+// activeRequestsInc atomically increments the active request count.
+func (al *AgentLoop) activeRequestsInc() {
+	al.activeReqMu.Lock()
+	al.activeReqCount++
+	al.activeReqMu.Unlock()
+}
+
+// activeRequestsDec atomically decrements the active request count
+// and wakes any goroutine blocked in waitForActiveRequests when the
+// count reaches zero.
+func (al *AgentLoop) activeRequestsDec() {
+	al.activeReqMu.Lock()
+	al.activeReqCount--
+	if al.activeReqCount == 0 {
+		al.activeReqCond.Broadcast()
+	}
+	al.activeReqMu.Unlock()
+}
+
+func (al *AgentLoop) waitForActiveRequests(ctx context.Context, timeout time.Duration) bool {
+	al.activeReqMu.Lock()
+	if al.activeReqCount == 0 {
+		al.activeReqMu.Unlock()
+		return true
+	}
+
+	// Wake blocked Wait() callers on timeout or context cancellation.
+	var timedOut bool
+	if timeout > 0 {
+		time.AfterFunc(timeout, func() {
+			al.activeReqMu.Lock()
+			timedOut = true
+			al.activeReqCond.Broadcast()
+			al.activeReqMu.Unlock()
+		})
+	}
+	go func() {
+		<-ctx.Done()
+		al.activeReqMu.Lock()
+		al.activeReqCond.Broadcast()
+		al.activeReqMu.Unlock()
+	}()
+
+	for al.activeReqCount > 0 && !timedOut && ctx.Err() == nil {
+		al.activeReqCond.Wait()
+	}
+	result := al.activeReqCount == 0
+	al.activeReqMu.Unlock()
+	return result
+}
+
+func (al *AgentLoop) closeReloadedProvider(ctx context.Context, provider providers.StatefulProvider) {
+	waitCtx := ctx
+	if waitCtx == nil {
+		waitCtx = context.Background()
+	}
+
+	drained := al.waitForActiveRequests(waitCtx, providerReloadGracePeriod)
+	if !drained {
+		fields := map[string]any{"grace_period": providerReloadGracePeriod.String()}
+		if err := waitCtx.Err(); err != nil {
+			fields["error"] = err.Error()
+			logger.WarnCF("agent", "Provider reload interrupted while waiting for in-flight requests", fields)
+		} else {
+			logger.WarnCF("agent", "Provider reload grace period expired with in-flight requests still running", fields)
+		}
+	}
+
+	provider.Close()
+}
+
 func makePendingTurnID(sessionKey string, seq uint64) string {
 	return pendingTurnPrefix + sessionKey + "-" + fmt.Sprintf("%d", seq)
 }
@@ -676,6 +748,10 @@ func truncateToolResult(content string, limit int, suggest string) string {
 	if limit <= 0 || len(runes) <= limit {
 		return content
 	}
-	warning := fmt.Sprintf("\n\n[SYSTEM WARNING: Tool result was truncated because it exceeded the %d character limit. Please use a different approach to limit the returned data (e.g., use %s).]", limit, suggest)
+	warning := fmt.Sprintf(
+		"\n\n[SYSTEM WARNING: Tool result was truncated because it exceeded the %d character limit. Please use a different approach to limit the returned data (e.g., use %s).]",
+		limit,
+		suggest,
+	)
 	return string(runes[:limit]) + warning
 }

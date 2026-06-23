@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -17,8 +18,8 @@ import (
 
 // Config holds engine configuration.
 type Config struct {
-	DBPath                   string   `json:"dbPath"` 
-	FreshTailCount           int      `json:"freshTailCount"` 
+	DBPath                   string   `json:"dbPath"`
+	FreshTailCount           int      `json:"freshTailCount"`
 	ContextThreshold         float64  `json:"contextThreshold"`
 	IgnoreSessionPatterns    []string `json:"ignoreSessionPatterns,omitempty"`
 	StatelessSessionPatterns []string `json:"statelessSessionPatterns,omitempty"`
@@ -115,20 +116,20 @@ func NewEngine(config Config, completeFn CompleteFn) (*Engine, error) {
 
 	// Configure SQLite for concurrent access
 	if _, err := db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("enable WAL: %w", err)
 	}
 	if _, err := db.Exec("PRAGMA busy_timeout = 5000;"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}
 	if _, err := db.Exec("PRAGMA synchronous = NORMAL;"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("set synchronous: %w", err)
 	}
 
 	if err := runSchema(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("migrations: %w", err)
 	}
 
@@ -271,6 +272,7 @@ func (e *Engine) Ingest(ctx context.Context, sessionKey string, messages []Messa
 				msg.ModelName,
 				msg.ReasoningContent,
 				msg.TokenCount,
+				msg.CreatedAt,
 			)
 		} else {
 			added, err = e.store.AddMessageWithReasoning(
@@ -281,6 +283,7 @@ func (e *Engine) Ingest(ctx context.Context, sessionKey string, messages []Messa
 				msg.ModelName,
 				msg.ReasoningContent,
 				msg.TokenCount,
+				msg.CreatedAt,
 			)
 		}
 		if err != nil {
@@ -455,10 +458,14 @@ func (e *Engine) Bootstrap(ctx context.Context, sessionKey string, messages []Me
 	if err != nil {
 		return fmt.Errorf("bootstrap: repair model_name: %w", err)
 	}
-	if (repairedReasoning || repairedModelName) && len(dbMsgs) == len(messages) {
+	repairedCreatedAt, err := e.repairBootstrapCreatedAt(ctx, dbMsgs, messages)
+	if err != nil {
+		return fmt.Errorf("bootstrap: repair created_at: %w", err)
+	}
+	if (repairedReasoning || repairedModelName || repairedCreatedAt) && len(dbMsgs) == len(messages) {
 		matched := true
 		for i := range messages {
-			if !messageMatches(dbMsgs[i], messages[i]) {
+			if !messagesMatch(dbMsgs[i], messages[i], messageMatchOptions{}) {
 				matched = false
 				break
 			}
@@ -472,7 +479,7 @@ func (e *Engine) Bootstrap(ctx context.Context, sessionKey string, messages []Me
 	if len(dbMsgs) == len(messages) {
 		matched := true
 		for i := range messages {
-			if !messageMatches(dbMsgs[i], messages[i]) {
+			if !messagesMatch(dbMsgs[i], messages[i], messageMatchOptions{}) {
 				matched = false
 				break
 			}
@@ -487,7 +494,7 @@ func (e *Engine) Bootstrap(ctx context.Context, sessionKey string, messages []Me
 	compareLen := min(len(dbMsgs), len(messages))
 
 	for i := range compareLen {
-		if messageMatches(dbMsgs[i], messages[i]) {
+		if messagesMatch(dbMsgs[i], messages[i], messageMatchOptions{}) {
 			anchor = i
 		} else {
 			// Mismatch detected - log details and rebuild
@@ -588,7 +595,11 @@ func (e *Engine) repairBootstrapReasoningContent(ctx context.Context, dbMsgs, me
 	}
 
 	for i := range overlap {
-		if !messageMatchesIgnoringReasoningAndModelName(dbMsgs[i], messages[i]) {
+		if !messagesMatch(dbMsgs[i], messages[i], messageMatchOptions{
+			IgnoreReasoningContent: true,
+			IgnoreModelName:        true,
+			IgnoreCreatedAt:        true,
+		}) {
 			return false, nil
 		}
 		if dbMsgs[i].ReasoningContent == messages[i].ReasoningContent {
@@ -639,7 +650,11 @@ func (e *Engine) repairBootstrapModelName(ctx context.Context, dbMsgs, messages 
 	}
 
 	for i := range overlap {
-		if !messageMatchesIgnoringReasoningAndModelName(dbMsgs[i], messages[i]) {
+		if !messagesMatch(dbMsgs[i], messages[i], messageMatchOptions{
+			IgnoreReasoningContent: true,
+			IgnoreModelName:        true,
+			IgnoreCreatedAt:        true,
+		}) {
 			return false, nil
 		}
 		if dbMsgs[i].ModelName == messages[i].ModelName {
@@ -676,6 +691,64 @@ func (e *Engine) repairBootstrapModelName(ctx context.Context, dbMsgs, messages 
 	return true, nil
 }
 
+func (e *Engine) repairBootstrapCreatedAt(ctx context.Context, dbMsgs, messages []Message) (bool, error) {
+	if len(dbMsgs) == 0 || len(messages) == 0 {
+		return false, nil
+	}
+
+	overlap := min(len(messages), len(dbMsgs))
+
+	var updates []struct {
+		index     int
+		messageID int64
+		createdAt time.Time
+	}
+
+	for i := range overlap {
+		if !messagesMatch(dbMsgs[i], messages[i], messageMatchOptions{
+			IgnoreReasoningContent: true,
+			IgnoreModelName:        true,
+			IgnoreCreatedAt:        true,
+		}) {
+			return false, nil
+		}
+
+		wantCreatedAt := normalizeMessageCreatedAt(messages[i].CreatedAt)
+		if wantCreatedAt.IsZero() {
+			return false, nil
+		}
+		if dbMsgs[i].CreatedAt.Equal(wantCreatedAt) {
+			continue
+		}
+
+		updates = append(updates, struct {
+			index     int
+			messageID int64
+			createdAt time.Time
+		}{
+			index:     i,
+			messageID: dbMsgs[i].ID,
+			createdAt: wantCreatedAt,
+		})
+	}
+
+	if len(updates) == 0 {
+		return false, nil
+	}
+
+	for _, update := range updates {
+		if err := e.store.UpdateMessageCreatedAt(ctx, update.messageID, update.createdAt); err != nil {
+			return false, err
+		}
+		dbMsgs[update.index].CreatedAt = update.createdAt
+	}
+
+	logger.InfoCF("seahorse", "bootstrap: repaired message created_at", map[string]any{
+		"messages": len(updates),
+	})
+	return true, nil
+}
+
 // truncate shortens a string for logging.
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
@@ -684,27 +757,26 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// messageMatches compares two messages using role + reasoning_content and then
-// either content or parts. TokenCount is NOT compared because it may be
-// re-estimated differently during bootstrap (e.g., via tokenizer.EstimateMessageTokens).
-// For messages with Parts (tool_use, tool_result), compare Parts instead of Content
-// because structured messages are matched by their parts payload.
-func messageMatches(a, b Message) bool {
-	if a.Role != b.Role || a.ReasoningContent != b.ReasoningContent || a.ModelName != b.ModelName {
-		return false
-	}
-	return messageMatchesIgnoringReasoning(a, b)
+type messageMatchOptions struct {
+	IgnoreReasoningContent bool
+	IgnoreModelName        bool
+	IgnoreCreatedAt        bool
 }
 
-func messageMatchesIgnoringReasoning(a, b Message) bool {
-	if a.ModelName != b.ModelName {
-		return false
-	}
-	return messageMatchesIgnoringReasoningAndModelName(a, b)
-}
-
-func messageMatchesIgnoringReasoningAndModelName(a, b Message) bool {
+// messagesMatch compares two messages by role and payload, plus the optional
+// metadata fields used by bootstrap repair. TokenCount is intentionally ignored
+// because bootstrap may re-estimate it differently.
+func messagesMatch(a, b Message, opts messageMatchOptions) bool {
 	if a.Role != b.Role {
+		return false
+	}
+	if !opts.IgnoreReasoningContent && a.ReasoningContent != b.ReasoningContent {
+		return false
+	}
+	if !opts.IgnoreModelName && a.ModelName != b.ModelName {
+		return false
+	}
+	if !opts.IgnoreCreatedAt && !messageCreatedAtMatches(a.CreatedAt, b.CreatedAt) {
 		return false
 	}
 	// If either message has Parts, compare Parts
@@ -713,6 +785,18 @@ func messageMatchesIgnoringReasoningAndModelName(a, b Message) bool {
 	}
 	// Simple text messages: compare Content
 	return a.Content == b.Content
+}
+
+// messageCreatedAtMatches treats missing timestamps as compatible so bootstrap
+// can preserve legacy histories while still enforcing exact equality once both
+// sides carry canonical created_at values.
+func messageCreatedAtMatches(a, b time.Time) bool {
+	na := normalizeMessageCreatedAt(a)
+	nb := normalizeMessageCreatedAt(b)
+	if na.IsZero() || nb.IsZero() {
+		return true
+	}
+	return na.Equal(nb)
 }
 
 // partsMatch compares two slices of MessagePart for equality.

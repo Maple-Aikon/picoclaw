@@ -907,6 +907,29 @@ func TestDefaultConfig_WorkspacePath(t *testing.T) {
 	}
 }
 
+// TestDefaultConfig_AnthropicModelsUseClaudeAPIIDs verifies that first-party
+// Anthropic defaults use Claude API model IDs, not dotted display names or
+// Bedrock-style provider prefixes. See:
+// https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions
+func TestDefaultConfig_AnthropicModelsUseClaudeAPIIDs(t *testing.T) {
+	cfg := DefaultConfig()
+
+	checked := 0
+	for _, model := range cfg.ModelList {
+		if model.Provider != "anthropic" {
+			continue
+		}
+		checked++
+		if strings.Contains(model.Model, ".") {
+			t.Fatalf("Anthropic default model %q uses dotted ID %q", model.ModelName, model.Model)
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("DefaultConfig() missing Anthropic models")
+	}
+}
+
 // TestDefaultConfig_MaxTokens verifies max tokens has default value
 func TestDefaultConfig_MaxTokens(t *testing.T) {
 	cfg := DefaultConfig()
@@ -1480,6 +1503,16 @@ func TestLoadConfig_LoadImageCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_MessageMediaDisabled(t *testing.T) {
+	cfg := DefaultConfig()
+	if !cfg.Tools.Message.Enabled {
+		t.Fatal("DefaultConfig().Tools.Message.Enabled should be true")
+	}
+	if cfg.Tools.Message.MediaEnabled {
+		t.Fatal("DefaultConfig().Tools.Message.MediaEnabled should be false")
+	}
+}
+
 func TestToolsConfig_GetFilterMinLength(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1692,6 +1725,166 @@ func TestDefaultConfig_SessionDimensions(t *testing.T) {
 
 	if len(cfg.Session.Dimensions) != 1 || cfg.Session.Dimensions[0] != "chat" {
 		t.Errorf("Session.Dimensions = %v, want [chat]", cfg.Session.Dimensions)
+	}
+}
+
+func TestSessionConfig_ApplyDmScope(t *testing.T) {
+	tests := []struct {
+		name       string
+		dmScope    string
+		dimensions []string
+		want       []string
+	}{
+		{
+			name:    "per-channel-peer",
+			dmScope: "per-channel-peer",
+			want:    []string{"chat", "sender"},
+		},
+		{
+			name:    "per-channel",
+			dmScope: "per-channel",
+			want:    []string{"chat"},
+		},
+		{
+			name:    "per-peer",
+			dmScope: "per-peer",
+			want:    []string{"sender"},
+		},
+		{
+			name:    "global",
+			dmScope: "global",
+			want:    nil,
+		},
+		{
+			name:       "explicit dimensions take precedence",
+			dmScope:    "per-channel-peer",
+			dimensions: []string{"sender"},
+			want:       []string{"sender"},
+		},
+		{
+			name:    "empty dm_scope is no-op",
+			dmScope: "",
+			want:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &SessionConfig{
+				DmScope:    tt.dmScope,
+				Dimensions: tt.dimensions,
+			}
+			s.ApplyDmScope()
+			if len(s.Dimensions) != len(tt.want) {
+				t.Fatalf("Dimensions = %v, want %v", s.Dimensions, tt.want)
+			}
+			for i, v := range tt.want {
+				if s.Dimensions[i] != v {
+					t.Errorf("Dimensions[%d] = %q, want %q", i, s.Dimensions[i], v)
+				}
+			}
+		})
+	}
+}
+
+func TestSessionConfig_DeriveDmScope(t *testing.T) {
+	tests := []struct {
+		name       string
+		dimensions []string
+		dmScope    string
+		wantScope  string
+	}{
+		{
+			name:       "per-channel-peer from dimensions",
+			dimensions: []string{"chat", "sender"},
+			wantScope:  "per-channel-peer",
+		},
+		{
+			name:       "per-channel from dimensions",
+			dimensions: []string{"chat"},
+			wantScope:  "per-channel",
+		},
+		{
+			name:       "per-peer from dimensions",
+			dimensions: []string{"sender"},
+			wantScope:  "per-peer",
+		},
+		{
+			name:       "custom dimensions does not set scope",
+			dimensions: []string{"chat", "extra"},
+			wantScope:  "",
+		},
+		{
+			name:       "empty dimensions does not set scope",
+			dimensions: nil,
+			wantScope:  "",
+		},
+		{
+			name:       "existing dm_scope is not overwritten",
+			dimensions: []string{"chat", "sender"},
+			dmScope:    "per-channel",
+			wantScope:  "per-channel",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &SessionConfig{
+				DmScope:    tt.dmScope,
+				Dimensions: tt.dimensions,
+			}
+			s.DeriveDmScope()
+			if s.DmScope != tt.wantScope {
+				t.Errorf("DmScope = %q, want %q", s.DmScope, tt.wantScope)
+			}
+		})
+	}
+}
+
+func TestSessionConfig_ApplyDmScope_ClearsStaleDimensions(t *testing.T) {
+	// Simulates the PATCH handler scenario: dm_scope changed but stale
+	// dimensions remain from the old scope. After clearing dimensions,
+	// ApplyDmScope should re-derive from the new dm_scope.
+	tests := []struct {
+		name    string
+		dmScope string
+		want    []string
+	}{
+		{
+			name:    "per-channel-peer to per-channel",
+			dmScope: "per-channel",
+			want:    []string{"chat"},
+		},
+		{
+			name:    "per-channel-peer to per-peer",
+			dmScope: "per-peer",
+			want:    []string{"sender"},
+		},
+		{
+			name:    "per-channel-peer to global",
+			dmScope: "global",
+			want:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &SessionConfig{
+				DmScope:    tt.dmScope,
+				Dimensions: []string{"chat", "sender"}, // stale from per-channel-peer
+			}
+			// Simulate what the PATCH handler does: clear dimensions when dm_scope changes
+			s.Dimensions = nil
+			s.ApplyDmScope()
+			if len(s.Dimensions) != len(tt.want) {
+				t.Fatalf("Dimensions = %v, want %v", s.Dimensions, tt.want)
+			}
+			for i, v := range tt.want {
+				if s.Dimensions[i] != v {
+					t.Errorf("Dimensions[%d] = %q, want %q", i, s.Dimensions[i], v)
+				}
+			}
+		})
 	}
 }
 

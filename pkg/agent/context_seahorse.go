@@ -120,9 +120,18 @@ func (m *seahorseContextManager) Assemble(ctx context.Context, req *AssembleRequ
 		effectiveBudget = budget / 2
 	}
 
+	// MaxChatSizeWhenCompact may be zero when agent config did not override the
+	// defaults (e.g. direct struct construction in tests). The seahorse assembler
+	// already falls back to 8000 for non-positive values (short_assembler.go:67),
+	// so passing 0 here is safe and keeps the contract identical.
+	maxChatSizeWhenCompact := 0
+	if m.agent != nil {
+		maxChatSizeWhenCompact = m.agent.MaxChatSizeWhenCompact
+	}
+
 	result, err := m.engine.Assemble(ctx, req.SessionKey, seahorse.AssembleInput{
 		Budget:                 effectiveBudget,
-		MaxChatSizeWhenCompact: m.agent.MaxChatSizeWhenCompact,
+		MaxChatSizeWhenCompact: maxChatSizeWhenCompact,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("seahorse assemble: %w", err)
@@ -352,7 +361,10 @@ func (m *seahorseContextManager) bootstrapSession(ctx context.Context, sessionKe
 
 		if fileExists && !fileEmpty {
 			// File has content but yielded 0 messages — likely corrupted JSONL. Do not wipe SQLite.
-			err := fmt.Errorf("JSONL for session %q exists but yielded 0 parseable messages (possible corruption)", sessionKey)
+			err := fmt.Errorf(
+				"JSONL for session %q exists but yielded 0 parseable messages (possible corruption)",
+				sessionKey,
+			)
 			logger.WarnCF("seahorse", "bootstrap skipped to prevent data loss", map[string]any{
 				"session": sessionKey,
 				"error":   err.Error(),
@@ -369,7 +381,7 @@ func (m *seahorseContextManager) bootstrapSession(ctx context.Context, sessionKe
 			})
 			return 0, err
 		}
-		
+
 		// Note: we don't log a success here because it runs on every boot for missing files unless we check DB existence first,
 		// but ClearSession being a no-op is efficient enough (1 SELECT).
 		return 0, nil
@@ -409,6 +421,10 @@ func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 		ModelName:        msg.ModelName,
 		ReasoningContent: msg.ReasoningContent,
 		TokenCount:       tokenizer.EstimateMessageTokens(msg),
+	}
+	if msg.CreatedAt != nil {
+		truncated := msg.CreatedAt.Truncate(time.Second)
+		result.CreatedAt = truncated
 	}
 
 	// Convert ToolCalls → MessageParts

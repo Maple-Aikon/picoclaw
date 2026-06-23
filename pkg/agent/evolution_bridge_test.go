@@ -1300,12 +1300,20 @@ type lateSkillOnRetryProvider struct {
 }
 
 func (p *lateSkillOnRetryProvider) Chat(
-	_ context.Context,
-	_ []providers.Message,
-	_ []providers.ToolDefinition,
-	_ string,
-	_ map[string]any,
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	// Guard against the background task-extraction call from
+	// pipeline_setup.go SetupTurn (extractTaskWithFallback). Without this
+	// guard, the first Chat() hit writes the late-skill file to disk and
+	// triggers the recovery path before the main turn's first call.
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
+
 	p.calls++
 	if p.calls == 1 {
 		if err := os.MkdirAll(filepath.Dir(p.lateSkillPath), 0o755); err != nil {

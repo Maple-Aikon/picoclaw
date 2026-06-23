@@ -21,13 +21,11 @@ var errInvalidPidFile = errors.New("invalid pid file")
 
 // PidFileData is the JSON structure stored in the PID file.
 type PidFileData struct {
-	PID         int    `json:"pid"`
-	Token       string `json:"token"`
-	Version     string `json:"version"`
-	Port        int    `json:"port"`
-	Host        string `json:"host"`
-	BinaryName  string `json:"binary_name,omitempty"`
-	Comm        string `json:"comm,omitempty"`
+	PID     int    `json:"pid"`
+	Token   string `json:"token"`
+	Version string `json:"version"`
+	Port    int    `json:"port"`
+	Host    string `json:"host"`
 }
 
 var pidMu sync.Mutex
@@ -65,22 +63,27 @@ func WritePidFile(homePath, host string, port int) (*PidFileData, error) {
 			// PID file on a shared volume, the host's PID 1 (init) would
 			// pass the isProcessRunning check, blocking new gateway starts.
 			// Treat recorded PID 1 as always stale.
-			if data.PID != 1 && isOurGateway(data.PID, identityHintFrom(data)) == AliveOurs {
-				return nil, fmt.Errorf("gateway is already running (PID: %d, version: %s)", data.PID, data.Version)
+			if data.PID != 1 && isProcessRunning(data.PID) {
+				// Verify the process is actually a picoclaw instance.
+				// If the PID was reused by an unrelated process
+				// (e.g. systemd-resolved after a kill -9), treat
+				// the PID file as stale and proceed with startup.
+				if isPicoclawProcess(data.PID) {
+					return nil, fmt.Errorf("gateway is already running (PID: %d, version: %s)", data.PID, data.Version)
+				}
+				logger.Warnf("found pid file (PID: %d) but process is not picoclaw", data.PID)
 			}
-			logger.Warnf("not running or not us (PID: %d) so will remove the pid file: %s", data.PID, pidPath)
+			logger.Warnf("not running (PID: %d) so will remove the pid file: %s", data.PID, pidPath)
 		}
-		// Stale PID file; process no longer exists or is not a gateway → clean up.
+		// Stale PID file; process no longer exists → clean up.
 		os.Remove(pidPath)
 	}
 
 	data := &PidFileData{
-		PID:        os.Getpid(),
-		Version:    config.GetVersion(),
-		Port:       port,
-		Host:       host,
-		BinaryName: currentBinaryName(),
-		Comm:       currentComm(),
+		PID:     os.Getpid(),
+		Version: config.GetVersion(),
+		Port:    port,
+		Host:    host,
 	}
 
 	token := generateToken()
@@ -141,8 +144,8 @@ func ReadPidFileWithCheck(homePath string) *PidFileData {
 		return nil
 	}
 
-	if isOurGateway(data.PID, identityHintFrom(data)) != AliveOurs {
-		logger.Debugf("process not running or not us, remove pid file: %s", pidPath)
+	if !isProcessRunning(data.PID) {
+		logger.Debugf("process not running, remove pid file: %s", pidPath)
 		os.Remove(pidPath)
 		return nil
 	}

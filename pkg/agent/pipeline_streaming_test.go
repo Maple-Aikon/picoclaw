@@ -45,6 +45,9 @@ func (p *configuredStreamingProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.chatCalls++
 	p.chatModels = append(p.chatModels, model)
 	if p.chatResponse != nil {
@@ -61,6 +64,9 @@ func (p *configuredStreamingProvider) ChatStream(
 	opts map[string]any,
 	onChunk func(accumulated string),
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.streamCalls++
 	p.streamModels = append(p.streamModels, model)
 	var plan configuredStreamingCall
@@ -87,6 +93,9 @@ func (p *configuredStreamingProvider) ChatStreamEvents(
 	opts map[string]any,
 	onChunk func(providers.StreamChunk),
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.eventCalls++
 	p.streamCalls++
 	p.streamModels = append(p.streamModels, model)
@@ -128,6 +137,9 @@ func (p *configuredStreamingChatOnlyProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.chatCalls++
 	return &providers.LLMResponse{Content: "chat only"}, nil
 }
@@ -254,6 +266,15 @@ func (h configuredStreamingAfterHook) AfterLLM(
 	return next, HookDecision{Action: HookActionModify}, nil
 }
 
+// BeforeCompact satisfies the LLMInterceptor interface so the hook is not
+// silently filtered out by the type-assertion at hooks.go.
+func (h configuredStreamingAfterHook) BeforeCompact(
+	ctx context.Context,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, error) {
+	return req, HookDecision{Action: HookActionContinue}, nil
+}
+
 type configuredStreamingBeforeModelHook struct {
 	model string
 }
@@ -272,6 +293,15 @@ func (h configuredStreamingBeforeModelHook) AfterLLM(
 	resp *LLMHookResponse,
 ) (*LLMHookResponse, HookDecision, error) {
 	return resp, HookDecision{Action: HookActionContinue}, nil
+}
+
+// BeforeCompact satisfies the LLMInterceptor interface so the hook is not
+// silently filtered out by the type-assertion at hooks.go.
+func (h configuredStreamingBeforeModelHook) BeforeCompact(
+	ctx context.Context,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, error) {
+	return req, HookDecision{Action: HookActionContinue}, nil
 }
 
 func TestConfiguredStreamingEligibilityGates(t *testing.T) {

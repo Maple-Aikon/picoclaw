@@ -111,6 +111,14 @@ func (m *scriptedToolProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	// Guard against the background task-extraction call from
+	// pipeline_setup.go SetupTurn (extractTaskWithFallback) — it shares this
+	// provider instance with the main turn, so without a guard the first call
+	// here is consumed by task extraction and the main loop sees call #2.
+	if isTaskExtractionCall(messages, toolDefs, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
+
 	m.calls++
 	if m.calls == 1 {
 		return &providers.LLMResponse{

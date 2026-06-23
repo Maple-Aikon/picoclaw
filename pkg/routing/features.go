@@ -114,27 +114,27 @@ var (
 	errorKeywords = []string{"traceback", "at ", "panic:", "exception in thread", "error:"}
 	runtimeWords  = []string{"deadlock", "race", "memory leak", "sigsegv", "latency", "throughput"}
 	projectFiles  = []string{"go.mod", "package.json", "dockerfile", "requirements.txt", "cargo.toml"}
-	
+
 	systemCategories = map[string][]string{
 		"concurrency": {"mutex", "lock", "channel", "thread", "async"},
 		"distributed": {"kafka", "redis", "grpc", "raft", "consensus"},
 		"infra":       {"kubernetes", "k8s", "docker", "terraform", "aws"},
 		"security":    {"oauth", "jwt", "tls", "encryption", "vuln"},
 	}
-	
+
 	conceptCategories = map[string][]string{
 		"algorithms":   {"sort", "search", "tree", "graph", "hash"},
 		"ds":           {"array", "list", "map", "set", "queue"},
 		"architecture": {"microservice", "monolith", "event-driven", "mvc"},
 		"performance":  {"optimize", "cache", "profile", "benchmark"},
 	}
-	
+
 	testingDeploy = []string{"test", "mock", "assert", "deploy", "ci/cd", "pipeline"}
 )
 
 func extractCodeFeatures(msg string, f *Features) {
 	lower := strings.ToLower(msg)
-	
+
 	// IsCodeLike
 	if f.CodeBlockCount > 0 || strings.Contains(msg, "`") {
 		f.IsCodeLike = true
@@ -159,7 +159,7 @@ func extractCodeFeatures(msg string, f *Features) {
 		if totalLangHits >= 2 || (totalLangHits >= 1 && hasPunc) {
 			f.IsCodeLike = true
 		}
-		
+
 		// stack trace hits
 		for _, kw := range errorKeywords {
 			if strings.Contains(lower, kw) {
@@ -177,7 +177,19 @@ func extractCodeFeatures(msg string, f *Features) {
 	f.CodeLines = strings.Count(msg, "\n") + 1
 
 	// FunctionBlocks
-	f.FunctionBlocks = strings.Count(lower, "fn ") + strings.Count(lower, "func ") + strings.Count(lower, "def ") + strings.Count(lower, "function ")
+	f.FunctionBlocks = strings.Count(
+		lower,
+		"fn ",
+	) + strings.Count(
+		lower,
+		"func ",
+	) + strings.Count(
+		lower,
+		"def ",
+	) + strings.Count(
+		lower,
+		"function ",
+	)
 
 	// ErrorLines
 	for _, line := range strings.Split(lower, "\n") {

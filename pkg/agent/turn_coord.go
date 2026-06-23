@@ -151,7 +151,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 
 		// Inject pending steering messages
 		if len(pendingMessages) > 0 {
-			resolvedPending := resolveMediaRefs(pendingMessages, al.mediaStore, maxMediaSize)
+			resolvedPending := resolveMediaRefs(pendingMessages, al.mediaStore, maxMediaSize, 0)
 			totalContentLen := 0
 			for i, pm := range pendingMessages {
 				messages = append(messages, resolvedPending[i])
@@ -185,12 +185,16 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			// the new goal. Block until extraction completes so the LLM sees
 			// the updated task immediately in this iteration.
 			{
-			// Cancel any in-flight background extraction so it cannot
-			// overwrite sessionTaskSummary after we set the new one.
-			if exec.taskExtractCancel != nil {
-				logger.DebugCF("agent", "Task extraction: cancelling background extraction for steering re-extract", nil)
-				exec.taskExtractCancel()
-			}
+				// Cancel any in-flight background extraction so it cannot
+				// overwrite sessionTaskSummary after we set the new one.
+				if exec.taskExtractCancel != nil {
+					logger.DebugCF(
+						"agent",
+						"Task extraction: canceling background extraction for steering re-extract",
+						nil,
+					)
+					exec.taskExtractCancel()
+				}
 
 				var steeringText strings.Builder
 				for i, pm := range pendingMessages {
@@ -200,32 +204,41 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 					steeringText.WriteString(pm.Content)
 				}
 
-			// Get previous summary for fallback
-			prevSummary := ""
-			if prev, ok := al.sessionTaskSummary.Load(ts.sessionKey); ok {
-				prevSummary = prev.(string)
-			}
-
-			extractCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			newSummary := extractTaskWithFallback(extractCtx, al, ts, exec, prevSummary, exec.summary, "", steeringText.String())
-
-			if newSummary != "" {
-				al.sessionTaskSummary.Store(ts.sessionKey, newSummary)
-				exec.injectedTaskSummary = newSummary
-				exec.reminderInjected = true
-
-				reminderMsg := providers.Message{
-					Role:    "user",
-					Content: fmt.Sprintf("[Task context reminder] Updated task from user steering: %s", newSummary),
+				// Get previous summary for fallback
+				prevSummary := ""
+				if prev, ok := al.sessionTaskSummary.Load(ts.sessionKey); ok {
+					prevSummary = prev.(string)
 				}
-				messages = append(messages, reminderMsg)
-			} else {
-				select {
-				case <-exec.taskSummaryChan:
-				default:
+
+				extractCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				newSummary := extractTaskWithFallback(
+					extractCtx,
+					al,
+					ts,
+					exec,
+					prevSummary,
+					exec.summary,
+					"",
+					steeringText.String(),
+				)
+
+				if newSummary != "" {
+					al.sessionTaskSummary.Store(ts.sessionKey, newSummary)
+					exec.injectedTaskSummary = newSummary
+					exec.reminderInjected = true
+
+					reminderMsg := providers.Message{
+						Role:    "user",
+						Content: fmt.Sprintf("[Task context reminder] Updated task from user steering: %s", newSummary),
+					}
+					messages = append(messages, reminderMsg)
+				} else {
+					select {
+					case <-exec.taskSummaryChan:
+					default:
+					}
 				}
-			}
 			}
 		}
 		// Always sync messages into exec.messages so CallLLM sees the updated state
@@ -371,7 +384,10 @@ func (al *AgentLoop) selectCandidates(
 					"light_model": agent.Router.LightModel(),
 					"score":       score,
 				})
-			return agent.LightCandidates, resolvedCandidateModel(agent.LightCandidates, agent.Router.LightModel()), routing.TierLight
+			return agent.LightCandidates, resolvedCandidateModel(
+				agent.LightCandidates,
+				agent.Router.LightModel(),
+			), routing.TierLight
 		}
 	case routing.TierMedium:
 		if len(agent.MediumCandidates) > 0 {
@@ -381,7 +397,10 @@ func (al *AgentLoop) selectCandidates(
 					"medium_model": agent.Router.MediumModel(),
 					"score":        score,
 				})
-			return agent.MediumCandidates, resolvedCandidateModel(agent.MediumCandidates, agent.Router.MediumModel()), routing.TierMedium
+			return agent.MediumCandidates, resolvedCandidateModel(
+				agent.MediumCandidates,
+				agent.Router.MediumModel(),
+			), routing.TierMedium
 		}
 	}
 
@@ -491,7 +510,11 @@ func (al *AgentLoop) askSideQuestion(
 	messages := agent.ContextBuilder.BuildMessagesFromPrompt(promptReq)
 
 	maxMediaSize := al.GetConfig().Agents.Defaults.GetMaxMediaSize()
-	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
+	currentTurnStart := len(messages)
+	if strings.TrimSpace(question) != "" || len(media) > 0 {
+		currentTurnStart = len(messages) - 1
+	}
+	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize, currentTurnStart)
 
 	activeCandidates, activeModel, tier := al.selectCandidates(agent, question, messages)
 	selectedModelName := sideQuestionModelName(agent, tier)

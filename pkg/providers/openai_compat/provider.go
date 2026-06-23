@@ -7,13 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"maps"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers/common"
 	"github.com/sipeed/picoclaw/pkg/providers/messageutil"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
@@ -204,7 +204,16 @@ func (p *Provider) buildRequestBody(
 
 func (p *Provider) applyThinkingControl(requestBody map[string]any, model string, options map[string]any) {
 	level, ok := normalizedThinkingLevel(options)
-	if !ok || level != "off" {
+	if !ok {
+		return
+	}
+
+	if p.SupportsThinking() {
+		p.applyDeepSeekThinkingControl(requestBody, level)
+		return
+	}
+
+	if level != "off" {
 		return
 	}
 
@@ -213,6 +222,28 @@ func (p *Provider) applyThinkingControl(requestBody map[string]any, model string
 		requestBody["thinking"] = map[string]any{"type": "disabled"}
 	case "enable_thinking":
 		requestBody["enable_thinking"] = false
+	}
+}
+
+func (p *Provider) applyDeepSeekThinkingControl(requestBody map[string]any, level string) {
+	switch level {
+	case "off":
+		requestBody["thinking"] = map[string]any{"type": "disabled"}
+	case "low", "medium", "high":
+		requestBody["thinking"] = map[string]any{"type": "enabled"}
+		requestBody["reasoning_effort"] = "high"
+	case "xhigh":
+		requestBody["thinking"] = map[string]any{"type": "enabled"}
+		requestBody["reasoning_effort"] = "max"
+	case "adaptive":
+		logger.WarnCF("provider.openai_compat",
+			`DeepSeek does not support thinking_level="adaptive"; using provider default thinking behavior`,
+			map[string]any{
+				"provider":       p.providerName,
+				"api_base":       p.apiBase,
+				"thinking_level": level,
+			},
+		)
 	}
 }
 
@@ -288,6 +319,10 @@ func (p *Provider) applyCustomHeaders(req *http.Request) {
 
 func (p *Provider) SetProviderName(providerName string) {
 	p.providerName = strings.ToLower(strings.TrimSpace(providerName))
+}
+
+func (p *Provider) SupportsThinking() bool {
+	return strings.EqualFold(strings.TrimSpace(p.providerName), "deepseek") || isDeepSeekHost(p.apiBase)
 }
 
 func (p *Provider) prepareMessagesForRequest(messages []Message) []Message {
@@ -733,7 +768,10 @@ func parseStreamResponse(
 		raw := acc.argsJSON.String()
 		if raw != "" {
 			if err := json.Unmarshal([]byte(raw), &args); err != nil {
-				log.Printf("openai_compat stream: failed to decode tool call arguments for %q: %v", acc.name, err)
+				logger.WarnCF("openai_compat", "stream: failed to decode tool call arguments", map[string]any{
+					"tool":  acc.name,
+					"error": err.Error(),
+				})
 				args["raw"] = raw
 			}
 		}

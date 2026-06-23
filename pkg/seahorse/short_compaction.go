@@ -46,7 +46,12 @@ func (e *CompactionEngine) Close() {
 }
 
 // Compact runs leaf compaction (sync) and optionally condensed compaction.
-func (e *CompactionEngine) Compact(ctx context.Context, sessionKey string, convID int64, input CompactInput) (*CompactResult, error) {
+func (e *CompactionEngine) Compact(
+	ctx context.Context,
+	sessionKey string,
+	convID int64,
+	input CompactInput,
+) (*CompactResult, error) {
 	result := &CompactResult{}
 
 	// Phase 1: leaf compaction (synchronous, every turn)
@@ -96,7 +101,12 @@ func (e *CompactionEngine) Compact(ctx context.Context, sessionKey string, convI
 }
 
 // CompactUntilUnder aggressively compacts until context is under budget.
-func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, sessionKey string, convID int64, budget int) (*CompactResult, error) {
+func (e *CompactionEngine) CompactUntilUnder(
+	ctx context.Context,
+	sessionKey string,
+	convID int64,
+	budget int,
+) (*CompactResult, error) {
 	result := &CompactResult{}
 	prevTokens := 0
 	logger.InfoCF("seahorse", "compact_until_under: start", map[string]any{"conv_id": convID, "budget": budget})
@@ -171,7 +181,12 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, sessionKey str
 
 // compactLeaf compresses the oldest contiguous message chunk into a leaf summary.
 // When force is true, FreshTailCount protection is bypassed (used by CompactUntilUnder).
-func (e *CompactionEngine) compactLeaf(ctx context.Context, sessionKey string, convID int64, force ...bool) (*string, error) {
+func (e *CompactionEngine) compactLeaf(
+	ctx context.Context,
+	sessionKey string,
+	convID int64,
+	force ...bool,
+) (*string, error) {
 	items, err := e.store.GetContextItems(ctx, convID)
 	if err != nil {
 		return nil, err
@@ -697,7 +712,7 @@ func (e *CompactionEngine) generateCondensedSummary(ctx context.Context, summari
 // runCondensedLoop runs condensed compaction in a loop until:
 // a) we hit MaxCompactIterations cap (safety net against runaway loops),
 // b) we hit a wall-clock timeout (condensedTimeout, fail-fast on slow iters),
-// c) ctx is cancelled (shutdown),
+// c) ctx is canceled (shutdown),
 // d) compactCondensed returns no candidate,
 // e) tokensAfter >= tokensBefore (no progress this iteration), OR
 // f) tokensAfter >= previousTokens (no improvement over last iteration)

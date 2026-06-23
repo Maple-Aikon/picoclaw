@@ -264,7 +264,7 @@ func TestRouter_SelectModel_SimpleMessageUsesLight(t *testing.T) {
 }
 
 func TestRouter_SelectModel_MediumMessageUsesMedium(t *testing.T) {
-	// RuleClassifier: CodeBlockCount 1 = 0.40. 
+	// RuleClassifier: CodeBlockCount 1 = 0.40.
 	// Default thresholds: Light 0.25, Medium 0.55.
 	// 0.25 <= 0.40 < 0.55 -> TierMedium
 	r := New(RouterConfig{LightModel: "light", MediumModel: "medium"})
@@ -386,10 +386,10 @@ func (c *fixedScoreClassifier) Score(f Features) float64 {
 
 func TestRouter_Normalization(t *testing.T) {
 	cases := []struct {
-		name       string
-		in         RouterConfig
-		wantT      float64
-		wantMT     float64
+		name   string
+		in     RouterConfig
+		wantT  float64
+		wantMT float64
 	}{
 		{
 			"Negative values use defaults",

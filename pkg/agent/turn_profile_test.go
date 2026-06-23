@@ -27,6 +27,9 @@ func (p *turnProfileCaptureProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.messages = append([]providers.Message(nil), messages...)
 	p.tools = append([]providers.ToolDefinition(nil), tools...)
 	return &providers.LLMResponse{Content: "profile response"}, nil
@@ -47,6 +50,9 @@ func (p *turnProfileSideQuestionCaptureProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.messages = append([]providers.Message(nil), messages...)
 	return &providers.LLMResponse{Content: "side answer"}, nil
 }
@@ -105,9 +111,10 @@ func TestTurnProfile_DisabledPreservesDefaultHistoryAndPrompt(t *testing.T) {
 	al := newTurnProfileAgentLoop(t, cfg, provider)
 	agent := al.GetRegistry().GetDefaultAgent()
 	sessionKey := "agent:default:test-default"
+	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	initialHistory := []providers.Message{
-		{Role: "user", Content: "old user"},
-		{Role: "assistant", Content: "old assistant"},
+		{Role: "user", Content: "old user", CreatedAt: &ts},
+		{Role: "assistant", Content: "old assistant", CreatedAt: &ts},
 	}
 	agent.Sessions.SetHistory(sessionKey, initialHistory)
 	agent.Sessions.SetSummary(sessionKey, "old summary")
@@ -154,9 +161,10 @@ func TestTurnProfile_HistoryOffSuppressesHistoryAndPersistence(t *testing.T) {
 	al := newTurnProfileAgentLoop(t, cfg, provider)
 	agent := al.GetRegistry().GetDefaultAgent()
 	sessionKey := "agent:default:test-history-off"
+	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	initialHistory := []providers.Message{
-		{Role: "user", Content: "old user"},
-		{Role: "assistant", Content: "old assistant"},
+		{Role: "user", Content: "old user", CreatedAt: &ts},
+		{Role: "assistant", Content: "old assistant", CreatedAt: &ts},
 	}
 	agent.Sessions.SetHistory(sessionKey, initialHistory)
 	agent.Sessions.SetSummary(sessionKey, "old summary")
@@ -660,6 +668,13 @@ func (h turnProfileEnableNativeSearchHook) AfterLLM(
 	return resp, HookDecision{Action: HookActionContinue}, nil
 }
 
+func (h turnProfileEnableNativeSearchHook) BeforeCompact(
+	ctx context.Context,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, error) {
+	return req, HookDecision{Action: HookActionContinue}, nil
+}
+
 type turnProfileRespondToolHook struct{}
 
 func (h turnProfileRespondToolHook) BeforeTool(
@@ -690,6 +705,9 @@ func (p *turnProfileToolCallProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.calls++
 	p.messages = append([]providers.Message(nil), messages...)
 	if p.calls == 1 {

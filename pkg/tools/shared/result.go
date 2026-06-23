@@ -82,7 +82,7 @@ func (tr *ToolResult) ContentForLLM() string {
 	if content == "" && tr.Err != nil {
 		content = tr.Err.Error()
 	}
-	
+
 	if tr.IsError && tr.ErrKind == ErrInvalidInput {
 		invalidInputNote := "System Note: Tool failed due to invalid arguments. DO NOT RETRY this exact call. Think of a different approach."
 		if content == "" {
