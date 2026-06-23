@@ -180,6 +180,14 @@ func (p *panicAfterStartProvider) Chat(
 	model string,
 	options map[string]any,
 ) (*providers.LLMResponse, error) {
+	// Guard against the background task-extraction call from
+	// pipeline_setup.go SetupTurn (extractTaskWithFallback) — it shares this
+	// provider instance with the main turn, so without a guard the first call
+	// here is consumed by task extraction (and would panic mid-write, leaving
+	// the workspace directory non-empty and breaking t.TempDir cleanup).
+	if isTaskExtractionCall(messages, tools, options) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
 	p.calls.Add(1)
 	select {
 	case <-p.started:
@@ -7657,6 +7665,15 @@ func (p *concurrentMockProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	// Guard against the background task-extraction call from
+	// pipeline_setup.go SetupTurn (extractTaskWithFallback). Without this
+	// guard, every turn's background goroutine fires responseFunc and the
+	// test's WaitGroup is reused before its Wait() returns (background calls
+	// also call wg.Done, exceeding the Add(3) budget).
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
+
 	// Use an atomic counter to assign unique call IDs for concurrency tracking.
 	// This avoids relying on sessionKey derivation from message content, which
 	// is not deterministic across concurrent calls.
