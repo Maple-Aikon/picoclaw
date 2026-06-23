@@ -65,8 +65,27 @@ func waitForRuntimeEvent(
 	}
 }
 
+// collectRuntimeEventStream drains the runtime event channel until it has been
+// quiescent for a short window (i.e. no new events arrive within
+// drainQuietWindow). This is more reliable than the previous implementation,
+// which used a non-blocking `default:` branch and could drop events that
+// arrived between the main turn's final send and this caller's first select
+// iteration.
+//
+// The overall drain is bounded by drainTotalTimeout as a safety net so a
+// pathological producer can never wedge a test forever.
 func collectRuntimeEventStream(ch <-chan runtimeevents.Event) []runtimeevents.Event {
+	const (
+		drainQuietWindow  = 50 * time.Millisecond
+		drainTotalTimeout = 5 * time.Second
+	)
+
 	var events []runtimeevents.Event
+	deadline := time.NewTimer(drainTotalTimeout)
+	defer deadline.Stop()
+	quiet := time.NewTimer(drainQuietWindow)
+	defer quiet.Stop()
+
 	for {
 		select {
 		case evt, ok := <-ch:
@@ -74,7 +93,21 @@ func collectRuntimeEventStream(ch <-chan runtimeevents.Event) []runtimeevents.Ev
 				return events
 			}
 			events = append(events, evt)
-		default:
+			// Reset the quiet window — we just saw activity.
+			if !quiet.Stop() {
+				select {
+				case <-quiet.C:
+				default:
+				}
+			}
+			quiet.Reset(drainQuietWindow)
+		case <-quiet.C:
+			// No activity for drainQuietWindow → producer is quiescent;
+			// whatever events were buffered are now ours.
+			return events
+		case <-deadline.C:
+			// Total budget exhausted — return whatever we have so the test
+			// can fail with a meaningful diff instead of hanging.
 			return events
 		}
 	}

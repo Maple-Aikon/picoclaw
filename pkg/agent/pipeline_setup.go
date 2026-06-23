@@ -239,6 +239,14 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		} else {
 			// Background extraction: context + cancel exposed via exec so steering
 			// in runTurn can cancel it mid-flight and prevent stale overwrites.
+			//
+			// NOTE: We deliberately use context.Background() here (not the request
+			// ctx) because the request ctx can be canceled mid-turn by steering
+			// injection. We want extraction to outlive a single turn's ctx so its
+			// summary is available to the NEXT turn's context assembly. The 60s
+			// timeout caps the worst-case wallclock, and exec.taskExtractCancel
+			// exposes the cancel func for steering to call explicitly when it
+			// wants to discard the result immediately.
 			extractCtx, taskCancel := context.WithTimeout(context.Background(), 60*time.Second)
 			exec.taskExtractCancel = taskCancel
 			go func() {
