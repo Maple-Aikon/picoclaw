@@ -7771,3 +7771,198 @@ func TestRunWorkerPanicReleasesSessionTurnState(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// fakeChannelNoReasoning is a minimal Channel implementation that reports an
+// empty ReasoningChannelID(). It models a channel that has not been configured
+// with a separate reasoning route (the configuration state that triggered the
+// reasoning leak to main chat before the pipeline_llm.go fix).
+type fakeChannelNoReasoning struct {
+	fakeChannel
+}
+
+func (f *fakeChannelNoReasoning) ReasoningChannelID() string { return "" }
+
+// TestProcessMessage_DoesNotLeakReasoningContentWhenNoReasoningChannel
+// reproduces the bug observed on Telegram at 2026-06-24 ~10:42: a model that
+// returns only ReasoningContent (empty Content, no tool calls) on a channel
+// that has no reasoning_channel_id configured must NOT publish the model's
+// internal thinking as the main response. The coordinator's DefaultResponse
+// fallback handles the empty-response case instead.
+func TestProcessMessage_DoesNotLeakReasoningContentWhenNoReasoningChannel(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &reasoningContentProvider{
+		response:         "", // empty content — pure reasoning-only model output
+		reasoningContent: "internal reasoning trace that must not leak",
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	chManager, err := channels.NewManager(&config.Config{}, msgBus, nil)
+	if err != nil {
+		t.Fatalf("Failed to create channel manager: %v", err)
+	}
+	// Register a channel with NO reasoning_channel_id (the bug repro config).
+	chManager.RegisterChannel("telegram", &fakeChannelNoReasoning{fakeChannel: fakeChannel{id: ""}})
+	al.SetChannelManager(chManager)
+
+	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
+		Channel:  "telegram",
+		SenderID: "user1",
+		ChatID:   "chat1",
+		Content:  "hello",
+	}))
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if response != defaultResponse {
+		t.Fatalf("processMessage() response = %q, want DefaultResponse %q (reasoning content must not leak into main response)",
+			response, defaultResponse)
+	}
+
+	// Drain outbound channel for a short window and assert no message ever
+	// carries the reasoning trace.
+	deadline := time.After(500 * time.Millisecond)
+drain:
+	for {
+		select {
+		case outbound := <-msgBus.OutboundChan():
+			if outbound.Content == "internal reasoning trace that must not leak" {
+				t.Fatalf("reasoning content leaked into outbound bus on channel %s chat %s",
+					outbound.Channel, outbound.ChatID)
+			}
+		case <-deadline:
+			break drain
+		}
+	}
+}
+
+// TestProcessMessage_ReasoningOnlyRoutesToReasoningChannelWhenConfigured
+// guards the existing behavior so the leak fix does not regress it: when a
+// channel HAS a reasoning_channel_id configured, the reasoning content must
+// continue to be published there, and the main response remains the model
+// content (which here is empty — so DefaultResponse fires).
+func TestProcessMessage_ReasoningOnlyRoutesToReasoningChannelWhenConfigured(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &reasoningContentProvider{
+		response:         "",
+		reasoningContent: "thinking trace to reasoning channel",
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	chManager, err := channels.NewManager(&config.Config{}, msgBus, nil)
+	if err != nil {
+		t.Fatalf("Failed to create channel manager: %v", err)
+	}
+	chManager.RegisterChannel("telegram", &fakeChannel{id: "reason-chat"})
+	al.SetChannelManager(chManager)
+
+	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
+		Channel:  "telegram",
+		SenderID: "user1",
+		ChatID:   "chat1",
+		Content:  "hello",
+	}))
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if response != "thinking trace to reasoning channel" {
+		t.Fatalf("processMessage() response = %q, want %q (reasoning-only model must be promoted to main response when reasoning_channel_id is configured)",
+			response, "thinking trace to reasoning channel")
+	}
+
+	// Expect reasoning content to also land in the configured reasoning channel
+	// (the existing dual-route behavior: main chat + reasoning channel both
+	// receive the reasoning trace).
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Channel != "telegram" {
+			t.Fatalf("reasoning channel = %q, want %q", outbound.Channel, "telegram")
+		}
+		if outbound.ChatID != "reason-chat" {
+			t.Fatalf("reasoning chatID = %q, want %q", outbound.ChatID, "reason-chat")
+		}
+		if outbound.Content != "thinking trace to reasoning channel" {
+			t.Fatalf("reasoning content = %q, want %q",
+				outbound.Content, "thinking trace to reasoning channel")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected reasoning content to be published to the configured reasoning channel")
+	}
+}
+
+// TestProcessMessage_DoesNotLeakReasoningContentForUnregisteredChannel
+// covers the edge case where the channel name is not registered in the
+// channel manager at all — the same fix path applies because
+// targetReasoningChannelID returns "" for both "registered but unconfigured"
+// and "unregistered".
+func TestProcessMessage_DoesNotLeakReasoningContentForUnregisteredChannel(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &reasoningContentProvider{
+		response:         "",
+		reasoningContent: "internal trace for unknown channel",
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	// Note: no channels registered. "mystery" channel will return false from
+	// channelManager.GetChannel and targetReasoningChannelID returns "".
+	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
+		Channel:  "mystery",
+		SenderID: "user1",
+		ChatID:   "chat1",
+		Content:  "hello",
+	}))
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if response != defaultResponse {
+		t.Fatalf("processMessage() response = %q, want DefaultResponse %q", response, defaultResponse)
+	}
+
+	deadline := time.After(500 * time.Millisecond)
+drain:
+	for {
+		select {
+		case outbound := <-msgBus.OutboundChan():
+			if outbound.Content == "internal trace for unknown channel" {
+				t.Fatalf("reasoning content leaked for unregistered channel %s", outbound.Channel)
+			}
+		case <-deadline:
+			break drain
+		}
+	}
+}

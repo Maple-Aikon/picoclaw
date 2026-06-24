@@ -667,7 +667,23 @@ func (p *Pipeline) CallLLM(
 	if len(exec.response.ToolCalls) == 0 || exec.gracefulTerminal {
 		responseContent := exec.response.Content
 		if responseContent == "" && exec.response.ReasoningContent != "" && ts.channel != "pico" {
-			responseContent = exec.response.ReasoningContent
+			// Only fall back to ReasoningContent when the channel has a
+			// configured reasoning_channel_id. Without one, publishing
+			// reasoning as the main response leaks the model's internal
+			// thinking into the user's primary chat. The coordinator's
+			// DefaultResponse fallback (turn_coord.go) handles the empty
+			// case instead.
+			if reasoningTargetChatID := al.targetReasoningChannelID(ts.channel); reasoningTargetChatID != "" {
+				responseContent = exec.response.ReasoningContent
+			} else {
+				logger.WarnCF("agent", "Reasoning content suppressed: no reasoning_channel_id configured for channel; relying on DefaultResponse fallback",
+					map[string]any{
+						"channel":          ts.channel,
+						"chat_id":          ts.chatID,
+						"reasoning_chars":  len(exec.response.ReasoningContent),
+						"iteration":        iteration,
+					})
+			}
 		}
 		if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
 			cancelConfiguredStreamingLLM(turnCtx, exec)
