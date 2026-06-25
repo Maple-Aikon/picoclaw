@@ -34,6 +34,17 @@ func NewCircuitBreaker() *CircuitBreaker {
 	}
 }
 
+// breakerKey builds the composite map key used to scope a circuit breaker to
+// a (channel, chatID, toolName) tuple. Callers that omit session context
+// (channel == "" && chatID == "") fall back to the "_anon" namespace so they
+// are isolated from real sessions and cannot silently trip a session breaker.
+func breakerKey(channel, chatID, name string) string {
+	if channel == "" && chatID == "" {
+		return "_anon:" + name
+	}
+	return channel + ":" + chatID + ":" + name
+}
+
 // Allow returns true if the tool execution should proceed.
 func (cb *CircuitBreaker) Allow() bool {
 	cb.mu.Lock()

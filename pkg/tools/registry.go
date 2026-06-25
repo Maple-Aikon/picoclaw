@@ -22,8 +22,9 @@ type ToolEntry struct {
 
 type ToolRegistry struct {
 	tools      map[string]*ToolEntry
-	breakers   map[string]*CircuitBreaker
+	breakers   map[string]*CircuitBreaker // key: composite (channel:chatID:name); see getCircuitBreaker
 	mu         sync.RWMutex
+	cbMu       sync.Mutex // serializes lazy allocation of per-session breakers
 	version    atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
 	mediaStore media.MediaStore
 	allowlist  map[string]struct{}
@@ -106,9 +107,10 @@ func (r *ToolRegistry) registerLocked(tool Tool, isCore bool) {
 		IsCore: isCore,
 		TTL:    0, // Core tools do not use TTL
 	}
-	if _, exists := r.breakers[name]; !exists {
-		r.breakers[name] = NewCircuitBreaker()
-	}
+	// Breakers are created lazily by getCircuitBreaker on first use, scoped by
+	// (channel, chatID, name). We no longer pre-allocate a per-tool breaker
+	// here; doing so would defeat the per-session isolation that lives in
+	// the registry's breaker map.
 	if aware, ok := tool.(mediaStoreAware); ok && r.mediaStore != nil {
 		aware.SetMediaStore(r.mediaStore)
 	}
@@ -243,10 +245,24 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, args map[string
 	return r.ExecuteWithContext(ctx, name, args, "", "", nil)
 }
 
-func (r *ToolRegistry) getCircuitBreaker(name string) *CircuitBreaker {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.breakers[name]
+// getCircuitBreaker returns the breaker scoped to the (channel, chatID, name)
+// tuple, allocating a fresh Closed-state breaker on first use. Callers that
+// pass empty channel/chatID land in the shared "_anon" namespace so that
+// legacy code paths (e.g. Execute without context) cannot trip a real
+// session's breaker. The cbMu lock protects the breakers map; the returned
+// breaker has its own internal mutex for state transitions.
+func (r *ToolRegistry) getCircuitBreaker(channel, chatID, name string) *CircuitBreaker {
+	key := breakerKey(channel, chatID, name)
+
+	r.cbMu.Lock()
+	if cb, ok := r.breakers[key]; ok {
+		r.cbMu.Unlock()
+		return cb
+	}
+	cb := NewCircuitBreaker()
+	r.breakers[key] = cb
+	r.cbMu.Unlock()
+	return cb
 }
 
 // ExecuteWithContext executes a tool with channel/chatID context and optional async callback.
@@ -278,7 +294,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 	}
 
 	// Circuit Breaker check
-	cb := r.getCircuitBreaker(name)
+	cb := r.getCircuitBreaker(channel, chatID, name)
 	if cb != nil && !cb.Allow() {
 		logger.WarnCF("tool", "Tool execution blocked by circuit breaker",
 			map[string]any{"tool": name})
@@ -524,12 +540,19 @@ func (r *ToolRegistry) List() []string {
 // tools registered on the parent after cloning (e.g. spawn, spawn_status)
 // will NOT be visible to the clone, preventing recursive subagent spawning.
 // The version counter is reset to 0 in the clone as it's a new independent registry.
+//
+// Breaker state is intentionally not inherited: the clone starts with an empty
+// breakers map, so the first tool execution on the subagent will lazily
+// allocate a fresh Closed-state breaker for its (channel, chatID, tool)
+// tuple. This matches the original design intent ("subagent = breaker mới")
+// and, with per-session keys, also prevents a subagent from observing — or
+// being observed by — the parent's transient failure state.
 func (r *ToolRegistry) Clone() *ToolRegistry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	clone := &ToolRegistry{
-		tools:      make(map[string]*ToolEntry, len(r.tools)),
-		breakers:   make(map[string]*CircuitBreaker, len(r.breakers)),
+		tools:    make(map[string]*ToolEntry, len(r.tools)),
+		breakers: make(map[string]*CircuitBreaker),
 		mediaStore: r.mediaStore,
 	}
 	if r.allowlist != nil {
@@ -544,12 +567,6 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 			IsCore: entry.IsCore,
 			TTL:    entry.TTL,
 		}
-	}
-	for name, breaker := range r.breakers {
-		// CircuitBreaker state is not shared; create a new one for the clone
-		// so subagents don't inherit transient failure states from the parent.
-		clone.breakers[name] = NewCircuitBreaker()
-		_ = breaker // ignore unused
 	}
 	return clone
 }
