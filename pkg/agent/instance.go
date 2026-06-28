@@ -139,6 +139,17 @@ func NewAgentInstance(
 		).
 		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker)
 
+	// Self-correction directive (plan: exception-handling-recovery-pattern-gap-closure-20260628):
+	// when a tool's circuit breaker is open, the next-turn prompt includes a
+	// transient Steering slot listing the unavailable tools so the LLM avoids
+	// retrying a dead tool and prefers an alternative or direct answer.
+	if err := contextBuilder.RegisterPromptContributor(&ToolHealthContributor{
+		listOpen: toolsRegistry.OpenTools,
+	}); err != nil {
+		logger.WarnCF("agent", "Failed to register tool health prompt contributor",
+			map[string]any{"error": err.Error()})
+	}
+
 	agentID := routing.DefaultAgentID
 	agentName := ""
 	var subagents *config.SubagentsConfig
