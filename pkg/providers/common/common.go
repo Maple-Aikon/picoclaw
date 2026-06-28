@@ -70,11 +70,12 @@ func NewHTTPClient(proxy string) *http.Client {
 // It mirrors protocoltypes.Message but omits SystemParts, which is an
 // internal field that would be unknown to third-party endpoints.
 type openaiMessage struct {
-	Role             string           `json:"role"`
-	Content          string           `json:"content"`
-	ReasoningContent string           `json:"reasoning_content,omitempty"`
-	ToolCalls        []openaiToolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string           `json:"tool_call_id,omitempty"`
+	Role             string              `json:"role"`
+	Content          string              `json:"content"`
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	ReasoningDetails []ReasoningDetail   `json:"reasoning_details,omitempty"`
+	ToolCalls        []openaiToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID       string              `json:"tool_call_id,omitempty"`
 }
 
 type openaiToolCall struct {
@@ -102,6 +103,7 @@ func SerializeMessages(messages []Message) []any {
 				Role:             m.Role,
 				Content:          m.Content,
 				ReasoningContent: m.ReasoningContent,
+				ReasoningDetails: m.ReasoningDetails,
 				ToolCalls:        toolCalls,
 				ToolCallID:       m.ToolCallID,
 			})
@@ -150,6 +152,9 @@ func SerializeMessages(messages []Message) []any {
 		}
 		if m.ReasoningContent != "" {
 			msg["reasoning_content"] = m.ReasoningContent
+		}
+		if len(m.ReasoningDetails) > 0 {
+			msg["reasoning_details"] = m.ReasoningDetails
 		}
 		out = append(out, msg)
 	}

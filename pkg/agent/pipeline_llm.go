@@ -732,6 +732,7 @@ func (p *Pipeline) CallLLM(
 		Content:          exec.response.Content,
 		ModelName:        exec.llmModelName,
 		ReasoningContent: reasoningContent,
+		ReasoningDetails: exec.response.ReasoningDetails,
 	}
 	for _, tc := range exec.normalizedToolCalls {
 		argumentsJSON, _ := json.Marshal(tc.Arguments)

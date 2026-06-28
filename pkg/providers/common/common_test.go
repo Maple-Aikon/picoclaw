@@ -800,3 +800,95 @@ func TestParseResponse_WithFunctionThoughtSignature(t *testing.T) {
 		)
 	}
 }
+
+func TestSerializeMessages_PreservesReasoningDetails(t *testing.T) {
+	messages := []Message{
+		{
+			Role:    "assistant",
+			Content: "ok",
+			ReasoningDetails: []ReasoningDetail{
+				{Format: "text", Index: 0, Type: "thinking", Text: "let me think..."},
+			},
+		},
+	}
+	result := SerializeMessages(messages)
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var msgs []map[string]any
+	if err := json.Unmarshal(data, &msgs); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if len(msgs) != 1 {
+		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
+	}
+
+	details, ok := msgs[0]["reasoning_details"].([]any)
+	if !ok {
+		t.Fatalf("reasoning_details not present or wrong type, got %T", msgs[0]["reasoning_details"])
+	}
+	if len(details) != 1 {
+		t.Fatalf("len(reasoning_details) = %d, want 1", len(details))
+	}
+
+	detail, ok := details[0].(map[string]any)
+	if !ok {
+		t.Fatalf("reasoning_details[0] wrong type, got %T", details[0])
+	}
+	if detail["format"] != "text" {
+		t.Errorf("detail.format = %v, want text", detail["format"])
+	}
+	if detail["text"] != "let me think..." {
+		t.Errorf("detail.text = %v, want 'let me think...'", detail["text"])
+	}
+}
+
+func TestSerializeMessages_ReasoningDetailsWithMedia(t *testing.T) {
+	messages := []Message{
+		{
+			Role:    "assistant",
+			Content: "check this",
+			Media:   []string{""},
+			ReasoningDetails: []ReasoningDetail{
+				{Format: "text", Index: 0, Type: "thinking", Text: "analyzing..."},
+			},
+		},
+	}
+	result := SerializeMessages(messages)
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	var msgs []map[string]any
+	if err := json.Unmarshal(data, &msgs); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	details, ok := msgs[0]["reasoning_details"].([]any)
+	if !ok {
+		t.Fatalf("reasoning_details not present in media message, got %T", msgs[0]["reasoning_details"])
+	}
+	if len(details) != 1 {
+		t.Fatalf("len(reasoning_details) = %d, want 1", len(details))
+	}
+
+	detail, ok := details[0].(map[string]any)
+	if !ok {
+		t.Fatalf("reasoning_details[0] wrong type, got %T", details[0])
+	}
+	if detail["text"] != "analyzing..." {
+		t.Errorf("detail.text = %v, want 'analyzing...'", detail["text"])
+	}
+
+	// Verify content is still array (media path)
+	_, isArray := msgs[0]["content"].([]any)
+	if !isArray {
+		t.Errorf("content should be array for media message, got %T", msgs[0]["content"])
+	}
+}
