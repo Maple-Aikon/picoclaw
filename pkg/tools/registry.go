@@ -259,10 +259,61 @@ func (r *ToolRegistry) getCircuitBreaker(channel, chatID, name string) *CircuitB
 		r.cbMu.Unlock()
 		return cb
 	}
-	cb := NewCircuitBreaker()
+	cb := NewCircuitBreakerWithName(name)
 	r.breakers[key] = cb
 	r.cbMu.Unlock()
 	return cb
+}
+
+// OpenToolInfo describes a tool whose circuit breaker is currently open.
+// Returned by ToolRegistry.OpenTools() to drive the ToolHealthContributor
+// self-correction directive in the LLM prompt.
+type OpenToolInfo struct {
+	Name     string
+	OpenedAt time.Time
+	Failures int
+}
+
+// OpenTools returns aggregated info for all tools with an open circuit
+// breaker across all session scopes (channel:chatID:name tuples). A tool
+// open in multiple sessions appears once with the earliest OpenedAt and
+// the failures count of that earliest-opened breaker. Result is sorted by
+// OpenedAt (oldest first) so the prompt can highlight the longest outage.
+func (r *ToolRegistry) OpenTools() []OpenToolInfo {
+	r.cbMu.Lock()
+	breakers := make([]*CircuitBreaker, 0, len(r.breakers))
+	for _, cb := range r.breakers {
+		breakers = append(breakers, cb)
+	}
+	r.cbMu.Unlock()
+
+	byName := make(map[string]OpenToolInfo)
+	for _, cb := range breakers {
+		name := cb.Name()
+		if name == "" {
+			continue
+		}
+		state, openedAt, failures := cb.Snapshot()
+		if state != StateOpen {
+			continue
+		}
+		if existing, ok := byName[name]; !ok || openedAt.Before(existing.OpenedAt) {
+			byName[name] = OpenToolInfo{
+				Name:     name,
+				OpenedAt: openedAt,
+				Failures: failures,
+			}
+		}
+	}
+
+	out := make([]OpenToolInfo, 0, len(byName))
+	for _, info := range byName {
+		out = append(out, info)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].OpenedAt.Before(out[j].OpenedAt)
+	})
+	return out
 }
 
 // ExecuteWithContext executes a tool with channel/chatID context and optional async callback.

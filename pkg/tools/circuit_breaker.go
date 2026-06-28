@@ -18,6 +18,7 @@ const (
 // CircuitBreaker prevents repeated execution of failing tools to save tokens and time.
 type CircuitBreaker struct {
 	mu               sync.Mutex
+	name             string // tool name; populated by ToolRegistry on lazy allocate, empty for legacy callers
 	state            CircuitState
 	failures         int
 	failureThreshold int
@@ -26,12 +27,40 @@ type CircuitBreaker struct {
 }
 
 // NewCircuitBreaker initializes a new CircuitBreaker with default thresholds.
+// The breaker has no name; callers that want self-identifying breakers
+// (e.g. for prompt health reporting) should use NewCircuitBreakerWithName.
 func NewCircuitBreaker() *CircuitBreaker {
 	return &CircuitBreaker{
 		state:            StateClosed,
 		failureThreshold: 3,               // Break after 3 consecutive failures
 		recoveryTimeout:  1 * time.Minute, // Wait 1 minute before retrying
 	}
+}
+
+// NewCircuitBreakerWithName is like NewCircuitBreaker but records the tool
+// name so later readers can attribute the breaker to a specific tool
+// (used by ToolRegistry.OpenTools and the ToolHealthContributor).
+func NewCircuitBreakerWithName(name string) *CircuitBreaker {
+	cb := NewCircuitBreaker()
+	cb.name = name
+	return cb
+}
+
+// Name returns the tool name this breaker is scoped to, or "" when the
+// breaker was created via NewCircuitBreaker() without a name.
+func (cb *CircuitBreaker) Name() string {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	return cb.name
+}
+
+// Snapshot returns a consistent read of (state, openedAt, failures).
+// Callers (e.g. the prompt health contributor) use this to surface
+// "tool unavailable" directives to the LLM without mutating breaker state.
+func (cb *CircuitBreaker) Snapshot() (CircuitState, time.Time, int) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	return cb.state, cb.openedAt, cb.failures
 }
 
 // breakerKey builds the composite map key used to scope a circuit breaker to

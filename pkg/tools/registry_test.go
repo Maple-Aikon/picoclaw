@@ -5,9 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -902,5 +904,209 @@ func TestToolRegistry_ExecuteWithContext_SanitizesInlineMediaWithoutStore(t *tes
 	}
 	if !strings.Contains(result.ForLLM, inlineMediaOmittedMessage) {
 		t.Fatalf("expected inline media omission note, got %q", result.ForLLM)
+	}
+}
+
+// Tests for ToolRegistry.OpenTools() added in plan
+// exception-handling-recovery-pattern-gap-closure-20260628 (Task B0).
+//
+// OpenTools() is the read-side aggregation that surfaces "which tools
+// have an open circuit breaker right now?" to the ToolHealthContributor.
+// It deduplicates across (channel, chatID) sessions and sorts oldest-
+// opened first so the LLM sees the longest outage at the top.
+
+// --- 1. Empty / healthy paths ---
+
+func TestToolRegistry_OpenTools_EmptyRegistryReturnsEmptySlice(t *testing.T) {
+	r := NewToolRegistry()
+	got := r.OpenTools()
+	if len(got) != 0 {
+		t.Fatalf("OpenTools() on empty registry = %v, want empty slice", got)
+	}
+}
+
+func TestToolRegistry_OpenTools_NoBreakersAfterSuccessfulExecution(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(&mockRegistryTool{
+		name:   "ok_tool",
+		desc:   "always succeeds",
+		params: map[string]any{},
+		result: okResult(),
+	})
+
+	// Execute successfully — this allocates a breaker but leaves it Closed.
+	res := r.ExecuteWithContext(context.Background(), "ok_tool", nil, "telegram", "111", nil)
+	if res == nil || res.IsError {
+		t.Fatalf("setup: ok_tool should succeed, got %+v", res)
+	}
+
+	got := r.OpenTools()
+	if len(got) != 0 {
+		t.Fatalf("OpenTools() after success = %v, want empty (breaker stays Closed)", got)
+	}
+}
+
+func TestToolRegistry_OpenTools_OnlyReturnsOpenOnes(t *testing.T) {
+	r := NewToolRegistry()
+	// One tool that always fails (will trip its breaker), one that always succeeds.
+	r.Register(&mockRegistryTool{
+		name:   "flaky",
+		desc:   "always fails",
+		params: map[string]any{},
+		result: failResult("boom"),
+	})
+	r.Register(&mockRegistryTool{
+		name:   "ok_tool",
+		desc:   "always succeeds",
+		params: map[string]any{},
+		result: okResult(),
+	})
+
+	// Trip the "flaky" breaker past threshold via the public execute path.
+	for i := 0; i < 3; i++ {
+		_ = r.ExecuteWithContext(context.Background(), "flaky", nil, "telegram", "111", nil)
+	}
+	// Exercise the healthy tool so its breaker exists but stays Closed.
+	_ = r.ExecuteWithContext(context.Background(), "ok_tool", nil, "telegram", "111", nil)
+
+	got := r.OpenTools()
+	if len(got) != 1 {
+		t.Fatalf("OpenTools() = %d entries, want 1 (only flaky should appear)", len(got))
+	}
+	if got[0].Name != "flaky" {
+		t.Fatalf("OpenTools()[0].Name = %q, want %q", got[0].Name, "flaky")
+	}
+	if got[0].Failures < 3 {
+		t.Fatalf("OpenTools()[0].Failures = %d, want >= 3", got[0].Failures)
+	}
+	if got[0].OpenedAt.IsZero() {
+		t.Fatal("OpenTools()[0].OpenedAt must be set")
+	}
+}
+
+// --- 2. Cross-session deduplication ---
+
+func TestToolRegistry_OpenTools_DeduplicatesAcrossSessions(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(&mockRegistryTool{
+		name:   "flaky",
+		desc:   "always fails",
+		params: map[string]any{},
+		result: failResult("boom"),
+	})
+
+	// Trip the breaker in session A.
+	for i := 0; i < 3; i++ {
+		_ = r.ExecuteWithContext(context.Background(), "flaky", nil, "telegram", "111", nil)
+	}
+	// Trip the breaker in session B (independent breaker, same tool name).
+	for i := 0; i < 3; i++ {
+		_ = r.ExecuteWithContext(context.Background(), "flaky", nil, "telegram", "222", nil)
+	}
+
+	got := r.OpenTools()
+	if len(got) != 1 {
+		t.Fatalf("OpenTools() = %d entries, want 1 (same tool deduped across sessions)", len(got))
+	}
+	if got[0].Name != "flaky" {
+		t.Fatalf("OpenTools()[0].Name = %q, want %q", got[0].Name, "flaky")
+	}
+}
+
+// --- 3. Sort order ---
+
+func TestToolRegistry_OpenTools_SortsByOpenedAtOldestFirst(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(&mockRegistryTool{
+		name:   "first",
+		desc:   "always fails",
+		params: map[string]any{},
+		result: failResult("boom"),
+	})
+	r.Register(&mockRegistryTool{
+		name:   "second",
+		desc:   "always fails",
+		params: map[string]any{},
+		result: failResult("boom"),
+	})
+
+	// Trip "first" first, then sleep enough that openedAt timestamps differ
+	// at sub-millisecond resolution (Linux time.Now() is typically monotonic).
+	for i := 0; i < 3; i++ {
+		_ = r.ExecuteWithContext(context.Background(), "first", nil, "telegram", "111", nil)
+	}
+	time.Sleep(2 * time.Millisecond)
+	for i := 0; i < 3; i++ {
+		_ = r.ExecuteWithContext(context.Background(), "second", nil, "telegram", "111", nil)
+	}
+
+	got := r.OpenTools()
+	if len(got) != 2 {
+		t.Fatalf("OpenTools() = %d entries, want 2", len(got))
+	}
+	if got[0].Name != "first" || got[1].Name != "second" {
+		t.Fatalf("OpenTools() sort order = [%q, %q], want [first, second]",
+			got[0].Name, got[1].Name)
+	}
+	// Also verify the underlying slice is actually sorted (catches regressions
+	// where someone removes the sort.Slice call).
+	if !sort.SliceIsSorted(got, func(i, j int) bool {
+		return got[i].OpenedAt.Before(got[j].OpenedAt)
+	}) {
+		t.Fatalf("OpenTools() result not sorted by OpenedAt: %+v", got)
+	}
+}
+
+// --- 4. HalfOpen breakers are excluded ---
+
+func TestToolRegistry_OpenTools_ExcludesHalfOpenBreakers(t *testing.T) {
+	r := NewToolRegistry()
+	cb := r.getCircuitBreaker("telegram", "111", "web_search")
+	tripBreaker(t, cb, "web_search")
+
+	// Force the breaker into HalfOpen state by making openedAt ancient.
+	cb.mu.Lock()
+	cb.openedAt = time.Now().Add(-2 * cb.recoveryTimeout)
+	cb.mu.Unlock()
+	if !cb.Allow() {
+		t.Fatal("setup: breaker should transition to HalfOpen after timeout")
+	}
+
+	got := r.OpenTools()
+	if len(got) != 0 {
+		t.Fatalf("OpenTools() with HalfOpen breaker = %+v, want empty (only Open counts)", got)
+	}
+}
+
+// --- 5. Unnamed breakers are ignored ---
+
+func TestToolRegistry_OpenTools_IgnoresUnnamedBreakers(t *testing.T) {
+	r := NewToolRegistry()
+
+	// Hand-craft a breaker that has no name (legacy shape), open it.
+	anon := NewCircuitBreaker()
+	for i := 0; i < 3; i++ {
+		anon.RecordResult("legacy", true, ErrTransient)
+	}
+	if anon.Name() != "" {
+		t.Fatal("setup: anon breaker should have empty name")
+	}
+	if anon.Allow() {
+		t.Fatal("setup: anon breaker should be Open after 3 failures")
+	}
+	r.cbMu.Lock()
+	r.breakers["legacy"] = anon
+	r.cbMu.Unlock()
+
+	// Also add a named, Open breaker — must still appear.
+	named := r.getCircuitBreaker("telegram", "111", "web_search")
+	tripBreaker(t, named, "web_search")
+
+	got := r.OpenTools()
+	if len(got) != 1 {
+		t.Fatalf("OpenTools() = %d entries, want 1 (anon should be filtered out)", len(got))
+	}
+	if got[0].Name != "web_search" {
+		t.Fatalf("OpenTools()[0].Name = %q, want %q", got[0].Name, "web_search")
 	}
 }
