@@ -2792,6 +2792,19 @@ func TestResponseReasoningContent_FallsBackWhenReasoningIsWhitespace(t *testing.
 	}
 }
 
+func TestResponseReasoningContent_FallsBackToReasoningDetails(t *testing.T) {
+	response := &providers.LLMResponse{
+		ReasoningDetails: []providers.ReasoningDetail{
+			{Text: "step 1: analyze the problem"},
+			{Text: "step 2: propose solution"},
+		},
+	}
+
+	if got := responseReasoningContent(response); got != "step 1: analyze the problemstep 2: propose solution" {
+		t.Fatalf("responseReasoningContent() = %q, want %q", got, "step 1: analyze the problemstep 2: propose solution")
+	}
+}
+
 func TestToolFeedbackExplanationFromResponse_UsesExplicitToolCallExtraContent(t *testing.T) {
 	response := &providers.LLMResponse{
 		ToolCalls: []providers.ToolCall{{

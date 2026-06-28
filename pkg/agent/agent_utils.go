@@ -549,6 +549,13 @@ func responseReasoningContent(response *providers.LLMResponse) string {
 	if strings.TrimSpace(response.ReasoningContent) != "" {
 		return response.ReasoningContent
 	}
+	if len(response.ReasoningDetails) > 0 {
+		var sb strings.Builder
+		for _, d := range response.ReasoningDetails {
+			sb.WriteString(d.Text)
+		}
+		return sb.String()
+	}
 	return ""
 }
 

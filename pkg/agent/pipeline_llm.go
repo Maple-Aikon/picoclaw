@@ -643,7 +643,7 @@ func (p *Pipeline) CallLLM(
 		LLMResponsePayload{
 			ContentLen:   len(exec.response.Content),
 			ToolCalls:    len(exec.response.ToolCalls),
-			HasReasoning: exec.response.Reasoning != "" || exec.response.ReasoningContent != "",
+			HasReasoning: exec.response.Reasoning != "" || exec.response.ReasoningContent != "" || len(exec.response.ReasoningDetails) > 0,
 		},
 	)
 
@@ -666,7 +666,7 @@ func (p *Pipeline) CallLLM(
 	// No-tool-call path: steering check and direct response
 	if len(exec.response.ToolCalls) == 0 || exec.gracefulTerminal {
 		responseContent := exec.response.Content
-		if responseContent == "" && exec.response.ReasoningContent != "" && ts.channel != "pico" {
+		if responseContent == "" && reasoningContent != "" && ts.channel != "pico" {
 			// Only fall back to ReasoningContent when the channel has a
 			// configured reasoning_channel_id. Without one, publishing
 			// reasoning as the main response leaks the model's internal
@@ -674,13 +674,13 @@ func (p *Pipeline) CallLLM(
 			// DefaultResponse fallback (turn_coord.go) handles the empty
 			// case instead.
 			if reasoningTargetChatID := al.targetReasoningChannelID(ts.channel); reasoningTargetChatID != "" {
-				responseContent = exec.response.ReasoningContent
+				responseContent = reasoningContent
 			} else {
 				logger.WarnCF("agent", "Reasoning content suppressed: no reasoning_channel_id configured for channel; relying on DefaultResponse fallback",
 					map[string]any{
 						"channel":          ts.channel,
 						"chat_id":          ts.chatID,
-						"reasoning_chars":  len(exec.response.ReasoningContent),
+						"reasoning_chars":  len(reasoningContent),
 						"iteration":        iteration,
 					})
 			}
