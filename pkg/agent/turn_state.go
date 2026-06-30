@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -228,6 +229,7 @@ type turnState struct {
 
 	phase        TurnPhase
 	iteration    int
+	iterationCap int    // mutable iteration cap; defaults to agent.MaxIterations, raised by extend_turn_iteration
 	startedAt    time.Time
 	finalContent string
 
@@ -295,6 +297,11 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 		phase:        TurnPhaseSetup,
 		startedAt:    time.Now(),
 	}
+
+	// Initialize iterationCap to the agent's MaxIterations. If extension is
+	// disabled (MaxIterationsCap == 0), iterationCap stays equal to MaxIterations
+	// and the three-tier logic falls through to legacy behavior.
+	ts.iterationCap = agent.MaxIterations
 
 	// Bind session store and capture initial history length for rollback logic
 	if agent != nil && agent.Sessions != nil {
@@ -417,6 +424,44 @@ func (ts *turnState) currentIteration() int {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 	return ts.iteration
+}
+
+// RemainingIterations returns the number of tool iterations remaining before the
+// turn's hard cap is reached. Clamped to zero if the cap has already been exceeded.
+func (ts *turnState) RemainingIterations() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	remaining := ts.iterationCap - ts.iteration
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// ExtendIterationCap raises the mutable iteration cap by the given amount.
+// If n <= 0, the agent's MaxIterations is used as the default extension budget.
+// Returns an error if the new cap would exceed the absolute ceiling
+// (agent.MaxIterationsCap) or if extension is disabled (MaxIterationsCap == 0).
+func (ts *turnState) ExtendIterationCap(n int, reason string) (int, error) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	absCap := ts.agent.MaxIterationsCap
+	if absCap == 0 {
+		return ts.iterationCap, fmt.Errorf("iteration extension is disabled (max_iterations_cap is 0)")
+	}
+
+	if n <= 0 {
+		n = ts.agent.MaxIterations
+	}
+
+	newCap := ts.iterationCap + n
+	if newCap > absCap {
+		return ts.iterationCap, fmt.Errorf("cannot extend past absolute ceiling: new cap %d would exceed max_iterations_cap %d", newCap, absCap)
+	}
+
+	ts.iterationCap = newCap
+	return newCap, nil
 }
 
 func (ts *turnState) setFinalContent(content string) {
