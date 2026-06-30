@@ -868,6 +868,38 @@ func (ts *turnState) toolLimitHintMessage() providers.Message {
 	}
 }
 
+// iterationExtendingHintMessage returns a non-terminating reminder that the LLM
+// is approaching the iteration cap. It tells the LLM it MAY call
+// extend_turn_iteration to continue, instead of producing a final report.
+//
+// remaining: how many iterations are left before the current cap.
+func (ts *turnState) iterationExtendingHintMessage(remaining int) providers.Message {
+	content := fmt.Sprintf(
+		"Tool iteration limit approaching: %d iteration(s) remaining before this turn is forced to end. "+
+			"If your task is not yet complete, you may call the `extend_turn_iteration` tool to grant more iterations. "+
+			"If the task is essentially complete, produce your final summary now.",
+		remaining,
+	)
+	return providers.Message{
+		Role:    "user",
+		Content: content,
+	}
+}
+
+// iterationCapReachedMessage is injected when the LLM has reached the current
+// iteration cap but the absolute ceiling (MaxIterationsCap) has not been hit.
+// Only extend_turn_iteration is available — all other tools are stripped.
+// The LLM must either summarize or extend.
+func (ts *turnState) iterationCapReachedMessage() providers.Message {
+	content := "SYSTEM DIRECTIVE: Tool call limit reached for this extension window. " +
+		"CEASE ALL TOOL CALLS and provide a final status report if the task is complete, " +
+		"OR call `extend_turn_iteration` to extend the iteration cap and continue working on the remaining task."
+	return providers.Message{
+		Role:    "user",
+		Content: content,
+	}
+}
+
 // =============================================================================
 // SubTurn-related methods
 // =============================================================================
