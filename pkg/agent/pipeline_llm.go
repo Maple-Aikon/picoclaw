@@ -63,9 +63,34 @@ func (p *Pipeline) CallLLM(
 		exec.callMessages = append(append([]providers.Message(nil), exec.messages...), ts.interruptHintMessage())
 		exec.providerToolDefs = nil
 		ts.markGracefulTerminalUsed()
-	} else if iteration == ts.agent.MaxIterations && ts.agent.MaxIterations > 0 {
-		exec.callMessages = append(append([]providers.Message(nil), exec.messages...), ts.toolLimitHintMessage())
-		exec.providerToolDefs = nil
+	} else {
+		remaining := ts.RemainingIterations()
+		absCap := ts.agent.MaxIterationsCap
+
+		if absCap > 0 && remaining > 0 && remaining <= 2 && ts.iterationCap < absCap {
+			// Tier 1 — Soft hint (N-2, N-1): all tools stay available.
+			exec.callMessages = append(
+				append([]providers.Message(nil), exec.messages...),
+				ts.iterationExtendingHintMessage(remaining),
+			)
+			// providerToolDefs stays fully populated — extend_turn_iteration and all
+			// other tools remain callable.
+
+		} else if absCap > 0 && remaining == 0 && ts.iterationCap < absCap {
+			// Tier 2 — Cap reached but not at absolute ceiling (iteration N).
+			// Strip ALL tools except extend_turn_iteration.
+			exec.callMessages = append(
+				append([]providers.Message(nil), exec.messages...),
+				ts.iterationCapReachedMessage(),
+			)
+			exec.providerToolDefs = filterToExtendToolOnly(exec.providerToolDefs)
+
+		} else if remaining <= 0 {
+			// Tier 3 — Absolute ceiling hit (iterationCap == MaxIterationsCap) or
+			// extension disabled (absCap == 0, legacy behavior).
+			exec.callMessages = append(append([]providers.Message(nil), exec.messages...), ts.toolLimitHintMessage())
+			exec.providerToolDefs = nil
+		}
 	}
 
 	// Task summary injection:
@@ -866,4 +891,17 @@ func transientLLMRetryReason(err error) (string, bool) {
 	}
 
 	return "", false
+}
+
+// filterToExtendToolOnly strips all tool definitions except extend_turn_iteration.
+// Used at Tier 2 (cap reached, not at absolute ceiling) to force the LLM to
+// either summarize or extend.
+func filterToExtendToolOnly(defs []providers.ToolDefinition) []providers.ToolDefinition {
+	filtered := make([]providers.ToolDefinition, 0, 1)
+	for _, def := range defs {
+		if def.Function.Name == "extend_turn_iteration" {
+			filtered = append(filtered, def)
+		}
+	}
+	return filtered
 }
