@@ -226,6 +226,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				if newSummary != "" {
 					al.sessionTaskSummary.Store(ts.sessionKey, newSummary)
 					exec.injectedTaskSummary = newSummary
+					exec.immediateReminderInjected = true
 					exec.reminderInjected = true
 
 					reminderMsg := providers.Message{

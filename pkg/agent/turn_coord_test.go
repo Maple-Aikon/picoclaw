@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1125,5 +1126,320 @@ func TestTurnState_SkillContextSnapshotsTrackLatestSuccessfulPath(t *testing.T) 
 	}
 	if snapshots[1].Sequence != 2 || snapshots[1].Trigger != skillContextTriggerContextRetryRebuild {
 		t.Fatalf("snapshots[1] = %+v, want sequence=2 trigger=%q", snapshots[1], skillContextTriggerContextRetryRebuild)
+	}
+}
+// =============================================================================
+// Pipeline Method Tests: Post-Extension Task Reminder (Task 7.5)
+// =============================================================================
+// These tests verify that after extend_turn_iteration raises the iteration cap,
+// task reminders fire at N+1 (immediate) and at the midpoint of the new
+// extension segment, reusing the previously injected task summary.
+//
+// Strategy: We call CallLLM directly with a pre-configured turnState and
+// turnExecution, checking exec.callMessages for the [Task context reminder]
+// message. This avoids the full runTurn loop and focuses on the reminder
+// injection logic in isolation.
+
+func TestPipeline_CallLLM_ImmediateReminderAfterExtension(t *testing.T) {
+	// Scenario: extend at iteration 20 (MaxIter=20, cap was 20 → new cap 40).
+	// At iteration 21 (N+1), the immediate post-extension reminder should fire.
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 100
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	// Simulate: threshold reminder already fired at iteration 10, summary injected.
+	exec.injectedTaskSummary = "Read 3 files and compare them"
+	exec.reminderInjected = true
+
+	// Simulate: extend at iteration 20 → cap 40, lastExtensionIteration=20
+	ts.iteration = 20
+	ts.iterationCap = 20
+	_, err = ts.ExtendIterationCap(0, "continue reading files")
+	if err != nil {
+		t.Fatalf("ExtendIterationCap failed: %v", err)
+	}
+	if ts.iterationCap != 40 {
+		t.Fatalf("iterationCap = %d, want 40", ts.iterationCap)
+	}
+
+	// Now call CallLLM at iteration 21 (N+1 after extension)
+	ts.iteration = 21
+	exec.callMessages = exec.messages
+
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 21)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+	_ = ctrl
+
+	// Verify the immediate reminder was injected
+	reminderFound := false
+	for _, msg := range exec.callMessages {
+		if strings.Contains(msg.Content, "[Task context reminder]") {
+			reminderFound = true
+			if !strings.Contains(msg.Content, "Read 3 files and compare them") {
+				t.Errorf("reminder content = %q, want it to contain the task summary", msg.Content)
+			}
+			break
+		}
+	}
+	if !reminderFound {
+		t.Error("expected [Task context reminder] in callMessages at iteration N+1 after extension")
+	}
+
+	// Verify immediate flag is set
+	if !exec.immediateReminderInjected {
+		t.Error("expected immediateReminderInjected = true after firing")
+	}
+}
+
+func TestPipeline_CallLLM_MidpointReminderAfterExtension(t *testing.T) {
+	// Scenario: extend at iteration 20 (MaxIter=20, cap was 20 → new cap 40).
+	// Midpoint = 20 + 20/2 = 30. At iteration 30, midpoint reminder should fire.
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 100
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	// Simulate: threshold reminder already fired at iteration 10, summary injected.
+	exec.injectedTaskSummary = "Analyze the data pipeline"
+	exec.reminderInjected = true
+
+	// Extend at iteration 20 → cap 40
+	ts.iteration = 20
+	ts.iterationCap = 20
+	_, err = ts.ExtendIterationCap(0, "continue analysis")
+	if err != nil {
+		t.Fatalf("ExtendIterationCap failed: %v", err)
+	}
+
+	// Simulate: immediate reminder already fired at iteration 21
+	exec.immediateReminderInjected = true
+
+	// Now call CallLLM at iteration 30 (midpoint)
+	ts.iteration = 30
+	exec.callMessages = exec.messages
+
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 30)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+
+	// Verify the midpoint reminder was injected
+	reminderFound := false
+	for _, msg := range exec.callMessages {
+		if strings.Contains(msg.Content, "[Task context reminder]") {
+			reminderFound = true
+			if !strings.Contains(msg.Content, "Analyze the data pipeline") {
+				t.Errorf("reminder content = %q, want it to contain the task summary", msg.Content)
+			}
+			break
+		}
+	}
+	if !reminderFound {
+		t.Error("expected [Task context reminder] in callMessages at extension midpoint (iteration 30)")
+	}
+
+	// Verify reminderInjected is still true (was already set, should stay true)
+	if !exec.reminderInjected {
+		t.Error("expected reminderInjected to remain true after midpoint fire")
+	}
+}
+
+func TestPipeline_CallLLM_NoDoubleFireImmediateReminder(t *testing.T) {
+	// Scenario: extend at iteration 20. At iteration 21, immediate fires.
+	// At iteration 22, immediate should NOT fire again.
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 100
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	// Simulate: threshold already fired, summary injected
+	exec.injectedTaskSummary = "Write the test suite"
+	exec.reminderInjected = true
+
+	// Extend at iteration 20 → cap 40
+	ts.iteration = 20
+	ts.iterationCap = 20
+	_, err = ts.ExtendIterationCap(0, "continue writing tests")
+	if err != nil {
+		t.Fatalf("ExtendIterationCap failed: %v", err)
+	}
+
+	// Simulate: immediate already fired at iteration 21, segment already detected
+	exec.immediateReminderInjected = true
+	exec.lastSeenExtensionBase = 20
+
+	// Call CallLLM at iteration 22 — immediate should NOT fire
+	ts.iteration = 22
+	exec.callMessages = exec.messages
+
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 22)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+
+	// Verify NO reminder was injected (both flags are set, iteration 22 is
+	// before midpoint 30 so no midpoint fire either)
+	reminderCount := 0
+	for _, msg := range exec.callMessages {
+		if strings.Contains(msg.Content, "[Task context reminder]") {
+			reminderCount++
+		}
+	}
+	if reminderCount != 0 {
+		t.Errorf("expected 0 reminders at iteration 22 (both flags set), got %d", reminderCount)
+	}
+}
+
+func TestPipeline_CallLLM_NoMidpointReminderBeforeMidpoint(t *testing.T) {
+	// Scenario: extend at iteration 20 (MaxIter=20 → cap 40, midpoint 30).
+	// At iteration 25 (before midpoint), no midpoint reminder should fire.
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 100
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	// Simulate: threshold + immediate already fired, segment already detected
+	exec.injectedTaskSummary = "Debug the pipeline"
+	exec.reminderInjected = true
+	exec.immediateReminderInjected = true
+	exec.lastSeenExtensionBase = 20
+
+	// Extend at iteration 20 → cap 40
+	ts.iteration = 20
+	ts.iterationCap = 20
+	_, err = ts.ExtendIterationCap(0, "continue debugging")
+	if err != nil {
+		t.Fatalf("ExtendIterationCap failed: %v", err)
+	}
+
+	// Call CallLLM at iteration 25 — before midpoint (30), no reminder
+	ts.iteration = 25
+	exec.callMessages = exec.messages
+
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 25)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+
+	reminderCount := 0
+	for _, msg := range exec.callMessages {
+		if strings.Contains(msg.Content, "[Task context reminder]") {
+			reminderCount++
+		}
+	}
+	if reminderCount != 0 {
+		t.Errorf("expected 0 reminders at iteration 25 (before midpoint 30), got %d", reminderCount)
+	}
+}
+
+func TestPipeline_CallLLM_SecondExtensionResetsFlags(t *testing.T) {
+	// Scenario: First extension at 20 → cap 40. Both reminders fire.
+	// Second extension at 40 → cap 60. Both flags should allow new fires.
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 100
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	exec.injectedTaskSummary = "Build the feature"
+	exec.reminderInjected = true
+	exec.immediateReminderInjected = true
+	// Simulate: first extension segment already detected at iteration 21
+	exec.lastSeenExtensionBase = 20
+
+	// Second extension at iteration 40 → cap 60, lastExtensionIteration=40
+	ts.iteration = 40
+	ts.iterationCap = 40
+	_, err = ts.ExtendIterationCap(0, "continue building")
+	if err != nil {
+		t.Fatalf("ExtendIterationCap failed: %v", err)
+	}
+	if ts.iterationCap != 60 {
+		t.Fatalf("iterationCap = %d, want 60", ts.iterationCap)
+	}
+
+	// The pipeline should detect the segment change (extensionBase 20 → 40)
+	// and reset both flags automatically. No manual reset needed.
+
+	// Call CallLLM at iteration 41 (N+1 after second extension)
+	ts.iteration = 41
+	exec.callMessages = exec.messages
+
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 41)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+
+	reminderFound := false
+	for _, msg := range exec.callMessages {
+		if strings.Contains(msg.Content, "[Task context reminder]") {
+			reminderFound = true
+			break
+		}
+	}
+	if !reminderFound {
+		t.Error("expected [Task context reminder] at iteration 41 after second extension (flags auto-reset)")
 	}
 }

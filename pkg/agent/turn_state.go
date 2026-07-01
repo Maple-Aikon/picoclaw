@@ -129,10 +129,24 @@ type turnExecution struct {
 	// threshold when steering already placed a reminder into the messages.
 	injectedTaskSummary string
 
-	// reminderInjected tracks whether a task reminder has been injected at the
-	// 50% threshold. Separated from injectedTaskSummary because error recovery
-	// injects at iteration 1 (first injection) and again at threshold (reminder).
+	// reminderInjected tracks whether the midpoint/threshold task reminder
+	// has fired for the current segment. Reset by ExtendIterationCap so the
+	// reminder can fire again in each extension segment.
 	reminderInjected bool
+
+	// immediateReminderInjected tracks whether the immediate post-extension
+	// reminder has fired for the current segment. Reset by ExtendIterationCap.
+	immediateReminderInjected bool
+
+	// lastExtensionIteration is the iteration at which the most recent
+	// extend_turn_iteration call was made. 0 = no extension has occurred.
+	// Used by the task-reminder logic to re-inject reminders after extension.
+	lastExtensionIteration int
+
+	// lastSeenExtensionBase tracks the extensionBase value from the last
+	// CallLLM invocation. When extensionBase changes (new extension happened),
+	// reminder flags are reset for the new segment. 0 = no extension seen yet.
+	lastSeenExtensionBase int
 
 	// Turn output
 	finalContent string
@@ -227,11 +241,12 @@ type turnState struct {
 	userMessage string
 	media       []string
 
-	phase        TurnPhase
-	iteration    int
-	iterationCap int    // mutable iteration cap; defaults to agent.MaxIterations, raised by extend_turn_iteration
-	startedAt    time.Time
-	finalContent string
+	phase                 TurnPhase
+	iteration             int
+	iterationCap          int    // mutable iteration cap; defaults to agent.MaxIterations, raised by extend_turn_iteration
+	lastExtensionIteration int   // iteration at which the most recent extend_turn_iteration was called (0 = none)
+	startedAt             time.Time
+	finalContent          string
 
 	followUps []bus.InboundMessage
 
@@ -438,6 +453,31 @@ func (ts *turnState) RemainingIterations() int {
 	return remaining
 }
 
+// ExtensionSegmentBase returns the iteration at which the most recent
+// extension occurred. Returns 0 if no extension has happened.
+func (ts *turnState) ExtensionSegmentBase() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.lastExtensionIteration
+}
+
+// ExtensionSegmentMidpoint returns the midpoint iteration of the current
+// extension segment — i.e. the iteration at which a midpoint reminder
+// should fire after the most recent extension.
+// Returns 0 if no extension has occurred.
+func (ts *turnState) ExtensionSegmentMidpoint() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	if ts.lastExtensionIteration == 0 {
+		return 0
+	}
+	segmentLen := ts.agent.MaxIterations
+	if segmentLen <= 0 {
+		segmentLen = 20
+	}
+	return ts.lastExtensionIteration + segmentLen/2
+}
+
 // ExtendIterationCap raises the mutable iteration cap by the given amount.
 // If n <= 0, the agent's MaxIterations is used as the default extension budget.
 // Returns an error if the new cap would exceed the absolute ceiling
@@ -461,6 +501,7 @@ func (ts *turnState) ExtendIterationCap(n int, reason string) (int, error) {
 	}
 
 	ts.iterationCap = newCap
+	ts.lastExtensionIteration = ts.iteration
 	return newCap, nil
 }
 

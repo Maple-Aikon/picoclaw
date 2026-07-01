@@ -95,16 +95,20 @@ func (p *Pipeline) CallLLM(
 
 	// Task summary injection:
 	//
-	// Two injection points exist:
+	// Three injection points exist:
 	//   1. First injection — error recovery at iteration 1 (blocking extraction
 	//      from SetupTurn already placed summary in taskSummaryChan).
 	//   2. Reminder at 50% threshold — for ALL turns (both normal and error
 	//      recovery). If injectedTaskSummary is already set (from iter 1 or
 	//      steering), reuse it directly. Otherwise poll the channel.
+	//   3. Post-extension reminders — after extend_turn_iteration raises the
+	//      cap, fire at N+1 (immediate) and at the midpoint of the new segment.
 	//
-	// Once the threshold reminder fires (reminderInjected = true), no further
-	// injection occurs this turn. Steering may still inject its own reminder
-	// directly into messages (see turn_coord.go) and sets reminderInjected.
+	// Two flags track injection state per segment:
+	//   - reminderInjected: threshold + midpoint reminders
+	//   - immediateReminderInjected: immediate post-extension reminder
+	// Both are reset by ExtendIterationCap so reminders fire again in each
+	// extension segment. Steering sets both flags (see turn_coord.go).
 	maxIter := ts.agent.MaxIterations
 	if maxIter == 0 {
 		maxIter = 20
@@ -124,9 +128,29 @@ func (p *Pipeline) CallLLM(
 
 	// Case 2: Reminder at 50% threshold for ALL turns
 	atThreshold := iteration >= maxIter/2 && iteration > 1
-	if atThreshold && !exec.reminderInjected {
+
+	// Case 3: Post-extension reminders — fire at N+1 (immediate) and
+	// at the midpoint of the new extension segment.
+	extensionBase := ts.ExtensionSegmentBase()
+	extensionMidpoint := ts.ExtensionSegmentMidpoint()
+	atExtensionImmediate := extensionBase > 0 && iteration == extensionBase+1
+	atExtensionMidpoint := extensionBase > 0 && iteration >= extensionMidpoint && iteration < ts.iterationCap
+
+	// Reset reminder flags when entering a new extension segment.
+	// Detect segment change by comparing extensionBase to the last seen value.
+	// This handles all cases: N+1, mid-segment, or even skipping N+1 entirely.
+	if extensionBase > 0 && extensionBase != exec.lastSeenExtensionBase {
+		exec.reminderInjected = false
+		exec.immediateReminderInjected = false
+		exec.lastSeenExtensionBase = extensionBase
+	}
+
+	shouldInjectMidpoint := (atThreshold || atExtensionMidpoint) && !exec.reminderInjected
+	shouldInjectImmediate := atExtensionImmediate && !exec.immediateReminderInjected
+
+	if shouldInjectMidpoint || shouldInjectImmediate {
 		if exec.injectedTaskSummary != "" {
-			// Error recovery (or steering already happened): reuse existing summary
+			// Error recovery, steering, or prior reminder: reuse existing summary
 			taskSummary = exec.injectedTaskSummary
 			shouldInject = true
 		} else {
@@ -145,9 +169,12 @@ func (p *Pipeline) CallLLM(
 			exec.injectedTaskSummary = taskSummary
 			al.sessionTaskSummary.Store(ts.sessionKey, taskSummary)
 		}
-		// Mark reminder done at threshold
-		if atThreshold {
+		// Mark reminder done for this segment
+		if shouldInjectMidpoint {
 			exec.reminderInjected = true
+		}
+		if shouldInjectImmediate {
+			exec.immediateReminderInjected = true
 		}
 		reminderMsg := providers.Message{
 			Role:    "user",
