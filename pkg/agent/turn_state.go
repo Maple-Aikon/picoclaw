@@ -478,6 +478,30 @@ func (ts *turnState) ExtensionSegmentMidpoint() int {
 	return ts.lastExtensionIteration + segmentLen/2
 }
 
+// CurrentIteration returns the turn's current iteration count (1-based).
+// Exported to satisfy the tools.IterationExtender interface.
+func (ts *turnState) CurrentIteration() int {
+	return ts.currentIteration()
+}
+
+// IterationCap returns the mutable iteration cap (initial = MaxIterations,
+// raised by ExtendIterationCap calls up to MaxIterationsCap).
+// Exported to satisfy the tools.IterationExtender interface.
+func (ts *turnState) IterationCap() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.iterationCap
+}
+
+// MaxIterationsCap returns the agent's absolute ceiling for iteration
+// extensions. 0 means extension is disabled.
+// Exported to satisfy the tools.IterationExtender interface.
+func (ts *turnState) MaxIterationsCap() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.agent.MaxIterationsCap
+}
+
 // ExtendIterationCap raises the mutable iteration cap by the given amount.
 // If n <= 0, the agent's MaxIterations is used as the default extension budget.
 // Returns an error if the new cap would exceed the absolute ceiling

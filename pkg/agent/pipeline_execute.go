@@ -20,6 +20,9 @@ import (
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
+// Compile-time assertion: *turnState satisfies tools.IterationExtender.
+var _ tools.IterationExtender = (*turnState)(nil)
+
 func toolErrorSummary(result *tools.ToolResult) string {
 	if result == nil || !result.IsError {
 		return ""
@@ -574,6 +577,9 @@ toolLoop:
 			ts.sessionKey,
 			ts.opts.Dispatch.SessionScope,
 		)
+		// Inject the turn's iteration state so extend_turn_iteration can
+		// access it without importing pkg/agent (avoids circular dep).
+		execCtx = tools.WithIterationExtender(execCtx, ts)
 		toolResult := ts.agent.Tools.ExecuteWithContext(
 			execCtx,
 			toolName,
