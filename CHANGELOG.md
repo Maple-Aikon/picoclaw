@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v0.3.0.1] - 2026-07-01
 
 ### Added
 
@@ -45,4 +45,5 @@ When `max_iterations_cap` is `0` (default) or omitted, the `extend_turn_iteratio
   - `/help` automatically includes `/extend <message>` via the `BuiltinDefinitions` registry.
   - Misconfiguration: `max_iterations_cap == 0` with the tool registered surfaces an info log at startup; the tool returns a runtime error when called.
 
-[Unreleased]: https://github.com/sipeed/picoclaw/compare/v0.3.0...HEAD
+[v0.3.0.1]: https://github.com/sipeed/picoclaw/compare/v0.3.0...v0.3.0.1
+[Unreleased]: https://github.com/sipeed/picoclaw/compare/v0.3.0.1...HEAD
