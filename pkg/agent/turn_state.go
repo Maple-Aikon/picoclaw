@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -128,10 +129,24 @@ type turnExecution struct {
 	// threshold when steering already placed a reminder into the messages.
 	injectedTaskSummary string
 
-	// reminderInjected tracks whether a task reminder has been injected at the
-	// 50% threshold. Separated from injectedTaskSummary because error recovery
-	// injects at iteration 1 (first injection) and again at threshold (reminder).
+	// reminderInjected tracks whether the midpoint/threshold task reminder
+	// has fired for the current segment. Reset by ExtendIterationCap so the
+	// reminder can fire again in each extension segment.
 	reminderInjected bool
+
+	// immediateReminderInjected tracks whether the immediate post-extension
+	// reminder has fired for the current segment. Reset by ExtendIterationCap.
+	immediateReminderInjected bool
+
+	// lastExtensionIteration is the iteration at which the most recent
+	// extend_turn_iteration call was made. 0 = no extension has occurred.
+	// Used by the task-reminder logic to re-inject reminders after extension.
+	lastExtensionIteration int
+
+	// lastSeenExtensionBase tracks the extensionBase value from the last
+	// CallLLM invocation. When extensionBase changes (new extension happened),
+	// reminder flags are reset for the new segment. 0 = no extension seen yet.
+	lastSeenExtensionBase int
 
 	// Turn output
 	finalContent string
@@ -226,10 +241,13 @@ type turnState struct {
 	userMessage string
 	media       []string
 
-	phase        TurnPhase
-	iteration    int
-	startedAt    time.Time
-	finalContent string
+	phase                 TurnPhase
+	iteration             int
+	iterationCap          int    // mutable iteration cap; defaults to agent.MaxIterations, raised by extend_turn_iteration
+	lastExtensionIteration int   // iteration at which the most recent extend_turn_iteration was called (0 = none)
+	extendEnabled         bool   // true when user invoked /extend on this turn; gates extend_turn_iteration availability and 3-tier hint logic
+	startedAt             time.Time
+	finalContent          string
 
 	followUps []bus.InboundMessage
 
@@ -295,6 +313,21 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 		phase:        TurnPhaseSetup,
 		startedAt:    time.Now(),
 	}
+
+	// /extend command: per-turn opt-in for extend_turn_iteration. When the
+	// command handler strips the prefix, it sets opts.StrippedUserMessage
+	// and opts.ExtendEnabled=true. We honor the stripped message so the
+	// LLM never sees the "/extend " prefix, and we record the flag so
+	// downstream gating (pipeline_llm.go + tool filter) can act on it.
+	if opts.ExtendEnabled && opts.StrippedUserMessage != "" {
+		ts.userMessage = opts.StrippedUserMessage
+	}
+	ts.extendEnabled = opts.ExtendEnabled
+
+	// Initialize iterationCap to the agent's MaxIterations. If extension is
+	// disabled (MaxIterationsCap == 0), iterationCap stays equal to MaxIterations
+	// and the three-tier logic falls through to legacy behavior.
+	ts.iterationCap = agent.MaxIterations
 
 	// Bind session store and capture initial history length for rollback logic
 	if agent != nil && agent.Sessions != nil {
@@ -417,6 +450,104 @@ func (ts *turnState) currentIteration() int {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 	return ts.iteration
+}
+
+// RemainingIterations returns the number of tool iterations remaining before the
+// turn's hard cap is reached. Clamped to zero if the cap has already been exceeded.
+func (ts *turnState) RemainingIterations() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	remaining := ts.iterationCap - ts.iteration
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// ExtensionSegmentBase returns the iteration at which the most recent
+// extension occurred. Returns 0 if no extension has happened.
+func (ts *turnState) ExtensionSegmentBase() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.lastExtensionIteration
+}
+
+// ExtensionSegmentMidpoint returns the midpoint iteration of the current
+// extension segment — i.e. the iteration at which a midpoint reminder
+// should fire after the most recent extension.
+// Returns 0 if no extension has occurred.
+func (ts *turnState) ExtensionSegmentMidpoint() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	if ts.lastExtensionIteration == 0 {
+		return 0
+	}
+	segmentLen := ts.agent.MaxIterations
+	if segmentLen <= 0 {
+		segmentLen = 20
+	}
+	return ts.lastExtensionIteration + segmentLen/2
+}
+
+// CurrentIteration returns the turn's current iteration count (1-based).
+// Exported to satisfy the tools.IterationExtender interface.
+func (ts *turnState) CurrentIteration() int {
+	return ts.currentIteration()
+}
+
+// IterationCap returns the mutable iteration cap (initial = MaxIterations,
+// raised by ExtendIterationCap calls up to MaxIterationsCap).
+// Exported to satisfy the tools.IterationExtender interface.
+func (ts *turnState) IterationCap() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.iterationCap
+}
+
+// MaxIterationsCap returns the agent's absolute ceiling for iteration
+// extensions. 0 means extension is disabled.
+// Exported to satisfy the tools.IterationExtender interface.
+func (ts *turnState) MaxIterationsCap() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.agent.MaxIterationsCap
+}
+
+// ExtendEnabled reports whether this turn was opened via the /extend slash
+// command. When false, the extend_turn_iteration tool is filtered out of
+// the provider tool defs and the soft/cap-reached hint tiers are suppressed.
+// Tier 3 (absolute ceiling, legacy) still fires regardless.
+func (ts *turnState) ExtendEnabled() bool {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.extendEnabled
+}
+
+// ExtendIterationCap raises the mutable iteration cap by the given amount.
+// If n <= 0, the agent's MaxIterations is used as the default extension budget.
+// Returns an error if the new cap would exceed the absolute ceiling
+// (agent.MaxIterationsCap) or if extension is disabled (MaxIterationsCap == 0).
+func (ts *turnState) ExtendIterationCap(n int, reason string) (int, error) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	absCap := ts.agent.MaxIterationsCap
+	if absCap == 0 {
+		return ts.iterationCap, fmt.Errorf("iteration extension is disabled (max_iterations_cap is 0)")
+	}
+
+	if n <= 0 {
+		n = ts.agent.MaxIterations
+	}
+
+	newCap := ts.iterationCap + n
+	if newCap > absCap {
+		return ts.iterationCap, fmt.Errorf("cannot extend past absolute ceiling: new cap %d would exceed max_iterations_cap %d", newCap, absCap)
+	}
+
+	ts.iterationCap = newCap
+	ts.lastExtensionIteration = ts.iteration
+	return newCap, nil
 }
 
 func (ts *turnState) setFinalContent(content string) {
@@ -817,6 +948,38 @@ func (ts *turnState) interruptHintMessage() providers.Message {
 func (ts *turnState) toolLimitHintMessage() providers.Message {
 	content := "SYSTEM DIRECTIVE: Tool call limit reached. CEASE ALL TOOL CALLS IMMEDIATELY. " +
 		"YOU MUST NOW PROVIDE A FINAL STATUS REPORT ON THE ASSIGNED MISSION, SUMMARIZING COMPLETED ACTIONS AND OUTLINING THE REMAINING STEPS TO COMPLETION."
+	return providers.Message{
+		Role:    "user",
+		Content: content,
+	}
+}
+
+// iterationExtendingHintMessage returns a non-terminating reminder that the LLM
+// is approaching the iteration cap. It tells the LLM it MAY call
+// extend_turn_iteration to continue, instead of producing a final report.
+//
+// remaining: how many iterations are left before the current cap.
+func (ts *turnState) iterationExtendingHintMessage(remaining int) providers.Message {
+	content := fmt.Sprintf(
+		"Tool iteration limit approaching: %d iteration(s) remaining before this turn is forced to end. "+
+			"If your task is not yet complete, you may call the `extend_turn_iteration` tool to grant more iterations. "+
+			"If the task is essentially complete, produce your final summary now.",
+		remaining,
+	)
+	return providers.Message{
+		Role:    "user",
+		Content: content,
+	}
+}
+
+// iterationCapReachedMessage is injected when the LLM has reached the current
+// iteration cap but the absolute ceiling (MaxIterationsCap) has not been hit.
+// Only extend_turn_iteration is available — all other tools are stripped.
+// The LLM must either summarize or extend.
+func (ts *turnState) iterationCapReachedMessage() providers.Message {
+	content := "SYSTEM DIRECTIVE: Tool call limit reached for this extension window. " +
+		"CEASE ALL TOOL CALLS and provide a final status report if the task is complete, " +
+		"OR call `extend_turn_iteration` to extend the iteration cap and continue working on the remaining task."
 	return providers.Message{
 		Role:    "user",
 		Content: content,

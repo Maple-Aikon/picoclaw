@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 // =============================================================================
@@ -1125,5 +1127,521 @@ func TestTurnState_SkillContextSnapshotsTrackLatestSuccessfulPath(t *testing.T) 
 	}
 	if snapshots[1].Sequence != 2 || snapshots[1].Trigger != skillContextTriggerContextRetryRebuild {
 		t.Fatalf("snapshots[1] = %+v, want sequence=2 trigger=%q", snapshots[1], skillContextTriggerContextRetryRebuild)
+	}
+}
+// =============================================================================
+// Pipeline Method Tests: Post-Extension Task Reminder (Task 7.5)
+// =============================================================================
+// These tests verify that after extend_turn_iteration raises the iteration cap,
+// task reminders fire at N+1 (immediate) and at the midpoint of the new
+// extension segment, reusing the previously injected task summary.
+//
+// Strategy: We call CallLLM directly with a pre-configured turnState and
+// turnExecution, checking exec.callMessages for the [Task context reminder]
+// message. This avoids the full runTurn loop and focuses on the reminder
+// injection logic in isolation.
+
+func TestPipeline_CallLLM_ImmediateReminderAfterExtension(t *testing.T) {
+	// Scenario: extend at iteration 20 (MaxIter=20, cap was 20 → new cap 40).
+	// At iteration 21 (N+1), the immediate post-extension reminder should fire.
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 100
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	// Simulate: threshold reminder already fired at iteration 10, summary injected.
+	exec.injectedTaskSummary = "Read 3 files and compare them"
+	exec.reminderInjected = true
+
+	// Simulate: extend at iteration 20 → cap 40, lastExtensionIteration=20
+	ts.iteration = 20
+	ts.iterationCap = 20
+	_, err = ts.ExtendIterationCap(0, "continue reading files")
+	if err != nil {
+		t.Fatalf("ExtendIterationCap failed: %v", err)
+	}
+	if ts.iterationCap != 40 {
+		t.Fatalf("iterationCap = %d, want 40", ts.iterationCap)
+	}
+
+	// Now call CallLLM at iteration 21 (N+1 after extension)
+	ts.iteration = 21
+	exec.callMessages = exec.messages
+
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 21)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+	_ = ctrl
+
+	// Verify the immediate reminder was injected
+	reminderFound := false
+	for _, msg := range exec.callMessages {
+		if strings.Contains(msg.Content, "[Task context reminder]") {
+			reminderFound = true
+			if !strings.Contains(msg.Content, "Read 3 files and compare them") {
+				t.Errorf("reminder content = %q, want it to contain the task summary", msg.Content)
+			}
+			break
+		}
+	}
+	if !reminderFound {
+		t.Error("expected [Task context reminder] in callMessages at iteration N+1 after extension")
+	}
+
+	// Verify immediate flag is set
+	if !exec.immediateReminderInjected {
+		t.Error("expected immediateReminderInjected = true after firing")
+	}
+}
+
+func TestPipeline_CallLLM_MidpointReminderAfterExtension(t *testing.T) {
+	// Scenario: extend at iteration 20 (MaxIter=20, cap was 20 → new cap 40).
+	// Midpoint = 20 + 20/2 = 30. At iteration 30, midpoint reminder should fire.
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 100
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	// Simulate: threshold reminder already fired at iteration 10, summary injected.
+	exec.injectedTaskSummary = "Analyze the data pipeline"
+	exec.reminderInjected = true
+
+	// Extend at iteration 20 → cap 40
+	ts.iteration = 20
+	ts.iterationCap = 20
+	_, err = ts.ExtendIterationCap(0, "continue analysis")
+	if err != nil {
+		t.Fatalf("ExtendIterationCap failed: %v", err)
+	}
+
+	// Simulate: immediate reminder already fired at iteration 21
+	exec.immediateReminderInjected = true
+
+	// Now call CallLLM at iteration 30 (midpoint)
+	ts.iteration = 30
+	exec.callMessages = exec.messages
+
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 30)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+
+	// Verify the midpoint reminder was injected
+	reminderFound := false
+	for _, msg := range exec.callMessages {
+		if strings.Contains(msg.Content, "[Task context reminder]") {
+			reminderFound = true
+			if !strings.Contains(msg.Content, "Analyze the data pipeline") {
+				t.Errorf("reminder content = %q, want it to contain the task summary", msg.Content)
+			}
+			break
+		}
+	}
+	if !reminderFound {
+		t.Error("expected [Task context reminder] in callMessages at extension midpoint (iteration 30)")
+	}
+
+	// Verify reminderInjected is still true (was already set, should stay true)
+	if !exec.reminderInjected {
+		t.Error("expected reminderInjected to remain true after midpoint fire")
+	}
+}
+
+func TestPipeline_CallLLM_NoDoubleFireImmediateReminder(t *testing.T) {
+	// Scenario: extend at iteration 20. At iteration 21, immediate fires.
+	// At iteration 22, immediate should NOT fire again.
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 100
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	// Simulate: threshold already fired, summary injected
+	exec.injectedTaskSummary = "Write the test suite"
+	exec.reminderInjected = true
+
+	// Extend at iteration 20 → cap 40
+	ts.iteration = 20
+	ts.iterationCap = 20
+	_, err = ts.ExtendIterationCap(0, "continue writing tests")
+	if err != nil {
+		t.Fatalf("ExtendIterationCap failed: %v", err)
+	}
+
+	// Simulate: immediate already fired at iteration 21, segment already detected
+	exec.immediateReminderInjected = true
+	exec.lastSeenExtensionBase = 20
+
+	// Call CallLLM at iteration 22 — immediate should NOT fire
+	ts.iteration = 22
+	exec.callMessages = exec.messages
+
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 22)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+
+	// Verify NO reminder was injected (both flags are set, iteration 22 is
+	// before midpoint 30 so no midpoint fire either)
+	reminderCount := 0
+	for _, msg := range exec.callMessages {
+		if strings.Contains(msg.Content, "[Task context reminder]") {
+			reminderCount++
+		}
+	}
+	if reminderCount != 0 {
+		t.Errorf("expected 0 reminders at iteration 22 (both flags set), got %d", reminderCount)
+	}
+}
+
+func TestPipeline_CallLLM_NoMidpointReminderBeforeMidpoint(t *testing.T) {
+	// Scenario: extend at iteration 20 (MaxIter=20 → cap 40, midpoint 30).
+	// At iteration 25 (before midpoint), no midpoint reminder should fire.
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 100
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	// Simulate: threshold + immediate already fired, segment already detected
+	exec.injectedTaskSummary = "Debug the pipeline"
+	exec.reminderInjected = true
+	exec.immediateReminderInjected = true
+	exec.lastSeenExtensionBase = 20
+
+	// Extend at iteration 20 → cap 40
+	ts.iteration = 20
+	ts.iterationCap = 20
+	_, err = ts.ExtendIterationCap(0, "continue debugging")
+	if err != nil {
+		t.Fatalf("ExtendIterationCap failed: %v", err)
+	}
+
+	// Call CallLLM at iteration 25 — before midpoint (30), no reminder
+	ts.iteration = 25
+	exec.callMessages = exec.messages
+
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 25)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+
+	reminderCount := 0
+	for _, msg := range exec.callMessages {
+		if strings.Contains(msg.Content, "[Task context reminder]") {
+			reminderCount++
+		}
+	}
+	if reminderCount != 0 {
+		t.Errorf("expected 0 reminders at iteration 25 (before midpoint 30), got %d", reminderCount)
+	}
+}
+
+func TestPipeline_CallLLM_SecondExtensionResetsFlags(t *testing.T) {
+	// Scenario: First extension at 20 → cap 40. Both reminders fire.
+	// Second extension at 40 → cap 60. Both flags should allow new fires.
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 100
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	exec.injectedTaskSummary = "Build the feature"
+	exec.reminderInjected = true
+	exec.immediateReminderInjected = true
+	// Simulate: first extension segment already detected at iteration 21
+	exec.lastSeenExtensionBase = 20
+
+	// Second extension at iteration 40 → cap 60, lastExtensionIteration=40
+	ts.iteration = 40
+	ts.iterationCap = 40
+	_, err = ts.ExtendIterationCap(0, "continue building")
+	if err != nil {
+		t.Fatalf("ExtendIterationCap failed: %v", err)
+	}
+	if ts.iterationCap != 60 {
+		t.Fatalf("iterationCap = %d, want 60", ts.iterationCap)
+	}
+
+	// The pipeline should detect the segment change (extensionBase 20 → 40)
+	// and reset both flags automatically. No manual reset needed.
+
+	// Call CallLLM at iteration 41 (N+1 after second extension)
+	ts.iteration = 41
+	exec.callMessages = exec.messages
+
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 41)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+
+	reminderFound := false
+	for _, msg := range exec.callMessages {
+		if strings.Contains(msg.Content, "[Task context reminder]") {
+			reminderFound = true
+			break
+		}
+	}
+	if !reminderFound {
+		t.Error("expected [Task context reminder] at iteration 41 after second extension (flags auto-reset)")
+	}
+}// =============================================================================
+// Pipeline Method Tests: extend_turn_iteration End-to-End (Task 10)
+// =============================================================================
+//
+// These tests verify end-to-end behavior of the extend_turn_iteration tool
+// as exposed through al.runTurn. The first test ensures that calling
+// extend_turn_iteration mid-turn raises iterationCap and allows the turn
+// to complete. The second test ensures that calling extend_turn_iteration
+// when iterationCap already equals MaxIterationsCap returns an error
+// result and does NOT raise the cap (extension refused).
+
+// extendThenFinishProvider returns an extend_turn_iteration tool call on
+// every iteration in [extendAtCall, finishAtCall), and returns a final
+// response on finishAtCall. Iterations before extendAtCall return a final
+// response immediately (kept minimal — extendAtCall=1 in the happy-path
+// test below, so this branch is never hit).
+type extendThenFinishProvider struct {
+	extendAtCall int
+	finishAtCall int
+	callCount    int
+	mu           sync.Mutex
+}
+
+func (p *extendThenFinishProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	p.mu.Lock()
+	p.callCount++
+	count := p.callCount
+	p.mu.Unlock()
+
+	if count == p.finishAtCall {
+		return &providers.LLMResponse{
+			Content:      "Final answer after extension.",
+			FinishReason: "stop",
+		}, nil
+	}
+
+	if count >= p.extendAtCall && count < p.finishAtCall {
+		return &providers.LLMResponse{
+			Content: "Extending the turn to continue analysis.",
+			ToolCalls: []providers.ToolCall{{
+				ID:   "call_extend",
+				Name: "extend_turn_iteration",
+				Arguments: map[string]any{
+					"intent": "continue analyzing the data structure",
+				},
+			}},
+			FinishReason: "tool_calls",
+		}, nil
+	}
+
+	return &providers.LLMResponse{
+		Content:      "Unexpected early finish.",
+		FinishReason: "stop",
+	}, nil
+}
+
+func (p *extendThenFinishProvider) GetDefaultModel() string {
+	return "extend-finish-model"
+}
+
+func TestRunTurn_ExtendIteration_AllowsMoreIterations(t *testing.T) {
+	// Setup:
+	//   - MaxIterations = 3 (initial cap)
+	//   - MaxIterationsCap = 20 (absolute ceiling — large enough for one extension)
+	//   - extend_turn_iteration tool registered
+	// Provider:
+	//   - Call 1: extend_turn_iteration tool call (bumps cap 3 → 6)
+	//   - Call 2: final response
+	// Expected:
+	//   - result.status == TurnEndStatusCompleted
+	//   - ts.iterationCap > initialCap (== 6 > 3)
+	//   - finalContent contains the post-extension final response
+	provider := &extendThenFinishProvider{
+		extendAtCall: 1,
+		finishAtCall: 2,
+	}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	agent.MaxIterations = 3
+	agent.MaxIterationsCap = 20
+	agent.Tools.Register(tools.NewExtendTurnIterationTool())
+
+	pipeline := NewPipeline(al)
+	opts := makeTestProcessOpts("test-session-extend-allow")
+	opts.ExtendEnabled = true // Phase 2: /extend per-turn opt-in
+
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-extend-allow",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	initialCap := ts.iterationCap
+	if initialCap != 3 {
+		t.Fatalf("initialCap = %d, want 3 (== agent.MaxIterations)", initialCap)
+	}
+
+	result, err := al.runTurn(context.Background(), ts, pipeline)
+	if err != nil {
+		t.Fatalf("runTurn failed: %v", err)
+	}
+	if result.status != TurnEndStatusCompleted {
+		t.Errorf("expected status Completed, got %v", result.status)
+	}
+	if ts.iterationCap <= initialCap {
+		t.Errorf("iterationCap = %d, expected to be > initial %d after extension",
+			ts.iterationCap, initialCap)
+	}
+	if !strings.Contains(result.finalContent, "Final answer after extension") {
+		t.Errorf("finalContent = %q, expected to contain post-extension response",
+			result.finalContent)
+	}
+}
+
+type alwaysExtendProvider struct {
+	callCount int
+	mu        sync.Mutex
+}
+
+func (p *alwaysExtendProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	p.mu.Lock()
+	p.callCount++
+	p.mu.Unlock()
+	return &providers.LLMResponse{
+		Content: "Trying to extend",
+		ToolCalls: []providers.ToolCall{{
+			ID:   "call_extend",
+			Name: "extend_turn_iteration",
+			Arguments: map[string]any{
+				"intent": "still working on the analysis",
+			},
+		}},
+		FinishReason: "tool_calls",
+	}, nil
+}
+
+func (p *alwaysExtendProvider) GetDefaultModel() string {
+	return "always-extend-model"
+}
+
+func TestRunTurn_ExtendIteration_RefusedAtAbsoluteCap(t *testing.T) {
+	// Setup:
+	//   - MaxIterations = 3 (initial cap)
+	//   - MaxIterationsCap = 3 (cap == ceiling, no room to extend)
+	//   - extend_turn_iteration tool registered
+	// Provider:
+	//   - Always returns extend_turn_iteration tool call (every attempt refused)
+	// Expected:
+	//   - runTurn completes (loop exits when iterationCap hit)
+	//   - ts.iterationCap == initialCap (never bumped)
+	//   - finalContent == toolLimitResponse (post-loop fallback when finalContent empty)
+	provider := &alwaysExtendProvider{}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	agent.MaxIterations = 3
+	agent.MaxIterationsCap = 3
+	agent.Tools.Register(tools.NewExtendTurnIterationTool())
+
+	pipeline := NewPipeline(al)
+	opts := makeTestProcessOpts("test-session-extend-refused")
+	opts.ExtendEnabled = true // Phase 2: /extend per-turn opt-in
+
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-extend-refused",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	initialCap := ts.iterationCap
+	if initialCap != 3 {
+		t.Fatalf("initialCap = %d, want 3", initialCap)
+	}
+
+	result, err := al.runTurn(context.Background(), ts, pipeline)
+	if err != nil {
+		t.Fatalf("runTurn failed: %v", err)
+	}
+	if result.status != TurnEndStatusCompleted {
+		t.Errorf("expected status Completed, got %v", result.status)
+	}
+	// Cap must remain unchanged — every extension attempt was refused.
+	if ts.iterationCap != initialCap {
+		t.Errorf("iterationCap = %d, expected unchanged (%d) — extension should be refused at ceiling",
+			ts.iterationCap, initialCap)
+	}
+	// Loop exits via cap; finalContent empty → post-loop fallback to toolLimitResponse.
+	if result.finalContent != toolLimitResponse {
+		t.Errorf("finalContent = %q, want %q", result.finalContent, toolLimitResponse)
 	}
 }

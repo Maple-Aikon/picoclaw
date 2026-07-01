@@ -437,6 +437,7 @@ type AgentDefaults struct {
 	ContextWindow             int                `json:"context_window,omitempty"         env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_WINDOW"`
 	Temperature               *float64           `json:"temperature,omitempty"            env:"PICOCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
 	MaxToolIterations         int                `json:"max_tool_iterations"              env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
+	MaxIterationsCap          int                `json:"max_iterations_cap,omitempty"     env:"PICOCLAW_AGENTS_DEFAULTS_MAX_ITERATIONS_CAP"`   // 0 = extension feature off (default); positive = absolute ceiling for extend_turn_iteration tool
 	SummarizeMessageThreshold int                `json:"summarize_message_threshold"      env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_MESSAGE_THRESHOLD"`
 	SummarizeTokenPercent     int                `json:"summarize_token_percent"          env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_TOKEN_PERCENT"`
 	MaxMediaSize              int                `json:"max_media_size,omitempty"         env:"PICOCLAW_AGENTS_DEFAULTS_MAX_MEDIA_SIZE"`
@@ -1110,6 +1111,7 @@ type ToolsConfig struct {
 	MCP            MCPConfig          `json:"mcp"              yaml:"-"`
 	AppendFile     ToolConfig         `json:"append_file"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_APPEND_FILE_"`
 	EditFile       ToolConfig         `json:"edit_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_EDIT_FILE_"`
+	ExtendTurnIteration ToolConfig    `json:"extend_turn_iteration" yaml:"-"                                                          envPrefix:"PICOCLAW_TOOLS_EXTEND_TURN_ITERATION_"`
 	FindSkills     ToolConfig         `json:"find_skills"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_FIND_SKILLS_"`
 	I2C            ToolConfig         `json:"i2c"              yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_I2C_"`
 	InstallSkill   ToolConfig         `json:"install_skill"    yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_INSTALL_SKILL_"`
@@ -1890,6 +1892,8 @@ func (t *ToolsConfig) IsToolEnabled(name string) bool {
 		return t.AppendFile.Enabled
 	case "edit_file":
 		return t.EditFile.Enabled
+	case "extend_turn_iteration":
+		return t.ExtendTurnIteration.Enabled
 	case "find_skills":
 		return t.FindSkills.Enabled
 	case "i2c":

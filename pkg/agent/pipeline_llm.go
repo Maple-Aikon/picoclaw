@@ -63,23 +63,62 @@ func (p *Pipeline) CallLLM(
 		exec.callMessages = append(append([]providers.Message(nil), exec.messages...), ts.interruptHintMessage())
 		exec.providerToolDefs = nil
 		ts.markGracefulTerminalUsed()
-	} else if iteration == ts.agent.MaxIterations && ts.agent.MaxIterations > 0 {
-		exec.callMessages = append(append([]providers.Message(nil), exec.messages...), ts.toolLimitHintMessage())
-		exec.providerToolDefs = nil
+	} else {
+		// Phase 2 (R14.5): extend_turn_iteration is always registered, but only
+		// callable in turns opened via /extend. Filter it out of provider tool
+		// defs here so non-/extend turns never see it. The 3-tier hint logic
+		// further down is also gated on ts.extendEnabled (tiers 1, 2 only).
+		if !ts.extendEnabled {
+			exec.providerToolDefs = filterOutExtendTool(exec.providerToolDefs)
+		}
+
+		remaining := ts.RemainingIterations()
+		absCap := ts.agent.MaxIterationsCap
+
+		if ts.extendEnabled && absCap > 0 && remaining > 0 && remaining <= 2 && ts.iterationCap < absCap {
+			// Tier 1 — Soft hint (N-2, N-1): all tools stay available.
+			exec.callMessages = append(
+				append([]providers.Message(nil), exec.messages...),
+				ts.iterationExtendingHintMessage(remaining),
+			)
+			// providerToolDefs stays fully populated — extend_turn_iteration and all
+			// other tools remain callable.
+
+		} else if ts.extendEnabled && absCap > 0 && remaining == 0 && ts.iterationCap < absCap {
+			// Tier 2 — Cap reached but not at absolute ceiling (iteration N).
+			// Strip ALL tools except extend_turn_iteration.
+			exec.callMessages = append(
+				append([]providers.Message(nil), exec.messages...),
+				ts.iterationCapReachedMessage(),
+			)
+			exec.providerToolDefs = filterToExtendToolOnly(exec.providerToolDefs)
+
+		} else if remaining <= 0 {
+			// Tier 3 — Absolute ceiling hit (iterationCap == MaxIterationsCap) or
+			// extension disabled (absCap == 0, legacy behavior). Always fires
+			// regardless of extendEnabled — preserves legacy max_tool_iterations
+			// ceiling semantics for normal turns.
+			exec.callMessages = append(append([]providers.Message(nil), exec.messages...), ts.toolLimitHintMessage())
+			exec.providerToolDefs = nil
+		}
 	}
 
 	// Task summary injection:
 	//
-	// Two injection points exist:
+	// Three injection points exist:
 	//   1. First injection — error recovery at iteration 1 (blocking extraction
 	//      from SetupTurn already placed summary in taskSummaryChan).
 	//   2. Reminder at 50% threshold — for ALL turns (both normal and error
 	//      recovery). If injectedTaskSummary is already set (from iter 1 or
 	//      steering), reuse it directly. Otherwise poll the channel.
+	//   3. Post-extension reminders — after extend_turn_iteration raises the
+	//      cap, fire at N+1 (immediate) and at the midpoint of the new segment.
 	//
-	// Once the threshold reminder fires (reminderInjected = true), no further
-	// injection occurs this turn. Steering may still inject its own reminder
-	// directly into messages (see turn_coord.go) and sets reminderInjected.
+	// Two flags track injection state per segment:
+	//   - reminderInjected: threshold + midpoint reminders
+	//   - immediateReminderInjected: immediate post-extension reminder
+	// Both are reset by ExtendIterationCap so reminders fire again in each
+	// extension segment. Steering sets both flags (see turn_coord.go).
 	maxIter := ts.agent.MaxIterations
 	if maxIter == 0 {
 		maxIter = 20
@@ -99,9 +138,29 @@ func (p *Pipeline) CallLLM(
 
 	// Case 2: Reminder at 50% threshold for ALL turns
 	atThreshold := iteration >= maxIter/2 && iteration > 1
-	if atThreshold && !exec.reminderInjected {
+
+	// Case 3: Post-extension reminders — fire at N+1 (immediate) and
+	// at the midpoint of the new extension segment.
+	extensionBase := ts.ExtensionSegmentBase()
+	extensionMidpoint := ts.ExtensionSegmentMidpoint()
+	atExtensionImmediate := extensionBase > 0 && iteration == extensionBase+1
+	atExtensionMidpoint := extensionBase > 0 && iteration >= extensionMidpoint && iteration < ts.iterationCap
+
+	// Reset reminder flags when entering a new extension segment.
+	// Detect segment change by comparing extensionBase to the last seen value.
+	// This handles all cases: N+1, mid-segment, or even skipping N+1 entirely.
+	if extensionBase > 0 && extensionBase != exec.lastSeenExtensionBase {
+		exec.reminderInjected = false
+		exec.immediateReminderInjected = false
+		exec.lastSeenExtensionBase = extensionBase
+	}
+
+	shouldInjectMidpoint := (atThreshold || atExtensionMidpoint) && !exec.reminderInjected
+	shouldInjectImmediate := atExtensionImmediate && !exec.immediateReminderInjected
+
+	if shouldInjectMidpoint || shouldInjectImmediate {
 		if exec.injectedTaskSummary != "" {
-			// Error recovery (or steering already happened): reuse existing summary
+			// Error recovery, steering, or prior reminder: reuse existing summary
 			taskSummary = exec.injectedTaskSummary
 			shouldInject = true
 		} else {
@@ -120,9 +179,12 @@ func (p *Pipeline) CallLLM(
 			exec.injectedTaskSummary = taskSummary
 			al.sessionTaskSummary.Store(ts.sessionKey, taskSummary)
 		}
-		// Mark reminder done at threshold
-		if atThreshold {
+		// Mark reminder done for this segment
+		if shouldInjectMidpoint {
 			exec.reminderInjected = true
+		}
+		if shouldInjectImmediate {
+			exec.immediateReminderInjected = true
 		}
 		reminderMsg := providers.Message{
 			Role:    "user",
@@ -866,4 +928,31 @@ func transientLLMRetryReason(err error) (string, bool) {
 	}
 
 	return "", false
+}
+
+// filterToExtendToolOnly strips all tool definitions except extend_turn_iteration.
+// Used at Tier 2 (cap reached, not at absolute ceiling) to force the LLM to
+// either summarize or extend.
+func filterToExtendToolOnly(defs []providers.ToolDefinition) []providers.ToolDefinition {
+	filtered := make([]providers.ToolDefinition, 0, 1)
+	for _, def := range defs {
+		if def.Function.Name == "extend_turn_iteration" {
+			filtered = append(filtered, def)
+		}
+	}
+	return filtered
+}
+
+// filterOutExtendTool strips extend_turn_iteration from tool definitions.
+// Used in Phase 2 (R14.5) to gate the tool to /extend-only turns. All other
+// tools remain available. Mirrors the inverse of filterToExtendToolOnly.
+func filterOutExtendTool(defs []providers.ToolDefinition) []providers.ToolDefinition {
+	filtered := make([]providers.ToolDefinition, 0, len(defs))
+	for _, def := range defs {
+		if def.Function.Name == "extend_turn_iteration" {
+			continue
+		}
+		filtered = append(filtered, def)
+	}
+	return filtered
 }

@@ -34,6 +34,10 @@ func (al *AgentLoop) handleCommand(
 		return reply, handled
 	}
 
+	if matched, handled, reply := al.applyExtendCommand(msg.Content, agent, opts); matched {
+		return reply, handled
+	}
+
 	if al.cmdRegistry == nil {
 		return "", false
 	}
@@ -121,6 +125,42 @@ func (al *AgentLoop) applyExplicitSkillCommand(
 		opts.ForcedSkills = append(opts.ForcedSkills, skillName)
 		opts.Dispatch.UserMessage = message
 		opts.UserMessage = message
+	}
+
+	return true, false, ""
+}
+
+// applyExtendCommand handles the /extend slash command. It mirrors the
+// /use pattern: intercept before the command executor, strip the prefix,
+// set opts flags, and fall through to the LLM with handled=false.
+//
+// Syntax: /extend <message> (lowercase, requires trailing space after /extend).
+// Empty message after stripping → reply usage hint (matches /btw pattern).
+func (al *AgentLoop) applyExtendCommand(
+	raw string,
+	agent *AgentInstance,
+	opts *processOptions,
+) (matched bool, handled bool, reply string) {
+	const prefix = "/extend "
+
+	if !strings.HasPrefix(raw, prefix) {
+		// "/extend" without trailing space (or not /extend at all)
+		if raw == "/extend" || strings.HasPrefix(raw, "/extend@") {
+			return true, true, "Usage: /extend <message>\n\nRun the message with the extend_turn_iteration tool enabled. The LLM may call extend_turn_iteration when approaching the iteration cap to continue working. Requires max_iterations_cap > 0 in agent config."
+		}
+		return false, false, ""
+	}
+
+	stripped := strings.TrimSpace(strings.TrimPrefix(raw, prefix))
+	if stripped == "" {
+		return true, true, "Usage: /extend <message>\n\nRun the message with the extend_turn_iteration tool enabled. The LLM may call extend_turn_iteration when approaching the iteration cap to continue working. Requires max_iterations_cap > 0 in agent config."
+	}
+
+	if opts != nil {
+		opts.ExtendEnabled = true
+		opts.StrippedUserMessage = stripped
+		opts.Dispatch.UserMessage = stripped
+		opts.UserMessage = stripped
 	}
 
 	return true, false, ""
