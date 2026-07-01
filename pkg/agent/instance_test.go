@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
@@ -269,10 +268,13 @@ func TestNewAgentInstance_PreservesConfigIdentityForExplicitProviderModelRef(t *
 
 func TestNewAgentInstance_AllowsMediaTempDirForReadListAndExec(t *testing.T) {
 	workspace := t.TempDir()
-	mediaDir := media.TempDir()
-	if err := os.MkdirAll(mediaDir, 0o700); err != nil {
-		t.Fatalf("MkdirAll(mediaDir) error = %v", err)
-	}
+	// Redirect the shared media temp dir to an isolated t.TempDir() so the
+	// test does not depend on ownership/perms of /tmp/picoclaw_media (which
+	// may be owned by a different uid from a prior runtime session).
+	// Must be set BEFORE NewAgentInstance, which compiles the read-whitelist
+	// pattern via mediaTempDirPattern() at construction time.
+	mediaDir := t.TempDir()
+	t.Setenv("PICOCLAW_MEDIA_DIR", mediaDir)
 
 	mediaFile, err := os.CreateTemp(mediaDir, "instance-tool-*.txt")
 	if err != nil {

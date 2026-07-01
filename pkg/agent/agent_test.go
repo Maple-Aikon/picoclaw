@@ -2264,6 +2264,12 @@ func TestResolveMessageRoute_UsesDispatchRulesInOrder(t *testing.T) {
 
 func TestProcessMessage_MediaArtifactCanBeForwardedBySendFile(t *testing.T) {
 	tmpDir := t.TempDir()
+	// Isolate the media temp dir from /tmp/picoclaw_media (may be owned by a
+	// stale runtime uid). Must be set BEFORE NewAgentLoop so the read-whitelist
+	// pattern compiled inside the agent matches this test's temp dir.
+	mediaDir := t.TempDir()
+	t.Setenv("PICOCLAW_MEDIA_DIR", mediaDir)
+
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = tmpDir
 	cfg.Agents.Defaults.ModelName = "test-model"
@@ -2279,10 +2285,6 @@ func TestProcessMessage_MediaArtifactCanBeForwardedBySendFile(t *testing.T) {
 	telegramChannel := &fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}}
 	al.SetChannelManager(newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel))
 
-	mediaDir := media.TempDir()
-	if err := os.MkdirAll(mediaDir, 0o700); err != nil {
-		t.Fatalf("MkdirAll(mediaDir) error = %v", err)
-	}
 	imagePath := filepath.Join(mediaDir, "artifact-screen.png")
 	if err := os.WriteFile(imagePath, []byte("fake screenshot"), 0o644); err != nil {
 		t.Fatalf("WriteFile(imagePath) error = %v", err)

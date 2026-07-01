@@ -142,10 +142,11 @@ func TestSendFileTool_CustomFilename(t *testing.T) {
 
 func TestSendFileTool_AllowsWhitelistedMediaTempPath(t *testing.T) {
 	workspace := t.TempDir()
-	mediaDir := media.TempDir()
-	if err := os.MkdirAll(mediaDir, 0o700); err != nil {
-		t.Fatalf("MkdirAll(mediaDir) error = %v", err)
-	}
+	// Isolate from /tmp/picoclaw_media (may be owned by a stale runtime uid).
+	// Must be set BEFORE the whitelist pattern is built below so both the
+	// regex and media.TempDir() agree on the same path.
+	mediaDir := t.TempDir()
+	t.Setenv("PICOCLAW_MEDIA_DIR", mediaDir)
 
 	testFile, err := os.CreateTemp(mediaDir, "send-file-*.txt")
 	if err != nil {
