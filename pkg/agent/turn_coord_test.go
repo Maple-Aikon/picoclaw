@@ -13,6 +13,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 // =============================================================================
@@ -1441,5 +1442,204 @@ func TestPipeline_CallLLM_SecondExtensionResetsFlags(t *testing.T) {
 	}
 	if !reminderFound {
 		t.Error("expected [Task context reminder] at iteration 41 after second extension (flags auto-reset)")
+	}
+}// =============================================================================
+// Pipeline Method Tests: extend_turn_iteration End-to-End (Task 10)
+// =============================================================================
+//
+// These tests verify end-to-end behavior of the extend_turn_iteration tool
+// as exposed through al.runTurn. The first test ensures that calling
+// extend_turn_iteration mid-turn raises iterationCap and allows the turn
+// to complete. The second test ensures that calling extend_turn_iteration
+// when iterationCap already equals MaxIterationsCap returns an error
+// result and does NOT raise the cap (extension refused).
+
+// extendThenFinishProvider returns an extend_turn_iteration tool call on
+// every iteration in [extendAtCall, finishAtCall), and returns a final
+// response on finishAtCall. Iterations before extendAtCall return a final
+// response immediately (kept minimal — extendAtCall=1 in the happy-path
+// test below, so this branch is never hit).
+type extendThenFinishProvider struct {
+	extendAtCall int
+	finishAtCall int
+	callCount    int
+	mu           sync.Mutex
+}
+
+func (p *extendThenFinishProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	p.mu.Lock()
+	p.callCount++
+	count := p.callCount
+	p.mu.Unlock()
+
+	if count == p.finishAtCall {
+		return &providers.LLMResponse{
+			Content:      "Final answer after extension.",
+			FinishReason: "stop",
+		}, nil
+	}
+
+	if count >= p.extendAtCall && count < p.finishAtCall {
+		return &providers.LLMResponse{
+			Content: "Extending the turn to continue analysis.",
+			ToolCalls: []providers.ToolCall{{
+				ID:   "call_extend",
+				Name: "extend_turn_iteration",
+				Arguments: map[string]any{
+					"intent": "continue analyzing the data structure",
+				},
+			}},
+			FinishReason: "tool_calls",
+		}, nil
+	}
+
+	return &providers.LLMResponse{
+		Content:      "Unexpected early finish.",
+		FinishReason: "stop",
+	}, nil
+}
+
+func (p *extendThenFinishProvider) GetDefaultModel() string {
+	return "extend-finish-model"
+}
+
+func TestRunTurn_ExtendIteration_AllowsMoreIterations(t *testing.T) {
+	// Setup:
+	//   - MaxIterations = 3 (initial cap)
+	//   - MaxIterationsCap = 20 (absolute ceiling — large enough for one extension)
+	//   - extend_turn_iteration tool registered
+	// Provider:
+	//   - Call 1: extend_turn_iteration tool call (bumps cap 3 → 6)
+	//   - Call 2: final response
+	// Expected:
+	//   - result.status == TurnEndStatusCompleted
+	//   - ts.iterationCap > initialCap (== 6 > 3)
+	//   - finalContent contains the post-extension final response
+	provider := &extendThenFinishProvider{
+		extendAtCall: 1,
+		finishAtCall: 2,
+	}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	agent.MaxIterations = 3
+	agent.MaxIterationsCap = 20
+	agent.Tools.Register(tools.NewExtendTurnIterationTool())
+
+	pipeline := NewPipeline(al)
+	opts := makeTestProcessOpts("test-session-extend-allow")
+
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-extend-allow",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	initialCap := ts.iterationCap
+	if initialCap != 3 {
+		t.Fatalf("initialCap = %d, want 3 (== agent.MaxIterations)", initialCap)
+	}
+
+	result, err := al.runTurn(context.Background(), ts, pipeline)
+	if err != nil {
+		t.Fatalf("runTurn failed: %v", err)
+	}
+	if result.status != TurnEndStatusCompleted {
+		t.Errorf("expected status Completed, got %v", result.status)
+	}
+	if ts.iterationCap <= initialCap {
+		t.Errorf("iterationCap = %d, expected to be > initial %d after extension",
+			ts.iterationCap, initialCap)
+	}
+	if !strings.Contains(result.finalContent, "Final answer after extension") {
+		t.Errorf("finalContent = %q, expected to contain post-extension response",
+			result.finalContent)
+	}
+}
+
+type alwaysExtendProvider struct {
+	callCount int
+	mu        sync.Mutex
+}
+
+func (p *alwaysExtendProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	p.mu.Lock()
+	p.callCount++
+	p.mu.Unlock()
+	return &providers.LLMResponse{
+		Content: "Trying to extend",
+		ToolCalls: []providers.ToolCall{{
+			ID:   "call_extend",
+			Name: "extend_turn_iteration",
+			Arguments: map[string]any{
+				"intent": "still working on the analysis",
+			},
+		}},
+		FinishReason: "tool_calls",
+	}, nil
+}
+
+func (p *alwaysExtendProvider) GetDefaultModel() string {
+	return "always-extend-model"
+}
+
+func TestRunTurn_ExtendIteration_RefusedAtAbsoluteCap(t *testing.T) {
+	// Setup:
+	//   - MaxIterations = 3 (initial cap)
+	//   - MaxIterationsCap = 3 (cap == ceiling, no room to extend)
+	//   - extend_turn_iteration tool registered
+	// Provider:
+	//   - Always returns extend_turn_iteration tool call (every attempt refused)
+	// Expected:
+	//   - runTurn completes (loop exits when iterationCap hit)
+	//   - ts.iterationCap == initialCap (never bumped)
+	//   - finalContent == toolLimitResponse (post-loop fallback when finalContent empty)
+	provider := &alwaysExtendProvider{}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	agent.MaxIterations = 3
+	agent.MaxIterationsCap = 3
+	agent.Tools.Register(tools.NewExtendTurnIterationTool())
+
+	pipeline := NewPipeline(al)
+	opts := makeTestProcessOpts("test-session-extend-refused")
+
+	ts := newTurnState(agent, opts, turnEventScope{
+		turnID:  "turn-extend-refused",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	initialCap := ts.iterationCap
+	if initialCap != 3 {
+		t.Fatalf("initialCap = %d, want 3", initialCap)
+	}
+
+	result, err := al.runTurn(context.Background(), ts, pipeline)
+	if err != nil {
+		t.Fatalf("runTurn failed: %v", err)
+	}
+	if result.status != TurnEndStatusCompleted {
+		t.Errorf("expected status Completed, got %v", result.status)
+	}
+	// Cap must remain unchanged — every extension attempt was refused.
+	if ts.iterationCap != initialCap {
+		t.Errorf("iterationCap = %d, expected unchanged (%d) — extension should be refused at ceiling",
+			ts.iterationCap, initialCap)
+	}
+	// Loop exits via cap; finalContent empty → post-loop fallback to toolLimitResponse.
+	if result.finalContent != toolLimitResponse {
+		t.Errorf("finalContent = %q, want %q", result.finalContent, toolLimitResponse)
 	}
 }
