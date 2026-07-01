@@ -1111,6 +1111,7 @@ type ToolsConfig struct {
 	MCP            MCPConfig          `json:"mcp"              yaml:"-"`
 	AppendFile     ToolConfig         `json:"append_file"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_APPEND_FILE_"`
 	EditFile       ToolConfig         `json:"edit_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_EDIT_FILE_"`
+	ExtendTurnIteration ToolConfig    `json:"extend_turn_iteration" yaml:"-"                                                          envPrefix:"PICOCLAW_TOOLS_EXTEND_TURN_ITERATION_"`
 	FindSkills     ToolConfig         `json:"find_skills"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_FIND_SKILLS_"`
 	I2C            ToolConfig         `json:"i2c"              yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_I2C_"`
 	InstallSkill   ToolConfig         `json:"install_skill"    yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_INSTALL_SKILL_"`
@@ -1891,6 +1892,8 @@ func (t *ToolsConfig) IsToolEnabled(name string) bool {
 		return t.AppendFile.Enabled
 	case "edit_file":
 		return t.EditFile.Enabled
+	case "extend_turn_iteration":
+		return t.ExtendTurnIteration.Enabled
 	case "find_skills":
 		return t.FindSkills.Enabled
 	case "i2c":
