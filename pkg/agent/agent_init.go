@@ -403,18 +403,17 @@ func registerSharedTools(
 			agent.Tools.Register(delegateTool)
 		}
 
-		// extend_turn_iteration: opt-in tool that raises the per-turn iteration cap.
-		// Requires both an explicit enable flag AND a non-zero max_iterations_cap.
-		// The cap is the dependency — without it, the tool cannot function and
-		// silently dropping the call is worse than an explicit warning.
-		if cfg.Tools.IsToolEnabled("extend_turn_iteration") {
-			if agent.MaxIterationsCap > 0 {
-				agent.Tools.Register(tools.NewExtendTurnIterationTool())
-			} else {
-				logger.WarnCF("agent", "extend_turn_iteration enabled but max_iterations_cap is 0; tool not registered", map[string]any{
-					"agent_id": agentID,
-				})
-			}
+		// extend_turn_iteration: always-registered tool for per-turn iteration
+		// extension. Per-turn gating happens via ts.extendEnabled (set when user
+		// invokes /extend); the tool is filtered out of provider tool defs in
+		// non-/extend turns. Requires max_iterations_cap > 0 to function — the
+		// tool returns a runtime error if cap is 0, so we log info (not warn) to
+		// surface the misconfiguration without blocking startup.
+		agent.Tools.Register(tools.NewExtendTurnIterationTool())
+		if agent.MaxIterationsCap == 0 {
+			logger.InfoCF("agent", "extend_turn_iteration registered but max_iterations_cap is 0; tool will return a runtime error until cap is configured", map[string]any{
+				"agent_id": agentID,
+			})
 		}
 
 		warnOnUnknownAgentToolDeclarations(agentID, agent.Workspace, agent.Definition, agent.Tools)

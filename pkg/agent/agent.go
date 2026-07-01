@@ -115,6 +115,8 @@ type processOptions struct {
 	InboundContext          *bus.InboundContext    // Normalized inbound facts for events/hooks
 	RouteResult             *routing.ResolvedRoute // Route decision snapshot for events/hooks
 	SessionScope            *session.SessionScope  // Session scope snapshot for events/hooks
+	ExtendEnabled           bool                   // Set by /extend command handler; gates extend_turn_iteration tool + 3-tier hint tiers 1/2
+	StrippedUserMessage     string                 // Set by /extend command handler after stripping "/extend " prefix; replaces Dispatch.UserMessage when non-empty
 }
 
 type continuationTarget struct {

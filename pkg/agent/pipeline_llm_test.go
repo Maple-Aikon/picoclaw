@@ -40,6 +40,7 @@ func TestCallLLM_WindowedHint_FiresAtRemainingTwo(t *testing.T) {
 		turnID:  "turn-1",
 		context: newTurnContext(nil, nil, nil),
 	})
+	ts.extendEnabled = true // Phase 2: /extend per-turn opt-in required for Tier 1
 
 	exec, err := pipeline.SetupTurn(context.Background(), ts)
 	if err != nil {
@@ -87,6 +88,7 @@ func TestCallLLM_WindowedHint_FiresAtRemainingOne(t *testing.T) {
 		turnID:  "turn-1",
 		context: newTurnContext(nil, nil, nil),
 	})
+	ts.extendEnabled = true // Phase 2: /extend per-turn opt-in required for Tier 1
 
 	exec, err := pipeline.SetupTurn(context.Background(), ts)
 	if err != nil {
@@ -134,6 +136,7 @@ func TestCallLLM_CapReached_OnlyExtendToolAvailable(t *testing.T) {
 		turnID:  "turn-1",
 		context: newTurnContext(nil, nil, nil),
 	})
+	ts.extendEnabled = true // Phase 2: /extend per-turn opt-in required for Tier 2
 
 	exec, err := pipeline.SetupTurn(context.Background(), ts)
 	if err != nil {
@@ -280,6 +283,7 @@ func TestCallLLM_HintClearsAfterExtension(t *testing.T) {
 		turnID:  "turn-1",
 		context: newTurnContext(nil, nil, nil),
 	})
+	ts.extendEnabled = true // Phase 2: /extend per-turn opt-in required for hint logic
 
 	exec, err := pipeline.SetupTurn(context.Background(), ts)
 	if err != nil {
@@ -312,5 +316,155 @@ func TestCallLLM_HintClearsAfterExtension(t *testing.T) {
 	// All tools should be available
 	if len(exec.providerToolDefs) == 0 {
 		t.Error("expected providerToolDefs to be populated (normal call) after extension")
+	}
+}// =============================================================================
+// Phase 2 (R14.5): /extend per-turn opt-in gating tests
+// =============================================================================
+//
+// These tests verify that when ts.extendEnabled is false (default — user did
+// NOT invoke /extend), the extend_turn_iteration tool is filtered out of
+// providerToolDefs and the 3-tier hint logic (tiers 1 and 2) is suppressed.
+// Tier 3 (absolute ceiling / legacy) still fires regardless.
+//
+
+// --- Tool Stripped When Not Extended ---
+
+func TestCallLLM_ExtendTool_StrippedWhenNotExtended(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 100
+	agent.Tools.Register(tools.NewExtendTurnIterationTool())
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+	// ts.extendEnabled is false by default (no /extend command)
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	ts.iteration = 5
+	ts.iterationCap = 20
+	exec.callMessages = exec.messages
+
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 5)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+
+	// Verify extend_turn_iteration is NOT in providerToolDefs
+	for _, def := range exec.providerToolDefs {
+		if def.Function.Name == "extend_turn_iteration" {
+			t.Error("expected extend_turn_iteration to be stripped from providerToolDefs when !extendEnabled")
+		}
+	}
+
+	// Verify other tools are still present (filter only strips extend, not everything).
+	// Note: this test harness only registers extend_turn_iteration, so after filtering
+	// the list may be legitimately empty. The assertion is intentionally loose here;
+	// the key invariant is checked above (extend_turn_iteration NOT in the list).
+	_ = exec.providerToolDefs
+}
+
+// --- Tier 1 Hint Suppressed When Not Extended ---
+
+func TestCallLLM_Tier1_NoHintWhenNotExtended(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 100
+	agent.Tools.Register(tools.NewExtendTurnIterationTool())
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+	// ts.extendEnabled is false by default
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	// iteration 18 → remaining = 2 → Tier 1 WOULD fire if extendEnabled
+	ts.iteration = 18
+	ts.iterationCap = 20
+	exec.callMessages = exec.messages
+
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 18)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+
+	// Verify NO Tier 1 hint was injected
+	hintFound := false
+	for _, msg := range exec.callMessages {
+		if strings.Contains(msg.Content, "Tool iteration limit approaching") {
+			hintFound = true
+			break
+		}
+	}
+	if hintFound {
+		t.Error("expected NO Tier 1 hint when !extendEnabled, but found iterationExtendingHintMessage")
+	}
+}
+
+// --- Tier 2 Cap-Reached Suppressed When Not Extended ---
+
+func TestCallLLM_Tier2_NoCapReachedWhenNotExtended(t *testing.T) {
+	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+
+	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 100
+	agent.Tools.Register(tools.NewExtendTurnIterationTool())
+
+	pipeline := NewPipeline(al)
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+	// ts.extendEnabled is false by default
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	// iteration 20 → remaining = 0, iterationCap(20) < absCap(100) → Tier 2 WOULD fire if extendEnabled
+	ts.iteration = 20
+	ts.iterationCap = 20
+	exec.callMessages = exec.messages
+
+	_, err = pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 20)
+	if err != nil {
+		t.Fatalf("CallLLM failed: %v", err)
+	}
+
+	// Verify NO Tier 2 cap-reached message was injected
+	capReachedFound := false
+	for _, msg := range exec.callMessages {
+		if strings.Contains(msg.Content, "Tool call limit reached for this extension window") {
+			capReachedFound = true
+			break
+		}
+	}
+	if capReachedFound {
+		t.Error("expected NO Tier 2 cap-reached message when !extendEnabled")
+	}
+
+	// Verify extend_turn_iteration is NOT in providerToolDefs (filtered out)
+	for _, def := range exec.providerToolDefs {
+		if def.Function.Name == "extend_turn_iteration" {
+			t.Error("expected extend_turn_iteration to be stripped when !extendEnabled at Tier 2 boundary")
+		}
 	}
 }

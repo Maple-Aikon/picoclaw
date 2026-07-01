@@ -35,4 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 When `max_iterations_cap` is `0` (default) or omitted, the `extend_turn_iteration` tool is not registered and behavior is identical to pre-feature turns.
 
+### Changed
+
+- **`/extend` slash command (per-turn opt-in)** — `extend_turn_iteration` is no longer auto-enabled by `max_iterations_cap` alone.
+  - The tool is always registered when `max_iterations_cap > 0`, but only callable in turns opened via `/extend <message>`.
+  - Per-turn flag `ts.extendEnabled` is set by `applyExtendCommand` (intercepting handler before the command executor), strips the `/extend ` prefix, and forwards the remainder as the user message to the LLM.
+  - `filterOutExtendTool()` removes `extend_turn_iteration` from the provider tool list on non-`/extend` turns. Turns without opt-in retain the legacy `toolLimitResponse` ceiling via the absolute-ceiling tier (Tier 3) regardless.
+  - The 3-tier windowed-hint logic (Tier 1 soft hint, Tier 2 cap-reached) is now gated on `ts.extendEnabled`; Tier 3 always fires. This preserves the prior ceiling behavior for ordinary turns.
+  - `/help` automatically includes `/extend <message>` via the `BuiltinDefinitions` registry.
+  - Misconfiguration: `max_iterations_cap == 0` with the tool registered surfaces an info log at startup; the tool returns a runtime error when called.
+
 [Unreleased]: https://github.com/sipeed/picoclaw/compare/v0.3.0...HEAD

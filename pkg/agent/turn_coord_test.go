@@ -1534,6 +1534,7 @@ func TestRunTurn_ExtendIteration_AllowsMoreIterations(t *testing.T) {
 
 	pipeline := NewPipeline(al)
 	opts := makeTestProcessOpts("test-session-extend-allow")
+	opts.ExtendEnabled = true // Phase 2: /extend per-turn opt-in
 
 	ts := newTurnState(agent, opts, turnEventScope{
 		turnID:  "turn-extend-allow",
@@ -1615,6 +1616,7 @@ func TestRunTurn_ExtendIteration_RefusedAtAbsoluteCap(t *testing.T) {
 
 	pipeline := NewPipeline(al)
 	opts := makeTestProcessOpts("test-session-extend-refused")
+	opts.ExtendEnabled = true // Phase 2: /extend per-turn opt-in
 
 	ts := newTurnState(agent, opts, turnEventScope{
 		turnID:  "turn-extend-refused",

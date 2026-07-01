@@ -245,6 +245,7 @@ type turnState struct {
 	iteration             int
 	iterationCap          int    // mutable iteration cap; defaults to agent.MaxIterations, raised by extend_turn_iteration
 	lastExtensionIteration int   // iteration at which the most recent extend_turn_iteration was called (0 = none)
+	extendEnabled         bool   // true when user invoked /extend on this turn; gates extend_turn_iteration availability and 3-tier hint logic
 	startedAt             time.Time
 	finalContent          string
 
@@ -312,6 +313,16 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 		phase:        TurnPhaseSetup,
 		startedAt:    time.Now(),
 	}
+
+	// /extend command: per-turn opt-in for extend_turn_iteration. When the
+	// command handler strips the prefix, it sets opts.StrippedUserMessage
+	// and opts.ExtendEnabled=true. We honor the stripped message so the
+	// LLM never sees the "/extend " prefix, and we record the flag so
+	// downstream gating (pipeline_llm.go + tool filter) can act on it.
+	if opts.ExtendEnabled && opts.StrippedUserMessage != "" {
+		ts.userMessage = opts.StrippedUserMessage
+	}
+	ts.extendEnabled = opts.ExtendEnabled
 
 	// Initialize iterationCap to the agent's MaxIterations. If extension is
 	// disabled (MaxIterationsCap == 0), iterationCap stays equal to MaxIterations
@@ -500,6 +511,16 @@ func (ts *turnState) MaxIterationsCap() int {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 	return ts.agent.MaxIterationsCap
+}
+
+// ExtendEnabled reports whether this turn was opened via the /extend slash
+// command. When false, the extend_turn_iteration tool is filtered out of
+// the provider tool defs and the soft/cap-reached hint tiers are suppressed.
+// Tier 3 (absolute ceiling, legacy) still fires regardless.
+func (ts *turnState) ExtendEnabled() bool {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.extendEnabled
 }
 
 // ExtendIterationCap raises the mutable iteration cap by the given amount.
