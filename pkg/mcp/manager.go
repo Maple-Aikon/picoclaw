@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -573,15 +572,20 @@ func (m *Manager) CallTool(
 					"timeout": timeout.String(),
 					"pid":     pid,
 				})
-			// Direct SIGKILL bypasses any stuck SDK state. Safe — even if it
+			// Direct force-kill bypasses any stuck SDK state. Safe — even if it
 			// didn't hang on I/O, killing the subprocess causes pipe EOF, which
-			// unblocks the SDK's read loop.
+			// unblocks the SDK's read loop. On Unix os.Process.Kill() signals
+			// SIGKILL; on Windows it calls TerminateProcess.
 			if pid > 0 {
-				if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
-					logger.ErrorCF("mcp", "direct SIGKILL failed, falling back",
+				proc, err := os.FindProcess(pid)
+				if err != nil {
+					logger.ErrorCF("mcp", "find process failed, cannot kill",
+						map[string]any{"pid": pid, "err": err.Error()})
+				} else if err := proc.Kill(); err != nil {
+					logger.ErrorCF("mcp", "direct process kill failed, falling back",
 						map[string]any{"pid": pid, "err": err.Error()})
 				} else {
-					logger.InfoCF("mcp", "direct SIGKILL succeeded",
+					logger.InfoCF("mcp", "direct process kill succeeded",
 						map[string]any{"pid": pid, "server": serverName})
 				}
 			}
