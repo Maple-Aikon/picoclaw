@@ -863,7 +863,8 @@ type ToolDiscoveryConfig struct {
 }
 
 type ToolConfig struct {
-	Enabled bool `json:"enabled" yaml:"-" env:"ENABLED"`
+	Enabled        bool `json:"enabled"                  yaml:"-" env:"ENABLED"`
+	TimeoutSeconds int  `json:"timeout_seconds,omitempty" yaml:"-" env:"TIMEOUT_SECONDS"` // 0 = inherit root default; Q1 per-tool override
 }
 
 type MessageToolsConfig struct {
@@ -1068,6 +1069,7 @@ type ReadFileToolConfig struct {
 	Enabled         bool   `json:"enabled"`
 	Mode            string `json:"mode"`
 	MaxReadFileSize int    `json:"max_read_file_size"`
+	TimeoutSeconds  int    `json:"timeout_seconds,omitempty" yaml:"-" env:"PICOCLAW_TOOLS_READ_FILE_TIMEOUT_SECONDS"` // Q1 per-tool override; 0 = inherit root
 }
 
 const (
@@ -1103,6 +1105,10 @@ type ToolsConfig struct {
 	MaxToolResultLength int `json:"max_tool_result_length" yaml:"max_tool_result_length,omitempty" env:"PICOCLAW_TOOLS_MAX_TOOL_RESULT_LENGTH"`
 	// AltToolSuggest is an alternative suggestion message shown when a tool result is truncated.
 	AltToolSuggest string             `json:"alt_tool_suggest" yaml:"alt_tool_suggest,omitempty" env:"PICOCLAW_TOOLS_ALT_TOOL_SUGGEST"`
+	// TimeoutSeconds is the default per-tool timeout in seconds applied to every
+	// native tool call (Phase 1 + Phase 3 fix). Default 120s. Set to 0 to disable
+	// the feature entirely (Q4 rollback). Per-tool overrides via `<name>.timeout_seconds`.
+	TimeoutSeconds int                `json:"timeout_seconds"  yaml:"-"                          env:"PICOCLAW_TOOLS_TIMEOUT_SECONDS"`
 	Web            WebToolsConfig     `json:"web"              yaml:"web,omitempty"`
 	Cron           CronToolsConfig    `json:"cron"             yaml:"-"`
 	Exec           ExecConfig         `json:"exec"             yaml:"-"`

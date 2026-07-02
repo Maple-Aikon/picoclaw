@@ -35,6 +35,7 @@ const (
 	ErrTransient      = toolshared.ErrTransient
 	ErrInvalidInput   = toolshared.ErrInvalidInput
 	ErrDependencyDown = toolshared.ErrDependencyDown
+	ErrTimeout        = toolshared.ErrTimeout
 
 	ToolPromptLayerCapability = toolshared.ToolPromptLayerCapability
 	ToolPromptSlotTooling     = toolshared.ToolPromptSlotTooling

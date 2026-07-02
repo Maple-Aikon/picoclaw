@@ -18,6 +18,7 @@ const (
 	ErrTransient      ErrorKind = "transient"       // Retryable (e.g. network glitch)
 	ErrInvalidInput   ErrorKind = "invalid_input"   // Do not retry exactly (e.g. bad args)
 	ErrDependencyDown ErrorKind = "dependency_down" // Circuit broken (e.g. API down)
+	ErrTimeout        ErrorKind = "timeout"         // Tool exceeded its deadline (registry timeout fired)
 )
 
 // ToolResult represents the structured return value from tool execution.

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -21,13 +23,15 @@ type ToolEntry struct {
 }
 
 type ToolRegistry struct {
-	tools      map[string]*ToolEntry
-	breakers   map[string]*CircuitBreaker // key: composite (channel:chatID:name); see getCircuitBreaker
-	mu         sync.RWMutex
-	cbMu       sync.Mutex // serializes lazy allocation of per-session breakers
-	version    atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
-	mediaStore media.MediaStore
-	allowlist  map[string]struct{}
+	tools         map[string]*ToolEntry
+	breakers      map[string]*CircuitBreaker // key: composite (channel:chatID:name); see getCircuitBreaker
+	mu            sync.RWMutex
+	cbMu          sync.Mutex // serializes lazy allocation of per-session breakers
+	version       atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
+	mediaStore    media.MediaStore
+	allowlist     map[string]struct{}
+	cfg           *config.ToolsConfig // optional; nil → fallback DefaultToolTimeoutSeconds
+	timeoutStats  *ToolTimeoutStats   // Q3 metric; nil-safe via lazy init
 }
 
 type mediaStoreAware interface {
@@ -36,9 +40,25 @@ type mediaStoreAware interface {
 
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
-		tools:    make(map[string]*ToolEntry),
-		breakers: make(map[string]*CircuitBreaker),
+		tools:        make(map[string]*ToolEntry),
+		breakers:     make(map[string]*CircuitBreaker),
+		timeoutStats: newToolTimeoutStats(),
 	}
+}
+
+// SetToolsConfig attaches the loaded ToolsConfig so that resolveToolTimeout can
+// honour per-tool and root TimeoutSeconds. Safe to call nil; cleared by passing nil.
+func (r *ToolRegistry) SetToolsConfig(cfg *config.ToolsConfig) {
+	r.cfg = cfg
+}
+
+// TimeoutStats returns the metric collector (Q3). Always non-nil after
+// NewToolRegistry; nil-safe if SetToolsConfig was used to swap registries.
+func (r *ToolRegistry) TimeoutStats() *ToolTimeoutStats {
+	if r.timeoutStats == nil {
+		r.timeoutStats = newToolTimeoutStats()
+	}
+	return r.timeoutStats
 }
 
 // SetAllowlist restricts registrations to the provided runtime tool names.
@@ -387,14 +407,29 @@ func (r *ToolRegistry) ExecuteWithContext(
 	// Always inject — tools validate what they require.
 	ctx = WithToolContext(ctx, channel, chatID)
 
+	// Inject per-tool timeout (Phase 1 + Phase 3, native-tool-call-timeout-force-kill-20260702).
+	// Precedence: per-tool override → caller's ctx deadline → root config default → 120s fallback.
+	// hasTimeout=false means Q4 rollback (`tools.timeout_seconds: 0`).
+	timeout, hasTimeout := resolveToolTimeout(ctx, name, r.cfg)
+	var cancel context.CancelFunc
+	if hasTimeout {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
 	// If tool implements AsyncExecutor and callback is provided, use ExecuteAsync.
 	// The callback is a call parameter, not mutable state on the tool instance.
 	var result *ToolResult
 	start := time.Now()
 
-	// Use recover to catch any panics during tool execution
-	// This prevents tool crashes from killing the entire agent
-	func() {
+	// Run tool execution in a separate goroutine so a hung FUSE/NFS read or
+	// busy-looped syscalls cannot block the agent loop forever. Go cannot
+	// force-kill a goroutine — if `tool.Execute` ignores context cancellation
+	// (e.g. it called a C library), the goroutine leaks until the underlying
+	// syscall eventually returns. Accepted MVP trade-off (Q2): the LLM loop is
+	// unblocked within the configured deadline regardless.
+	done := make(chan *ToolResult, 1)
+	go func() {
 		defer func() {
 			if re := recover(); re != nil {
 				logger.RecoverPanicNoExit(re)
@@ -404,7 +439,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 						"tool":  name,
 						"panic": fmt.Sprintf("%v", re),
 					})
-				result = &ToolResult{
+				done <- &ToolResult{
 					ForLLM:  errMsg,
 					ForUser: errMsg,
 					IsError: true,
@@ -414,16 +449,54 @@ func (r *ToolRegistry) ExecuteWithContext(
 			}
 		}()
 
+		var execResult *ToolResult
 		if asyncExec, ok := tool.(AsyncExecutor); ok && asyncCallback != nil {
 			logger.DebugCF("tool", "Executing async tool via ExecuteAsync",
 				map[string]any{
 					"tool": name,
 				})
-			result = asyncExec.ExecuteAsync(ctx, args, asyncCallback)
+			execResult = asyncExec.ExecuteAsync(ctx, args, asyncCallback)
 		} else {
-			result = tool.Execute(ctx, args)
+			execResult = tool.Execute(ctx, args)
 		}
+		done <- execResult
 	}()
+
+	if hasTimeout {
+		select {
+		case result = <-done:
+			// Normal completion (or panic recovered).
+		case <-ctx.Done():
+			// Timeout or parent cancellation fired before tool returned.
+			timedOutKind := TimedOutParentCancelled
+			errMsg := fmt.Sprintf("Tool '%s' was cancelled before it could complete (%v). The underlying operation may still be running but the agent loop has moved on.", name, ctx.Err())
+			deadlineExceeded := errors.Is(ctx.Err(), context.DeadlineExceeded)
+			if deadlineExceeded {
+				timedOutKind = TimedOutDeadlineExceeded
+				errMsg = fmt.Sprintf("Tool '%s' exceeded timeout (%v) and was cancelled. The underlying operation may still be running but the agent loop has moved on.", name, timeout)
+			}
+			logger.WarnCF("tool", "Tool execution timeout (orphan goroutine)",
+				map[string]any{
+					"tool":              name,
+					"timeout_seconds":   timeout.Seconds(),
+					"deadline_exceeded": deadlineExceeded,
+					"parent_cancelled":  !deadlineExceeded && ctx.Err() != nil,
+				})
+			// Q3: increment in-memory counter before the result is built so even
+			// the timeout-failure path yields the metric.
+			r.TimeoutStats().RecordTimeout(name, timedOutKind)
+			result = &ToolResult{
+				ForLLM:  errMsg,
+				ForUser: fmt.Sprintf("Tool '%s' timed out", name),
+				IsError: true,
+				ErrKind: ErrTimeout,
+				Err:     ctx.Err(),
+			}
+		}
+	} else {
+		// Q4 rollback: feature off — wait indefinitely for the goroutine.
+		result = <-done
+	}
 
 	// Handle nil result (should not happen, but defensive)
 	if result == nil {
