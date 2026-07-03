@@ -2523,8 +2523,8 @@ func isObviousPrivateHost(host string, whitelist *privateHostWhitelist) bool {
 
 // isPrivateOrRestrictedIP returns true for IPs that should never be reached via web_fetch:
 // RFC 1918, loopback, link-local (incl. cloud metadata 169.254.x.x), carrier-grade NAT,
-// benchmark (198.18.0.0/15), IPv6 unique-local (fc00::/7), 6to4 (2002::/16), and
-// Teredo (2001:0000::/32).
+// benchmark (198.18.0.0/15), IPv6 unique-local (fc00::/7), 6to4 (2002::/16),
+// Teredo (2001:0000::/32), and ISATAP (IID 0000:5efe or 0200:5efe).
 func isPrivateOrRestrictedIP(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -2564,6 +2564,13 @@ func isPrivateOrRestrictedIP(ip net.IP) bool {
 		if ip[0] == 0x20 && ip[1] == 0x01 && ip[2] == 0x00 && ip[3] == 0x00 {
 			client := net.IPv4(ip[12]^0xff, ip[13]^0xff, ip[14]^0xff, ip[15]^0xff)
 			return isPrivateOrRestrictedIP(client)
+		}
+		// ISATAP interface identifiers embed an IPv4 address behind either
+		// 00:00:5e:fe or 02:00:5e:fe.
+		if ((ip[8] == 0x00 && ip[9] == 0x00) || (ip[8] == 0x02 && ip[9] == 0x00)) &&
+			ip[10] == 0x5e && ip[11] == 0xfe {
+			embedded := net.IPv4(ip[12], ip[13], ip[14], ip[15])
+			return isPrivateOrRestrictedIP(embedded)
 		}
 	}
 
