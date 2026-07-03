@@ -311,11 +311,12 @@ as containers, VMs, or an approval flow around build-and-run commands.
 
 The cron tool is used for scheduling periodic tasks.
 
-| Config                 | Type | Default | Description                                    |
-|------------------------|------|---------|------------------------------------------------|
-| `enabled`              | bool | true    | Register the agent-facing cron tool            |
-| `allow_command`        | bool | true    | Allow command jobs without extra confirmation  |
-| `exec_timeout_minutes` | int  | 5       | Execution timeout in minutes, 0 means no limit |
+| Config                    | Type     | Default | Description                                                    |
+|---------------------------|----------|---------|----------------------------------------------------------------|
+| `enabled`                 | bool     | true    | Register the agent-facing cron tool                            |
+| `allow_command`           | bool     | true    | Allow command jobs without extra confirmation                  |
+| `command_allowed_remotes` | string[] | []      | Remote channels or `channel:chat_id` values allowed for command jobs; `*` allows every channel and is dangerous unless all remote channels are trusted |
+| `exec_timeout_minutes`    | int      | 5       | Execution timeout in minutes, 0 means no limit                 |
 
 For schedule types, execution modes (`deliver`, agent turn, and command jobs), persistence, and the current command-security gates, see [Scheduled Tasks and Cron Jobs](cron.md).
 

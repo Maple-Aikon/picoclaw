@@ -423,7 +423,7 @@ func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 		TokenCount:       tokenizer.EstimateMessageTokens(msg),
 	}
 	if msg.CreatedAt != nil {
-		truncated := msg.CreatedAt.Truncate(time.Second)
+		truncated := msg.CreatedAt.UTC().Truncate(time.Second)
 		result.CreatedAt = truncated
 	}
 
@@ -458,6 +458,13 @@ func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 	}
 
 	return result
+}
+
+func normalizeSeahorseMessageCreatedAt(createdAt *time.Time) time.Time {
+	if createdAt == nil || createdAt.IsZero() {
+		return time.Time{}
+	}
+	return createdAt.UTC().Truncate(time.Second)
 }
 
 // seahorseToProviderMessages converts a seahorse.AssembleResult to []providers.Message.

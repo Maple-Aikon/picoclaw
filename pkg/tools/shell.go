@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -218,6 +219,7 @@ func (t *ExecTool) Description() string {
 	return `Execute shell commands. Use background=true for long-running commands (returns sessionId). Use pty=true for interactive commands (can combine with background=true). Use poll/read/write/send-keys/kill with sessionId to manage background sessions. Sessions auto-cleanup 30 minutes after process exits; use kill to terminate early. Output buffer limit: 1MB.`
 }
 
+//nolint:dupl // Tool parameter schemas intentionally use similar JSON-schema map literals.
 func (t *ExecTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -417,6 +419,16 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 
 	done := make(chan error, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.ErrorCF("shell", "cmd.Wait goroutine panic recovered",
+					map[string]any{
+						"panic": fmt.Sprintf("%v", r),
+						"stack": string(debug.Stack()),
+					})
+				done <- fmt.Errorf("panic in cmd.Wait: %v", r)
+			}
+		}()
 		done <- cmd.Wait()
 	}()
 
@@ -558,7 +570,7 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 	// with synchronous exec runs.
 	if err := isolation.Start(cmd); err != nil {
 		if session.ptyMaster != nil {
-			session.ptyMaster.Close()
+			_ = session.ptyMaster.Close()
 		}
 		return ErrorResult(fmt.Sprintf("failed to start command: %v", err))
 	}
@@ -573,6 +585,18 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 	// so we need cmd.Wait() in a separate goroutine to detect process exit.
 	if session.PTY && session.ptyMaster != nil {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.ErrorCF("shell", "PTY cmd.Wait goroutine panic recovered",
+						map[string]any{
+							"panic": fmt.Sprintf("%v", r),
+							"stack": string(debug.Stack()),
+						})
+					session.mu.Lock()
+					session.Status = "error"
+					session.mu.Unlock()
+				}
+			}()
 			cmd.Wait() // Wait for process to exit
 			session.mu.Lock()
 			if cmd.ProcessState != nil {
@@ -583,6 +607,15 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 		}()
 
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.ErrorCF("shell", "PTY read goroutine panic recovered",
+						map[string]any{
+							"panic": fmt.Sprintf("%v", r),
+							"stack": string(debug.Stack()),
+						})
+				}
+			}()
 			buf := make([]byte, 4096)
 			for {
 				n, err := session.ptyMaster.Read(buf)
@@ -613,6 +646,15 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 		// When Read() returns EOF (pipe closed), we break.
 		// When process exits, OS closes pipe write end → Read() returns EOF → we exit.
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.ErrorCF("shell", "pipe read goroutine panic recovered",
+						map[string]any{
+							"panic": fmt.Sprintf("%v", r),
+							"stack": string(debug.Stack()),
+						})
+				}
+			}()
 			buf := make([]byte, 4096)
 
 			// Read stdout
@@ -657,7 +699,7 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 
 			// All pipes closed, get exit status
 			if stdinWriter != nil {
-				stdinWriter.Close()
+				_ = stdinWriter.Close()
 			}
 			cmd.Wait()
 

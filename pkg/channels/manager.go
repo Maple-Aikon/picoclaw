@@ -13,6 +13,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -1279,6 +1280,16 @@ func (m *Manager) StartAll(ctx context.Context) error {
 			for _, listener := range m.httpListeners {
 				ln := listener
 				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							logger.ErrorCF("channels", "HTTP server goroutine panic recovered",
+								map[string]any{
+									"addr":  ln.Addr().String(),
+									"panic": fmt.Sprintf("%v", r),
+									"stack": string(debug.Stack()),
+								})
+						}
+					}()
 					logger.InfoCF("channels", "Shared HTTP server listening", map[string]any{
 						"addr": ln.Addr().String(),
 					})
@@ -1292,6 +1303,16 @@ func (m *Manager) StartAll(ctx context.Context) error {
 			}
 		} else {
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.ErrorCF("channels", "HTTP server goroutine panic recovered",
+							map[string]any{
+								"addr":  m.httpServer.Addr,
+								"panic": fmt.Sprintf("%v", r),
+								"stack": string(debug.Stack()),
+							})
+					}
+				}()
 				logger.InfoCF("channels", "Shared HTTP server listening", map[string]any{
 					"addr": m.httpServer.Addr,
 				})
@@ -1943,6 +1964,15 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	// Commit hashes only on full success.
 	m.channelHashes = list
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.ErrorCF("channels", "channel registration goroutine panic recovered",
+					map[string]any{
+						"panic": fmt.Sprintf("%v", r),
+						"stack": string(debug.Stack()),
+					})
+			}
+		}()
 		for _, f := range deferFuncs {
 			f()
 		}

@@ -437,7 +437,7 @@ type AgentDefaults struct {
 	ContextWindow             int                `json:"context_window,omitempty"         env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_WINDOW"`
 	Temperature               *float64           `json:"temperature,omitempty"            env:"PICOCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
 	MaxToolIterations         int                `json:"max_tool_iterations"              env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
-	MaxIterationsCap          int                `json:"max_iterations_cap,omitempty"     env:"PICOCLAW_AGENTS_DEFAULTS_MAX_ITERATIONS_CAP"`   // 0 = extension feature off (default); positive = absolute ceiling for extend_turn_iteration tool
+	MaxIterationsCap          int                `json:"max_iterations_cap,omitempty"     env:"PICOCLAW_AGENTS_DEFAULTS_MAX_ITERATIONS_CAP"` // 0 = extension feature off (default); positive = absolute ceiling for extend_turn_iteration tool
 	SummarizeMessageThreshold int                `json:"summarize_message_threshold"      env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_MESSAGE_THRESHOLD"`
 	SummarizeTokenPercent     int                `json:"summarize_token_percent"          env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_TOKEN_PERCENT"`
 	MaxMediaSize              int                `json:"max_media_size,omitempty"         env:"PICOCLAW_AGENTS_DEFAULTS_MAX_MEDIA_SIZE"`
@@ -1036,9 +1036,10 @@ type WebToolsConfig struct {
 }
 
 type CronToolsConfig struct {
-	ToolConfig         `     envPrefix:"PICOCLAW_TOOLS_CRON_"`
-	ExecTimeoutMinutes int  `                                 json:"exec_timeout_minutes" env:"PICOCLAW_TOOLS_CRON_EXEC_TIMEOUT_MINUTES"` // 0 means no timeout
-	AllowCommand       bool `                                 json:"allow_command"        env:"PICOCLAW_TOOLS_CRON_ALLOW_COMMAND"`
+	ToolConfig            `     envPrefix:"PICOCLAW_TOOLS_CRON_"`
+	ExecTimeoutMinutes    int      `                                 json:"exec_timeout_minutes"    env:"PICOCLAW_TOOLS_CRON_EXEC_TIMEOUT_MINUTES"` // 0 means no timeout
+	AllowCommand          bool     `                                 json:"allow_command"           env:"PICOCLAW_TOOLS_CRON_ALLOW_COMMAND"`
+	CommandAllowedRemotes []string `                                json:"command_allowed_remotes" env:"PICOCLAW_TOOLS_CRON_COMMAND_ALLOWED_REMOTES"`
 }
 
 type ExecConfig struct {
@@ -1104,36 +1105,36 @@ type ToolsConfig struct {
 	// Default: 10000
 	MaxToolResultLength int `json:"max_tool_result_length" yaml:"max_tool_result_length,omitempty" env:"PICOCLAW_TOOLS_MAX_TOOL_RESULT_LENGTH"`
 	// AltToolSuggest is an alternative suggestion message shown when a tool result is truncated.
-	AltToolSuggest string             `json:"alt_tool_suggest" yaml:"alt_tool_suggest,omitempty" env:"PICOCLAW_TOOLS_ALT_TOOL_SUGGEST"`
+	AltToolSuggest string `json:"alt_tool_suggest" yaml:"alt_tool_suggest,omitempty" env:"PICOCLAW_TOOLS_ALT_TOOL_SUGGEST"`
 	// TimeoutSeconds is the default per-tool timeout in seconds applied to every
 	// native tool call (Phase 1 + Phase 3 fix). Default 120s. Set to 0 to disable
 	// the feature entirely (Q4 rollback). Per-tool overrides via `<name>.timeout_seconds`.
-	TimeoutSeconds int                `json:"timeout_seconds"  yaml:"-"                          env:"PICOCLAW_TOOLS_TIMEOUT_SECONDS"`
-	Web            WebToolsConfig     `json:"web"              yaml:"web,omitempty"`
-	Cron           CronToolsConfig    `json:"cron"             yaml:"-"`
-	Exec           ExecConfig         `json:"exec"             yaml:"-"`
-	Skills         SkillsToolsConfig  `json:"skills"           yaml:"skills,omitempty"`
-	MediaCleanup   MediaCleanupConfig `json:"media_cleanup"    yaml:"-"`
-	MCP            MCPConfig          `json:"mcp"              yaml:"-"`
-	AppendFile     ToolConfig         `json:"append_file"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_APPEND_FILE_"`
-	EditFile       ToolConfig         `json:"edit_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_EDIT_FILE_"`
-	ExtendTurnIteration ToolConfig    `json:"extend_turn_iteration" yaml:"-"                                                          envPrefix:"PICOCLAW_TOOLS_EXTEND_TURN_ITERATION_"`
-	FindSkills     ToolConfig         `json:"find_skills"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_FIND_SKILLS_"`
-	I2C            ToolConfig         `json:"i2c"              yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_I2C_"`
-	InstallSkill   ToolConfig         `json:"install_skill"    yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_INSTALL_SKILL_"`
-	ListDir        ToolConfig         `json:"list_dir"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_LIST_DIR_"`
-	LoadImage      ToolConfig         `json:"load_image"       yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_LOAD_IMAGE_"`
-	Message        MessageToolsConfig `json:"message"          yaml:"-"`
-	ReadFile       ReadFileToolConfig `json:"read_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_READ_FILE_"`
-	Serial         ToolConfig         `json:"serial"           yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SERIAL_"`
-	SendFile       ToolConfig         `json:"send_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
-	SendTTS        ToolConfig         `json:"send_tts"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SEND_TTS_"`
-	Spawn          ToolConfig         `json:"spawn"            yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPAWN_"`
-	SpawnStatus    ToolConfig         `json:"spawn_status"     yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
-	SPI            ToolConfig         `json:"spi"              yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPI_"`
-	Subagent       ToolConfig         `json:"subagent"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
-	WebFetch       ToolConfig         `json:"web_fetch"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
-	WriteFile      ToolConfig         `json:"write_file"       yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
+	TimeoutSeconds      int                `json:"timeout_seconds"  yaml:"-"                          env:"PICOCLAW_TOOLS_TIMEOUT_SECONDS"`
+	Web                 WebToolsConfig     `json:"web"              yaml:"web,omitempty"`
+	Cron                CronToolsConfig    `json:"cron"             yaml:"-"`
+	Exec                ExecConfig         `json:"exec"             yaml:"-"`
+	Skills              SkillsToolsConfig  `json:"skills"           yaml:"skills,omitempty"`
+	MediaCleanup        MediaCleanupConfig `json:"media_cleanup"    yaml:"-"`
+	MCP                 MCPConfig          `json:"mcp"              yaml:"-"`
+	AppendFile          ToolConfig         `json:"append_file"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_APPEND_FILE_"`
+	EditFile            ToolConfig         `json:"edit_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_EDIT_FILE_"`
+	ExtendTurnIteration ToolConfig         `json:"extend_turn_iteration" yaml:"-"                                                          envPrefix:"PICOCLAW_TOOLS_EXTEND_TURN_ITERATION_"`
+	FindSkills          ToolConfig         `json:"find_skills"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_FIND_SKILLS_"`
+	I2C                 ToolConfig         `json:"i2c"              yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_I2C_"`
+	InstallSkill        ToolConfig         `json:"install_skill"    yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_INSTALL_SKILL_"`
+	ListDir             ToolConfig         `json:"list_dir"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_LIST_DIR_"`
+	LoadImage           ToolConfig         `json:"load_image"       yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_LOAD_IMAGE_"`
+	Message             MessageToolsConfig `json:"message"          yaml:"-"`
+	ReadFile            ReadFileToolConfig `json:"read_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_READ_FILE_"`
+	Serial              ToolConfig         `json:"serial"           yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SERIAL_"`
+	SendFile            ToolConfig         `json:"send_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
+	SendTTS             ToolConfig         `json:"send_tts"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SEND_TTS_"`
+	Spawn               ToolConfig         `json:"spawn"            yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPAWN_"`
+	SpawnStatus         ToolConfig         `json:"spawn_status"     yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
+	SPI                 ToolConfig         `json:"spi"              yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPI_"`
+	Subagent            ToolConfig         `json:"subagent"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
+	WebFetch            ToolConfig         `json:"web_fetch"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
+	WriteFile           ToolConfig         `json:"write_file"       yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
 }
 
 // IsFilterSensitiveDataEnabled returns true if sensitive data filtering is enabled

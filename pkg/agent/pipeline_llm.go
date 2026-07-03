@@ -740,10 +740,10 @@ func (p *Pipeline) CallLLM(
 			} else {
 				logger.WarnCF("agent", "Reasoning content suppressed: no reasoning_channel_id configured for channel; relying on DefaultResponse fallback",
 					map[string]any{
-						"channel":          ts.channel,
-						"chat_id":          ts.chatID,
-						"reasoning_chars":  len(reasoningContent),
-						"iteration":        iteration,
+						"channel":         ts.channel,
+						"chat_id":         ts.chatID,
+						"reasoning_chars": len(reasoningContent),
+						"iteration":       iteration,
 					})
 			}
 		}
