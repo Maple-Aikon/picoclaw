@@ -1658,19 +1658,97 @@ func (c *TelegramChannel) BeginStream(ctx context.Context, chatID string) (chann
 	}
 
 	streamCfg := c.tgCfg.Streaming.WithDefaults(3, 200)
-	return &telegramStreamer{
+	s := &telegramStreamer{
 		bot:              c.bot,
 		chatID:           cid,
 		threadID:         threadID,
 		draftID:          cryptoRandInt(),
 		throttleInterval: time.Duration(streamCfg.ThrottleSeconds) * time.Second,
 		minGrowth:        streamCfg.MinGrowthChars,
-	}, nil
+	}
+	// Wire the buffering layer (leak-2026-07-05 Fix A). The pusher adapter
+	// translates the buffer's PushDraft/ClearDraft calls back into the
+	// throttled SendMessageDraft path that previously lived inline in
+	// Update(). draftFlushTimeout=0 disables buffering entirely and
+	// preserves pre-fix behavior.
+	if draftFlushTimeout > 0 {
+		s.buffer = newDraftBuffer(&streamerPusher{streamer: s}, draftFlushTimeout)
+	}
+	return s, nil
+}
+
+// streamerPusher adapts a *telegramStreamer to the draftPusher interface
+// expected by draftBuffer. It re-acquires the streamer's mutex so the
+// buffer's flush goroutine does not deadlock with Update/Finalize/Cancel.
+type streamerPusher struct {
+	streamer *telegramStreamer
+}
+
+func (p *streamerPusher) PushDraft(ctx context.Context, text string) error {
+	return p.streamer.pushDraftThrottled(ctx, text)
+}
+
+func (p *streamerPusher) ClearDraft(ctx context.Context) error {
+	p.streamer.mu.Lock()
+	defer p.streamer.mu.Unlock()
+	p.streamer.clearDraft(ctx)
+	return nil
+}
+
+// pushDraftThrottled is the buffer's path into SendMessageDraft. It applies
+// the same throttle logic the original Update() used, so the buffer does not
+// spam the Telegram API. Locking: re-acquires the streamer's mu, so callers
+// (the buffer's timer goroutine, Finalize) must NOT hold the streamer mu.
+// draftBuffer's own mu is independent of streamer.mu.
+func (s *telegramStreamer) pushDraftThrottled(ctx context.Context, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.failed {
+		return fmt.Errorf("telegram streaming disabled after previous draft failure")
+	}
+
+	now := time.Now()
+	growth := len(content) - s.lastLen
+	if s.lastLen > 0 && now.Sub(s.lastAt) < s.throttleInterval && growth < s.minGrowth {
+		return nil
+	}
+
+	htmlContent := markdownToTelegramHTML(content)
+	s.draftTouched = true
+
+	err := s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
+		ChatID:          s.chatID,
+		MessageThreadID: s.threadID,
+		DraftID:         s.draftID,
+		Text:            htmlContent,
+		ParseMode:       telego.ModeHTML,
+	})
+	if err != nil {
+		logger.WarnCF("telegram", "sendMessageDraft failed, disabling streaming", map[string]any{
+			"error": err.Error(),
+		})
+		s.failed = true
+		return fmt.Errorf("telegram draft update: %w", err)
+	}
+
+	s.lastLen = len(content)
+	s.lastAt = now
+	return nil
 }
 
 // telegramStreamer streams partial LLM output via Telegram's sendMessageDraft API.
 // Draft update failures are returned to the agent, which decides whether the
 // stream was already visible enough to keep or should fall back to Chat().
+//
+// Buffering (leak-2026-07-05 Fix A): Update() does NOT call SendMessageDraft
+// directly. Instead, content is accumulated in a draftBuffer. The first push
+// to the draft API happens on Finalize() or after draftFlushTimeout (5s,
+// whichever comes first). This guarantees the AfterLLM hook — which fires
+// after the LLM response completes — has a chance to call Cancel() before
+// any draft text reaches the user. Without buffering, malformed tool-call
+// patterns like "[tool_use: ..." leak chunk-by-chunk to the user in the 1-2s
+// between the last LLM token and the hook firing HookActionReplay.
 type telegramStreamer struct {
 	bot              *telego.Bot
 	chatID           int64
@@ -1683,7 +1761,18 @@ type telegramStreamer struct {
 	failed           bool
 	draftTouched     bool
 	mu               sync.Mutex
+
+	// buffer holds streamed content until Finalize, Cancel, or the
+	// flush-after timeout commits it. nil if draftBuffer is disabled
+	// (draftFlushTimeout <= 0).
+	buffer *draftBuffer
 }
+
+// draftFlushTimeout is the maximum time Update() can hold a draft before
+// forcing a visible push. 5s matches Maple's "buffer-5s" decision on
+// 2026-07-05 (leak-2026-07-05 Fix A). Set to 0 to disable buffering and
+// restore the pre-fix behavior of pushing every Update immediately.
+const draftFlushTimeout = 5 * time.Second
 
 func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 	s.mu.Lock()
@@ -1693,7 +1782,33 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 		return fmt.Errorf("telegram streaming disabled after previous draft failure")
 	}
 
-	// Throttle: skip if not enough time or content has passed
+	// Empty / whitespace-only chunks: ignore (matches streamingChunkPublisher
+	// filter at pkg/agent/pipeline_streaming.go:381).
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+
+	// Buffered path (leak-2026-07-05 Fix A): append to the in-memory buffer
+	// and return. No SendMessageDraft call yet — the buffer will commit on
+	// Finalize, Cancel, or draftFlushTimeout. The hook fires BEFORE any
+	// draft is visible, so it can safely trigger HookActionReplay and have
+	// the buffer's Cancel() drop the uncommitted content.
+	if s.buffer != nil {
+		if err := s.buffer.Update(ctx, content); err != nil {
+			if errors.Is(err, errBufferAlreadyCommitted) {
+				// Lifecycle ended (Finalize/Cancel) mid-stream. Treat as a
+				// no-op; the agent's recovery path will produce a new draft.
+				return nil
+			}
+			s.failed = true
+			return err
+		}
+		return nil
+	}
+
+	// Legacy unbuffered path: push every chunk immediately. Retained for
+	// the draftFlushTimeout<=0 case (buffering disabled by config) so
+	// behavior matches the pre-fix code exactly.
 	now := time.Now()
 	growth := len(content) - s.lastLen
 	if s.lastLen > 0 && now.Sub(s.lastAt) < s.throttleInterval && growth < s.minGrowth {
@@ -1724,6 +1839,25 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 }
 
 func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
+	// Buffered path (leak-2026-07-05 Fix A): commit the buffer first so
+	// the user sees the streamed content as a draft, then send the final
+	// message. If the buffer was already flushed by the timer, Finalize
+	// returns errBufferFlushTimeout — we treat that as success since the
+	// user has already seen the text and only the final message remains.
+	if s.buffer != nil {
+		if err := s.buffer.Finalize(ctx); err != nil && !errors.Is(err, errBufferFlushTimeout) {
+			// Real error from buffer (e.g. push failed). Fall through to
+			// the legacy SendMessage path so the final message still lands.
+			logger.WarnCF("telegram", "draft buffer finalize failed, falling back to direct send", map[string]any{
+				"chat_id": s.chatID,
+				"error":   err.Error(),
+			})
+		}
+		// Mark draftTouched so the post-send Cancel() knows the draft was
+		// at least attempted. The buffer's PushDraft sets this via the
+		// pusher adapter.
+	}
+
 	htmlContent := markdownToTelegramHTML(content)
 	tgMsg := tu.Message(tu.ID(s.chatID), htmlContent)
 	tgMsg.MessageThreadID = s.threadID
@@ -1748,6 +1882,13 @@ func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 func (s *telegramStreamer) Cancel(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Buffered path: drop buffer and clear visible draft via the pusher.
+	if s.buffer != nil {
+		_ = s.buffer.Cancel(ctx)
+		return
+	}
+
 	s.clearDraft(ctx)
 }
 
