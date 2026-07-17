@@ -86,6 +86,34 @@ type LLMRetryPayload struct {
 	Backoff    time.Duration
 }
 
+// LLMReplayAttemptPayload describes a single bounded same-iteration replay of
+// the LLM call triggered by an AfterLLM hook returning HookActionReplay. The
+// replay loop is bounded by AgentInstance.MaxReplayAttempts so an LLM can
+// request a recovery (e.g. "your previous tool call had invalid args, try
+// again") without burning one full iteration per attempt.
+type LLMReplayAttemptPayload struct {
+	// Iteration is the outer turn iteration that owns this replay sequence.
+	Iteration int
+	// Attempt is the 1-indexed attempt within this iteration's replay loop
+	// (attempt 1 is the post-hook message already produced before the loop).
+	Attempt int
+	// Remaining is MaxReplayAttempts - current count after bumping.
+	Remaining int
+	// ElapsedMs is wall-clock time spent inside the replay loop so far.
+	ElapsedMs int64
+	// Reason is the human-readable rationale from the replaying hook.
+	Reason string
+}
+
+// LLMReplayExhaustedPayload describes the bounded replay loop reaching its cap
+// without a non-replay decision. The pipeline degrades to ControlContinue so
+// the turn can still emit a result to the user instead of silently dropping.
+type LLMReplayExhaustedPayload struct {
+	Iteration int
+	Attempts  int
+	ElapsedMs int64
+}
+
 // ContextCompressReason identifies why emergency compression ran.
 type ContextCompressReason string
 

@@ -246,6 +246,14 @@ type turnState struct {
 	iterationCap          int    // mutable iteration cap; defaults to agent.MaxIterations, raised by extend_turn_iteration
 	lastExtensionIteration int   // iteration at which the most recent extend_turn_iteration was called (0 = none)
 	extendEnabled         bool   // true when user invoked /extend on this turn; gates extend_turn_iteration availability and 3-tier hint logic
+
+	// Replay counter: bound AfterLLM hook replay attempts within a single iteration.
+	// Replay attempts are recovery retries (e.g. malformed tool-call recovery)
+	// that shouldn't consume an iteration slot in iterationCap. See plan
+	// same-iteration-replay-loop-with-reusable-boundedretry-primitive-20260717.
+	replayCount           int    // bumps per replay attempt (resets each iteration)
+	replayCap             int    // hard cap; defaults to agent.MaxReplayAttempts (or defaultRetryMaxAttempts)
+
 	startedAt             time.Time
 	finalContent          string
 
@@ -328,6 +336,15 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 	// disabled (MaxIterationsCap == 0), iterationCap stays equal to MaxIterations
 	// and the three-tier logic falls through to legacy behavior.
 	ts.iterationCap = agent.MaxIterations
+
+	// Initialize replayCap to agent.MaxReplayAttempts (defaultRetryMaxAttempts
+	// when unset). The cap bounds how many same-iteration LLM replays a hook
+	// can request via HookActionReplay before the pipeline degrades to a
+	// ControlContinue with a warning event (LLMReplayExhaustedPayload).
+	ts.replayCap = agent.MaxReplayAttempts
+	if ts.replayCap <= 0 {
+		ts.replayCap = defaultRetryMaxAttempts
+	}
 
 	// Bind session store and capture initial history length for rollback logic
 	if agent != nil && agent.Sessions != nil {
@@ -450,6 +467,34 @@ func (ts *turnState) currentIteration() int {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 	return ts.iteration
+}
+
+// resetReplayCount zeroes the per-iteration replay counter. Called by the
+// coordinator at the top of each iteration so that replay attempts don't
+// carry over to the next iteration's budget.
+//
+// See plan same-iteration-replay-loop-with-reusable-boundedretry-primitive-20260717.
+func (ts *turnState) resetReplayCount() {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.replayCount = 0
+}
+
+// currentReplayCount returns the current replay attempt count (for observability).
+func (ts *turnState) currentReplayCount() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.replayCount
+}
+
+// currentReplayCap returns the configured replay cap (for observability).
+func (ts *turnState) currentReplayCap() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	if ts.replayCap <= 0 {
+		return defaultRetryMaxAttempts
+	}
+	return ts.replayCap
 }
 
 // RemainingIterations returns the number of tool iterations remaining before the

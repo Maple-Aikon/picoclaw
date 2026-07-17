@@ -14,6 +14,13 @@ const (
 	KindAgentLLMResponse Kind = "agent.llm.response"
 	// KindAgentLLMRetry is emitted before retrying an LLM request.
 	KindAgentLLMRetry Kind = "agent.llm.retry"
+	// KindAgentLLMReplayAttempt is emitted before retrying an LLM call due to
+	// an AfterLLM hook requesting HookActionReplay (Step 2 auto-recovery).
+	// Distinct from KindAgentLLMRetry which is for transient network/HTTP errors.
+	KindAgentLLMReplayAttempt Kind = "agent.llm.replay.attempt"
+	// KindAgentLLMReplayExhausted is emitted when the per-iteration replay
+	// budget (MaxReplayAttempts) is hit. Subsequent iterations may retry.
+	KindAgentLLMReplayExhausted Kind = "agent.llm.replay.exhausted"
 
 	// KindAgentContextCompress is emitted when agent context is compressed.
 	KindAgentContextCompress Kind = "agent.context.compress"
@@ -152,6 +159,8 @@ var knownKinds = []Kind{
 	KindMCPToolDiscovered,
 	KindMCPToolCallStart,
 	KindMCPToolCallEnd,
+	KindAgentLLMReplayAttempt,
+	KindAgentLLMReplayExhausted,
 }
 
 // KnownKinds returns the runtime event kinds declared by this package.

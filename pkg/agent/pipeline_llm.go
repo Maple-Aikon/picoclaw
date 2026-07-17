@@ -623,8 +623,16 @@ func (p *Pipeline) CallLLM(
 		case HookActionReplay:
 			// Diagnostic auto-recovery (Step 2): hook detected malformed tool call,
 			// injects recovery message via response.Content, and requests retry.
-			// Append original LLM output as assistant message + recovery prompt as user
-			// message, then loop to CallLLM (coordinator handles ControlContinue).
+			//
+			// Phase-1 wiring (this turn): we keep the pre-Phase-1 message-mutation
+			// semantics — append the original assistant + recovery prompt to
+			// exec.messages, then return ControlContinue so the coordinator re-runs
+			// CallLLM with the augmented messages on the next iteration. Each replay
+			// consumes one iteration of the budget, and ts.replayCount is now wired
+			// into turn_coord via resetReplayCount so the BoundedRetry primitive
+			// (pkg/agent/retry.go) can be reused for in-iteration replay later.
+			//
+			// See plan same-iteration-replay-loop-with-reusable-boundedretry-primitive-20260717.
 			cancelConfiguredStreamingLLM(turnCtx, exec)
 			if llmResp != nil && llmResp.Response != nil {
 				exec.response = llmResp.Response
@@ -636,7 +644,7 @@ func (p *Pipeline) CallLLM(
 				})
 			}
 			recoveryContent := ""
-			if exec.response.Content != "" {
+			if exec.response != nil && exec.response.Content != "" {
 				recoveryContent = exec.response.Content
 			}
 			if recoveryContent != "" {
@@ -956,3 +964,4 @@ func filterOutExtendTool(defs []providers.ToolDefinition) []providers.ToolDefini
 	}
 	return filtered
 }
+

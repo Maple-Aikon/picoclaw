@@ -101,6 +101,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 
 		iteration := ts.currentIteration() + 1
 		ts.setIteration(iteration)
+		ts.resetReplayCount()
 		ts.setPhase(TurnPhaseRunning)
 
 		if iteration > 1 {
