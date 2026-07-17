@@ -102,6 +102,13 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		iteration := ts.currentIteration() + 1
 		ts.setIteration(iteration)
 		ts.resetReplayCount()
+		// Phase 2: reset SignatureFailureTracker counters at turn boundary so
+		// a new turn starts with a fresh escalation slate. Mirrors the
+		// nanobot "per-run scope" pattern (Decision 4) and matches the
+		// resetReplayCount hook above (both are "per-turn state reset").
+		if ts.agent != nil && ts.agent.Tools != nil {
+			ts.agent.Tools.ResetSignatureFailures(ts.channel, ts.chatID)
+		}
 		ts.setPhase(TurnPhaseRunning)
 
 		if iteration > 1 {

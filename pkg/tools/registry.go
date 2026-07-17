@@ -25,8 +25,10 @@ type ToolEntry struct {
 type ToolRegistry struct {
 	tools          map[string]*ToolEntry
 	breakers       map[string]*CircuitBreaker // key: composite (channel:chatID:name); see getCircuitBreaker
+	sigTrackers    map[string]*SignatureFailureTracker // key: composite (channel:chatID); see getOrCreateSigTracker
 	mu             sync.RWMutex
 	cbMu           sync.Mutex // serializes lazy allocation of per-session breakers
+	sigTrackerMu   sync.Mutex // serializes lazy allocation of per-session SignatureFailureTrackers
 	version        atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
 	mediaStore     media.MediaStore
 	allowlist      map[string]struct{}
@@ -79,8 +81,9 @@ type mediaStoreAware interface {
 
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
-		tools:        make(map[string]*ToolEntry),
-		breakers:     make(map[string]*CircuitBreaker),
+		tools:       make(map[string]*ToolEntry),
+		breakers:    make(map[string]*CircuitBreaker),
+		sigTrackers: make(map[string]*SignatureFailureTracker),
 		timeoutStats: newToolTimeoutStats(),
 	}
 }
@@ -324,6 +327,42 @@ func (r *ToolRegistry) getCircuitBreaker(channel, chatID, name string) *CircuitB
 	return cb
 }
 
+// getOrCreateSigTracker returns the SignatureFailureTracker scoped to the
+// (channel, chatID) session, allocating a fresh tracker on first use.
+// Counter scope is per-session; Reset() is called at turn boundaries by the
+// caller (see pkg/agent/turn_coord.go runTurn start-of-turn path).
+//
+// The sigTrackerMu lock protects the sigTrackers map; the returned tracker
+// has its own internal mutex for concurrent EscalateIfNeeded / MarkSuccess /
+// Reset calls (which are exercised from tool dispatch goroutines).
+func (r *ToolRegistry) getOrCreateSigTracker(channel, chatID string) *SignatureFailureTracker {
+	key := breakerKey(channel, chatID, "")
+
+	r.sigTrackerMu.Lock()
+	if tr, ok := r.sigTrackers[key]; ok {
+		r.sigTrackerMu.Unlock()
+		return tr
+	}
+	tr := NewSignatureFailureTracker(0) // 0 → defaultSigThreshold
+	r.sigTrackers[key] = tr
+	r.sigTrackerMu.Unlock()
+	return tr
+}
+
+// ResetSignatureFailures clears all failure counters in the per-session
+// SignatureFailureTracker. Called at turn boundaries so a new turn starts
+// with a fresh slate. No-op if no tracker exists yet for the session.
+func (r *ToolRegistry) ResetSignatureFailures(channel, chatID string) {
+	key := breakerKey(channel, chatID, "")
+
+	r.sigTrackerMu.Lock()
+	tr, ok := r.sigTrackers[key]
+	r.sigTrackerMu.Unlock()
+	if ok {
+		tr.Reset()
+	}
+}
+
 // OpenToolInfo describes a tool whose circuit breaker is currently open.
 // Returned by ToolRegistry.OpenTools() to drive the ToolHealthContributor
 // self-correction directive in the LLM prompt.
@@ -453,6 +492,25 @@ func (r *ToolRegistry) ExecuteWithContext(
 
 		if cb != nil {
 			fb := cb.RecordResult(name, true, res.ErrKind)
+			// Phase 2: SignatureFailureTracker escalation — after threshold
+			// repeated failures of the same (tool, errKind) signature, swap
+			// the canonical hint for a stronger "stop retrying" directive so
+			// the LLM does not burn the rest of the turn budget on minor
+			// variations of the same failing approach. Only fires for
+			// StatusValidationError (Tier 3) and StatusTransient (still
+			// below breaker threshold). StatusBlocked is handled by the
+			// breaker hot path above (and TryRecover via Change 4).
+			if fb.Status == StatusValidationError || fb.Status == StatusTransient {
+				if tracker := r.getOrCreateSigTracker(channel, chatID); tracker != nil {
+					if hint := tracker.EscalateIfNeeded(SignatureKey{
+						Tool:    name,
+						ErrKind: res.ErrKind,
+						ArgSig:  "",
+					}, res.ForLLM); hint != "" {
+						fb.Message = hint
+					}
+				}
+			}
 			if fb.Message != "" {
 				res.ForLLM += "\n\n" + fb.Message
 			}
@@ -588,6 +646,23 @@ func (r *ToolRegistry) ExecuteWithContext(
 		// but for now we'll just track if the initial sync execution failed.
 		fb := cb.RecordResult(name, result.IsError, result.ErrKind)
 
+		// Phase 2: SignatureFailureTracker escalation — same as the
+		// validation path above. Fires for transient/timeout errors that
+		// are still below breaker threshold (StatusTransient) so the LLM
+		// sees a stronger "stop retrying" directive before the breaker
+		// itself trips (which is handled by the StatusBlocked path above
+		// via dependencyDownHint/escalationHint).
+		if fb.Status == StatusTransient {
+			if tracker := r.getOrCreateSigTracker(channel, chatID); tracker != nil {
+				if hint := tracker.EscalateIfNeeded(SignatureKey{
+					Tool:    name,
+					ErrKind: result.ErrKind,
+					ArgSig:  "",
+				}, result.ForLLM); hint != "" {
+					fb.Message = hint
+				}
+			}
+		}
 		// Append the canonical hint produced by RecordResult (transientHint,
 		// escalationHint, dependencyDownHint, validationHint). Append for
 		// ANY non-empty Message so the LLM sees a consistent directive —
