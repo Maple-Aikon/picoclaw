@@ -62,14 +62,25 @@ func (c *ToolHealthContributor) ContributePrompt(
 
 	var b strings.Builder
 	b.WriteString("# Tool Availability\n\n")
-	b.WriteString("The following tools are currently unavailable. Do not call them. ")
-	b.WriteString("Prefer an alternative tool that solves the same problem, or answer directly if you have enough context.\n\n")
+	// Bypass-warning header: tells the LLM this is a transient self-correction
+	// signal, not a permanent capability change. A circuit breaker that's
+	// been Open for >recoveryTimeout will auto-probe and may recover on its
+	// own; the LLM should not bake "tool X is unavailable" into its plan.
+	// The per-tool last_error_kind suffix tells the model WHY each tool is
+	// out (transient network blip vs hard dependency outage) so it can pick
+	// the right fallback strategy.
+	b.WriteString("The following tools are temporarily unavailable — do not call them on this turn. ")
+	b.WriteString("Breakers auto-recover (default ~1m); if a tool you need is here, prefer an alternative tool or answer directly from the context you already have.\n\n")
 
 	now := time.Now()
 	for _, info := range open {
 		age := now.Sub(info.OpenedAt).Truncate(time.Second)
-		fmt.Fprintf(&b, "- `%s` — open for %s (%d consecutive failures)\n",
-			info.Name, formatAge(age), info.Failures)
+		kindSuffix := ""
+		if info.LastErrorKind != "" {
+			kindSuffix = fmt.Sprintf(", last_error_kind: %s", info.LastErrorKind)
+		}
+		fmt.Fprintf(&b, "- `%s` — open for %s (%d consecutive failures%s)\n",
+			info.Name, formatAge(age), info.Failures, kindSuffix)
 	}
 
 	return []PromptPart{{

@@ -1,6 +1,9 @@
 package agent
 
-import runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+import (
+	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/tools"
+)
 
 func (al *AgentLoop) publishRuntimeEvent(evt runtimeevents.Event) {
 	if al == nil || al.runtimeEvents == nil {
@@ -8,6 +11,34 @@ func (al *AgentLoop) publishRuntimeEvent(evt runtimeevents.Event) {
 	}
 
 	al.runtimeEvents.PublishNonBlocking(evt)
+}
+
+// PublishToolBreakerTripped implements tools.ToolEventPublisher. Bridges the
+// tools-package breaker event into the agent runtime event bus so the event
+// surfaces in observability dashboards without coupling pkg/tools to the
+// runtime event package.
+//
+// Scope carries Channel + ChatID (the natural breaker key), but AgentID /
+// TurnID / SessionKey are intentionally left empty: the registry invokes
+// this from inside ExecuteWithContext which has no turn-scoped context.
+// Callers that need agent-scoped filtering can join on Channel + ChatID.
+//
+// Plan: circuit-breaker-3-tier-errkind-semantics-toolfeedback-20260717
+func (al *AgentLoop) PublishToolBreakerTripped(evt tools.ToolBreakerEvent) {
+	al.publishRuntimeEvent(runtimeevents.Event{
+		Kind: runtimeevents.KindAgentToolBreakerTripped,
+		Scope: runtimeevents.Scope{
+			Channel: evt.Channel,
+			ChatID:  evt.ChatID,
+		},
+		Payload: ToolBreakerTrippedPayload{
+			Channel:   evt.Channel,
+			ChatID:    evt.ChatID,
+			Tool:      evt.Tool,
+			ErrorKind: string(evt.LastErrorKind),
+			Failures:  evt.Failures,
+		},
+	})
 }
 
 func runtimeScopeFromHookMeta(meta HookMeta, eventCtx *TurnContext) runtimeevents.Scope {
@@ -45,6 +76,10 @@ func runtimeSeverityForAgentEvent(kind runtimeevents.Kind, payload any) runtimee
 	switch kind {
 	case runtimeevents.KindAgentError, runtimeevents.KindAgentSubTurnOrphan:
 		return runtimeevents.SeverityError
+	case runtimeevents.KindAgentToolBreakerTripped:
+		return runtimeevents.SeverityWarn
+	case runtimeevents.KindAgentToolBreakerRecovered:
+		return runtimeevents.SeverityInfo
 	case runtimeevents.KindAgentLLMRetry,
 		runtimeevents.KindAgentContextCompress,
 		runtimeevents.KindAgentToolExecSkipped:

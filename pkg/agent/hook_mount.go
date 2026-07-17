@@ -335,5 +335,7 @@ func validHookEventKinds() map[string]string {
 	kinds["subturn_result_delivered"] = runtimeevents.KindAgentSubTurnResultDelivered.String()
 	kinds["subturn_orphan"] = runtimeevents.KindAgentSubTurnOrphan.String()
 	kinds["error"] = runtimeevents.KindAgentError.String()
+	kinds["tool_breaker_tripped"] = runtimeevents.KindAgentToolBreakerTripped.String()
+	kinds["tool_breaker_recovered"] = runtimeevents.KindAgentToolBreakerRecovered.String()
 	return kinds
 }

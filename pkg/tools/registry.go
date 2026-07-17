@@ -23,15 +23,54 @@ type ToolEntry struct {
 }
 
 type ToolRegistry struct {
-	tools         map[string]*ToolEntry
-	breakers      map[string]*CircuitBreaker // key: composite (channel:chatID:name); see getCircuitBreaker
-	mu            sync.RWMutex
-	cbMu          sync.Mutex // serializes lazy allocation of per-session breakers
-	version       atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
-	mediaStore    media.MediaStore
-	allowlist     map[string]struct{}
-	cfg           *config.ToolsConfig // optional; nil → fallback DefaultToolTimeoutSeconds
-	timeoutStats  *ToolTimeoutStats   // Q3 metric; nil-safe via lazy init
+	tools          map[string]*ToolEntry
+	breakers       map[string]*CircuitBreaker // key: composite (channel:chatID:name); see getCircuitBreaker
+	mu             sync.RWMutex
+	cbMu           sync.Mutex // serializes lazy allocation of per-session breakers
+	version        atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
+	mediaStore     media.MediaStore
+	allowlist      map[string]struct{}
+	cfg            *config.ToolsConfig // optional; nil → fallback DefaultToolTimeoutSeconds
+	timeoutStats   *ToolTimeoutStats   // Q3 metric; nil-safe via lazy init
+	eventPublisher ToolEventPublisher  // optional bridge to runtime event bus (pkg/agent); nil = silent
+}
+
+// ToolBreakerEvent is the primitive metadata about a circuit breaker
+// transition. Defined in pkg/tools (not pkg/agent) so the registry can
+// publish without importing the agent package, and the agent's adapter
+// wraps it into the runtime event envelope.
+//
+// Plan: circuit-breaker-3-tier-errkind-semantics-toolfeedback-20260717
+type ToolBreakerEvent struct {
+	Channel      string
+	ChatID       string
+	Tool         string
+	LastErrorKind ErrorKind
+	Failures     int
+}
+
+// ToolEventPublisher is the hook a ToolRegistry uses to surface circuit
+// breaker transitions to the broader agent runtime (events, logs,
+// dashboards). Nil-safe: when unset, breaker transitions are silent — only
+// the in-tool hint message + ToolHealthContributor surface the change to
+// the LLM. Set via SetEventPublisher.
+//
+// Implementations live in pkg/agent (e.g. AgentLoop.PublishToolBreakerTripped).
+// The interface is intentionally tiny (single method, primitive types
+// only) so it can be satisfied by test doubles without dragging the runtime
+// event bus into the registry's dependency graph.
+type ToolEventPublisher interface {
+	PublishToolBreakerTripped(ToolBreakerEvent)
+}
+
+// SetEventPublisher wires (or clears, with nil) the publisher that the
+// registry invokes when a circuit breaker transitions to Open. Safe to
+// call concurrently with ExecuteWithContext — readers of eventPublisher
+// take r.mu.RLock to avoid racing with this setter.
+func (r *ToolRegistry) SetEventPublisher(p ToolEventPublisher) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.eventPublisher = p
 }
 
 type mediaStoreAware interface {
@@ -288,10 +327,18 @@ func (r *ToolRegistry) getCircuitBreaker(channel, chatID, name string) *CircuitB
 // OpenToolInfo describes a tool whose circuit breaker is currently open.
 // Returned by ToolRegistry.OpenTools() to drive the ToolHealthContributor
 // self-correction directive in the LLM prompt.
+//
+// LastErrorKind lets the prompt contributor surface "transient/network"
+// vs "dependency down" so the LLM can pick a different retry strategy
+// (e.g. "wait and retry" vs "fall back to a different tool"). Empty
+// when the breaker is Closed or was opened before this field was added.
+//
+// Plan: circuit-breaker-3-tier-errkind-semantics-toolfeedback-20260717
 type OpenToolInfo struct {
-	Name     string
-	OpenedAt time.Time
-	Failures int
+	Name          string
+	OpenedAt      time.Time
+	Failures      int
+	LastErrorKind ErrorKind
 }
 
 // OpenTools returns aggregated info for all tools with an open circuit
@@ -313,15 +360,16 @@ func (r *ToolRegistry) OpenTools() []OpenToolInfo {
 		if name == "" {
 			continue
 		}
-		state, openedAt, failures := cb.Snapshot()
+		state, openedAt, failures, lastErrKind := cb.Snapshot()
 		if state != StateOpen {
 			continue
 		}
 		if existing, ok := byName[name]; !ok || openedAt.Before(existing.OpenedAt) {
 			byName[name] = OpenToolInfo{
-				Name:     name,
-				OpenedAt: openedAt,
-				Failures: failures,
+				Name:          name,
+				OpenedAt:      openedAt,
+				Failures:      failures,
+				LastErrorKind: lastErrKind,
 			}
 		}
 	}
@@ -369,12 +417,19 @@ func (r *ToolRegistry) ExecuteWithContext(
 	if cb != nil && !cb.Allow() {
 		logger.WarnCF("tool", "Tool execution blocked by circuit breaker",
 			map[string]any{"tool": name})
-		return ErrorResult(
-			fmt.Sprintf(
-				"System: Tool %q is temporarily disabled (Circuit Open) due to 3 consecutive failures. DO NOT attempt to call it again right now. You must inform the user that this tool is locked and explain why, then wait for the user's instructions on how to proceed.",
-				name,
-			),
-		).
+		// Pick the hint by last-error-kind: ErrDependencyDown means the
+		// upstream is dead (no recovery window matters), ErrTransient /
+		// ErrTimeout means we'll auto-retry after recoveryTimeout. This
+		// matches the canonical messages appended by RecordResult on the
+		// hot path so the LLM sees consistent wording whether it hit the
+		// breaker on the way in (Allow==false) or on the way out
+		// (RecordResult returned StatusBlocked after a JustTripped
+		// transition).
+		blockedHint := escalationHint(name)
+		if cb.LastErrorKind() == ErrDependencyDown {
+			blockedHint = dependencyDownHint(name)
+		}
+		return ErrorResult(blockedHint).
 			WithErrorKind(ErrDependencyDown).
 			WithError(fmt.Errorf("circuit breaker open for tool %q", name))
 	}
@@ -384,20 +439,39 @@ func (r *ToolRegistry) ExecuteWithContext(
 		logger.WarnCF("tool", "Tool argument validation failed",
 			map[string]any{"tool": name, "error": err.Error()})
 
-		// Record validation error against circuit breaker
+		// Record validation error against circuit breaker. Per
+		// circuit-breaker-3-tier-errkind-semantics-toolfeedback-20260717
+		// Tier 3 semantics, ErrInvalidInput NEVER trips the breaker — a bad
+		// argument is the LLM's mistake, not a tool fault. RecordResult
+		// returns StatusValidationError with the validation hint; we
+		// surface it in ForLLM but DO NOT emit a breaker event (the
+		// JustTripped flag is guaranteed false for this tier, so the
+		// event guard is belt-and-braces).
 		res := ErrorResult(fmt.Sprintf("invalid arguments for tool %q: %s", name, err)).
 			WithErrorKind(ErrInvalidInput).
 			WithError(fmt.Errorf("argument validation failed: %w", err))
 
 		if cb != nil {
-			cb.RecordResult(name, true, res.ErrKind)
-
-			// Add warnings for consecutive failures
-			failures := cb.Failures()
-			if failures == 1 {
-				res.ForLLM += "\n\nNote: You used the tool incorrectly. You have 2 more attempts before this tool is temporarily locked."
-			} else if failures == 2 {
-				res.ForLLM += "\n\nWarning: You used the tool incorrectly again. Please double-check the parameters or consider alternative tools. One more failure will lock this tool temporarily to prevent abuse."
+			fb := cb.RecordResult(name, true, res.ErrKind)
+			if fb.Message != "" {
+				res.ForLLM += "\n\n" + fb.Message
+			}
+			// fb.JustTripped is always false for ErrInvalidInput (Tier 3
+			// never trips), so no event emission here. Defensive guard
+			// for future tier changes.
+			if fb.JustTripped && r.eventPublisher != nil {
+				r.mu.RLock()
+				publisher := r.eventPublisher
+				r.mu.RUnlock()
+				if publisher != nil {
+					publisher.PublishToolBreakerTripped(ToolBreakerEvent{
+						Channel:      channel,
+						ChatID:       chatID,
+						Tool:         name,
+						LastErrorKind: cb.LastErrorKind(),
+						Failures:     cb.Failures(),
+					})
+				}
 			}
 		}
 		return res
@@ -512,15 +586,30 @@ func (r *ToolRegistry) ExecuteWithContext(
 	if cb != nil {
 		// Only record synchronous tool executions, async results are handled later/elsewhere
 		// but for now we'll just track if the initial sync execution failed.
-		cb.RecordResult(name, result.IsError, result.ErrKind)
+		fb := cb.RecordResult(name, result.IsError, result.ErrKind)
 
-		// Add warnings for consecutive failures to prevent tool abuse
-		if result.IsError && result.ErrKind != ErrDependencyDown {
-			failures := cb.Failures()
-			if failures == 1 {
-				result.ForLLM += "\n\nNote: You used the tool incorrectly. You have 2 more attempts before this tool is temporarily locked."
-			} else if failures == 2 {
-				result.ForLLM += "\n\nWarning: You used the tool incorrectly again. Please double-check the parameters or consider alternative tools. One more failure will lock this tool temporarily to prevent abuse."
+		// Append the canonical hint produced by RecordResult (transientHint,
+		// escalationHint, dependencyDownHint, validationHint). Append for
+		// ANY non-empty Message so the LLM sees a consistent directive —
+		// even on the transient (below-threshold) case where the previous
+		// inline "Note/Warning" appender lived. JustTripped flag is the
+		// ONLY signal we trust to fire the runtime event — duplicate
+		// RecordResult calls during the same Open period must not re-emit.
+		if fb.Message != "" {
+			result.ForLLM += "\n\n" + fb.Message
+		}
+		if fb.JustTripped && r.eventPublisher != nil {
+			r.mu.RLock()
+			publisher := r.eventPublisher
+			r.mu.RUnlock()
+			if publisher != nil {
+				publisher.PublishToolBreakerTripped(ToolBreakerEvent{
+					Channel:      channel,
+					ChatID:       chatID,
+					Tool:         name,
+					LastErrorKind: cb.LastErrorKind(),
+					Failures:     cb.Failures(),
+				})
 			}
 		}
 	}

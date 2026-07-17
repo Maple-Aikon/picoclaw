@@ -43,6 +43,14 @@ const (
 	EventKindSubTurnResultDelivered EventKind = runtimeevents.KindAgentSubTurnResultDelivered
 	EventKindSubTurnOrphan          EventKind = runtimeevents.KindAgentSubTurnOrphan
 	EventKindError                  EventKind = runtimeevents.KindAgentError
+	// EventKindToolBreakerTripped is emitted exactly once when a tool's
+	// circuit breaker transitions Closed/HalfOpen → Open. Distinct from
+	// EventKindToolExecSkipped (LLM voluntarily skips) and
+	// EventKindToolExecEnd (every exec including successful ones).
+	//
+	// Plan: circuit-breaker-3-tier-errkind-semantics-toolfeedback-20260717
+	EventKindToolBreakerTripped   EventKind = runtimeevents.KindAgentToolBreakerTripped
+	EventKindToolBreakerRecovered EventKind = runtimeevents.KindAgentToolBreakerRecovered
 )
 
 // CompactHookRequest is sent to hook.before_compact to notify hooks

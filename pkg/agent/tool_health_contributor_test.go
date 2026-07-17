@@ -229,4 +229,77 @@ func itoaForLog(i int) string {
 		i /= 10
 	}
 	return string(buf[pos:])
+}// TestToolHealthContributor_LastErrorKindFormat verifies the per-tool
+// `last_error_kind` suffix added in plan
+// circuit-breaker-3-tier-errkind-semantics-toolfeedback-20260717:
+//
+//   - When OpenToolInfo.LastErrorKind is non-empty → format appends
+//     `, last_error_kind: <kind>` so the LLM knows whether to wait (transient)
+//     vs escalate (dependency down).
+//   - When LastErrorKind is empty (legacy callers / pre-this-plan state) →
+//     no suffix emitted (backward-compatible with existing fixtures).
+//
+// Also asserts the bypass-warning header text mentions auto-recovery so the
+// LLM treats the directive as a transient steering signal, not a permanent
+// capability removal.
+func TestToolHealthContributor_LastErrorKindFormat(t *testing.T) {
+	c := &ToolHealthContributor{
+		listOpen: func() []tools.OpenToolInfo {
+			return []tools.OpenToolInfo{
+				{
+					Name:          "tavily_search",
+					OpenedAt:      time.Now().Add(-125 * time.Second),
+					Failures:      3,
+					LastErrorKind: tools.ErrDependencyDown,
+				},
+				{
+					Name:          "web_search",
+					OpenedAt:      time.Now().Add(-65 * time.Second),
+					Failures:      3,
+					LastErrorKind: tools.ErrTransient,
+				},
+				{
+					Name:     "legacy_tool", // pre-plan state, LastErrorKind unset
+					OpenedAt: time.Now().Add(-30 * time.Second),
+					Failures: 3,
+				},
+			}
+		},
+	}
+	parts, err := c.ContributePrompt(context.Background(), PromptBuildRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("parts count = %d, want 1", len(parts))
+	}
+	content := parts[0].Content
+
+	// Auto-recovery hint in the bypass-warning header.
+	lower := strings.ToLower(content)
+	if !strings.Contains(lower, "auto-recover") && !strings.Contains(lower, "auto recover") {
+		t.Errorf("Content missing auto-recovery bypass-warning header: %q", content)
+	}
+
+	// Per-tool suffix present when LastErrorKind is set.
+	if !strings.Contains(content, "last_error_kind: dependency_down") {
+		t.Errorf("Content missing 'last_error_kind: dependency_down' suffix for tavily_search: %q", content)
+	}
+	if !strings.Contains(content, "last_error_kind: transient") {
+		t.Errorf("Content missing 'last_error_kind: transient' suffix for web_search: %q", content)
+	}
+
+	// No suffix for the legacy fixture (LastErrorKind empty).
+	idx := strings.Index(content, "legacy_tool")
+	if idx == -1 {
+		t.Fatalf("Content missing legacy_tool: %q", content)
+	}
+	lineEnd := strings.Index(content[idx:], "\n")
+	if lineEnd == -1 {
+		lineEnd = len(content) - idx
+	}
+	line := content[idx : idx+lineEnd]
+	if strings.Contains(line, "last_error_kind") {
+		t.Errorf("legacy_tool line should NOT contain last_error_kind (LastErrorKind unset): %q", line)
+	}
 }

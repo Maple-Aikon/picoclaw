@@ -52,6 +52,21 @@ func (al *AgentLoop) SetMediaStore(s media.MediaStore) {
 	})
 }
 
+// SetToolEventPublisher wires the AgentLoop (which implements
+// tools.ToolEventPublisher via PublishToolBreakerTripped) into every
+// sub-agent's ToolRegistry so circuit-breaker transitions surface as
+// runtime events. Called once at agent init; nil disables emission.
+//
+// Plan: circuit-breaker-3-tier-errkind-semantics-toolfeedback-20260717
+func (al *AgentLoop) SetToolEventPublisher() {
+	registry := al.GetRegistry()
+	for _, agentID := range registry.ListAgentIDs() {
+		if agent, ok := registry.GetAgent(agentID); ok {
+			agent.Tools.SetEventPublisher(al)
+		}
+	}
+}
+
 func (al *AgentLoop) SetTranscriber(t asr.Transcriber) {
 	al.transcriber = t
 }

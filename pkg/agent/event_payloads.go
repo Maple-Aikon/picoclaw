@@ -224,3 +224,43 @@ type ErrorPayload struct {
 	Stage   string
 	Message string
 }
+
+// ToolBreakerTrippedPayload describes the transition of a tool's circuit
+// breaker from Closed/HalfOpen → Open. Emitted exactly once per trip — the
+// ToolRegistry relies on ToolFeedback.JustTripped to enforce idempotency,
+// so duplicate transitions during the same Open period do NOT re-emit.
+//
+// Plan: circuit-breaker-3-tier-errkind-semantics-toolfeedback-20260717
+type ToolBreakerTrippedPayload struct {
+	Channel   string `json:"channel"`
+	ChatID    string `json:"chat_id"`
+	Tool      string `json:"tool"`
+	// ErrorKind identifies the failure category that caused the trip:
+	// ErrDependencyDown (opens immediately on first occurrence) vs
+	// ErrTransient / ErrTimeout (opens after threshold consecutive
+	// failures). The LLM-facing hint distinguishes these two cases so the
+	// model knows whether to expect a quick retry window or a longer
+	// outage.
+	ErrorKind string `json:"error_kind"`
+	// Failures is the consecutive-failure count at the time of the trip.
+	// For ErrDependencyDown this is always 1; for ErrTransient /
+	// ErrTimeout this equals the breaker threshold (3 by default).
+	Failures int `json:"failures"`
+}
+
+// ToolBreakerRecoveredPayload describes a successful circuit-breaker
+// recovery probe. Emitted only when the registry actively probes recovery
+// (e.g. before returning ToolStatusBlocked on a hot path). Silent
+// recoveries where Allow() flips on its own after recoveryTimeout elapses
+// do NOT emit — those are invisible to the agent loop.
+type ToolBreakerRecoveredPayload struct {
+	Channel   string `json:"channel"`
+	ChatID    string `json:"chat_id"`
+	Tool      string `json:"tool"`
+	// Attempts is the number of TryRecover probes consumed before
+	// recovery succeeded (1 = first probe, 2 = second probe).
+	Attempts int `json:"attempts"`
+	// ElapsedMs is the wall-clock time spent inside TryRecover before
+	// recovery was confirmed.
+	ElapsedMs int64 `json:"elapsed_ms"`
+}

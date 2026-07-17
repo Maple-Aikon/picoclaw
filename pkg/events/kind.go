@@ -110,6 +110,22 @@ const (
 	KindMCPToolCallStart Kind = "mcp.tool.call.start"
 	// KindMCPToolCallEnd is emitted when an MCP tool call ends.
 	KindMCPToolCallEnd Kind = "mcp.tool.call.end"
+
+	// KindAgentToolBreakerTripped is emitted exactly once when a tool's
+	// circuit breaker transitions from Closed/HalfOpen → Open. The registry
+	// guarantees idempotency via ToolFeedback.JustTripped. The kind sits in
+	// the agent namespace because circuit-breaker state is a per-agent-loop
+	// concern; the breaker primitive itself lives in pkg/tools and stays
+	// event-bus agnostic.
+	//
+	// Plan: circuit-breaker-3-tier-errkind-semantics-toolfeedback-20260717
+	KindAgentToolBreakerTripped Kind = "agent.tool.breaker_tripped"
+	// KindAgentToolBreakerRecovered is emitted when a circuit breaker
+	// transitions Open → Closed (via TryRecover probe success). Optional;
+	// emitted only when the registry actively probes recovery — silent
+	// recoveries (e.g. Allow() flipping after recoveryTimeout elapses) do
+	// NOT emit.
+	KindAgentToolBreakerRecovered Kind = "agent.tool.breaker_recovered"
 )
 
 var knownKinds = []Kind{
@@ -161,6 +177,8 @@ var knownKinds = []Kind{
 	KindMCPToolCallEnd,
 	KindAgentLLMReplayAttempt,
 	KindAgentLLMReplayExhausted,
+	KindAgentToolBreakerTripped,
+	KindAgentToolBreakerRecovered,
 }
 
 // KnownKinds returns the runtime event kinds declared by this package.

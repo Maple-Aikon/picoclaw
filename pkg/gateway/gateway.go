@@ -701,6 +701,13 @@ func restartServices(
 		runningServices.ChannelManager.SetMediaStore(runningServices.MediaStore)
 	}
 	al.SetMediaStore(runningServices.MediaStore)
+	// Wire the runtime event publisher into every sub-agent's ToolRegistry
+	// so circuit-breaker transitions surface as runtime events. Safe to call
+	// before channel manager init — the publisher uses al.runtimeEvents which
+	// is allocated in NewAgentLoop.
+	//
+	// Plan: circuit-breaker-3-tier-errkind-semantics-toolfeedback-20260717
+	al.SetToolEventPublisher()
 
 	al.SetChannelManager(runningServices.ChannelManager)
 

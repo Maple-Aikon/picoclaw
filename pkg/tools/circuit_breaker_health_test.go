@@ -51,7 +51,7 @@ func TestCircuitBreaker_Name_StableAcrossStateTransitions(t *testing.T) {
 
 func TestCircuitBreaker_Snapshot_InitialState(t *testing.T) {
 	cb := NewCircuitBreakerWithName("web_search")
-	state, openedAt, failures := cb.Snapshot()
+	state, openedAt, failures, _ := cb.Snapshot()
 	if state != StateClosed {
 		t.Fatalf("initial state=%v, want StateClosed (%v)", state, StateClosed)
 	}
@@ -69,7 +69,7 @@ func TestCircuitBreaker_Snapshot_AfterDependencyDown(t *testing.T) {
 	cb.RecordResult("web_search", true, ErrDependencyDown)
 	after := time.Now()
 
-	state, openedAt, failures := cb.Snapshot()
+	state, openedAt, failures, _ := cb.Snapshot()
 	if state != StateOpen {
 		t.Fatalf("state after ErrDependencyDown=%v, want StateOpen", state)
 	}
@@ -94,7 +94,7 @@ func TestCircuitBreaker_Snapshot_AfterThresholdFailures(t *testing.T) {
 		cb.RecordResult("web_search", true, ErrTransient)
 	}
 
-	state, openedAt, failures := cb.Snapshot()
+	state, openedAt, failures, _ := cb.Snapshot()
 	if state != StateOpen {
 		t.Fatalf("state after %d transient failures=%v, want StateOpen",
 			cb.failureThreshold, state)
@@ -127,7 +127,7 @@ func TestCircuitBreaker_Snapshot_HalfOpenAfterRecoveryTimeout(t *testing.T) {
 		t.Fatal("setup: breaker should transition to HalfOpen after timeout")
 	}
 
-	state, _, failures := cb.Snapshot()
+	state, _, failures, _ := cb.Snapshot()
 	if state != StateHalfOpen {
 		t.Fatalf("state after HalfOpen transition=%v, want StateHalfOpen", state)
 	}
@@ -160,7 +160,7 @@ func TestCircuitBreaker_WithNameCtor_HasSameDefaultsAsLegacy(t *testing.T) {
 	if !named.Allow() {
 		t.Fatal("fresh named breaker should Allow()")
 	}
-	state, openedAt, failures := named.Snapshot()
+	state, openedAt, failures, _ := named.Snapshot()
 	if state != StateClosed || failures != 0 || !openedAt.IsZero() {
 		t.Fatalf("fresh named breaker not in initial state: state=%v failures=%d openedAt=%v",
 			state, failures, openedAt)
