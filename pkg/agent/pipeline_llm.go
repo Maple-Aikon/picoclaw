@@ -279,111 +279,9 @@ func (p *Pipeline) CallLLM(
 			"tools_json":    formatToolsForLog(exec.providerToolDefs),
 		})
 
-	// LLM call closure with fallback support
-	callLLM := func(messagesForCall []providers.Message, toolDefsForCall []providers.ToolDefinition) (*providers.LLMResponse, error) {
-		providerCtx, providerCancel := context.WithCancel(turnCtx)
-		ts.setProviderCancel(providerCancel)
-		defer func() {
-			providerCancel()
-			ts.clearProviderCancel(providerCancel)
-		}()
-
-		al.activeRequestsInc()
-		defer al.activeRequestsDec()
-
-		if response, handled, streamErr := p.tryConfiguredStreamingLLM(
-			providerCtx,
-			ts,
-			exec,
-			messagesForCall,
-			toolDefsForCall,
-		); handled {
-			return response, streamErr
-		}
-
-		runCandidate := func(
-			ctx context.Context,
-			candidate providers.FallbackCandidate,
-		) (*providers.LLMResponse, error) {
-			candidateProvider, err := providerForFallbackCandidate(
-				ts.agent,
-				exec.activeProvider,
-				exec.activeCandidates,
-				candidate.Provider,
-				candidate.Model,
-			)
-			if err != nil {
-				return nil, err
-			}
-			callOpts := shallowCloneLLMOptions(exec.llmOpts)
-			delete(callOpts, "thinking_level")
-			candidateCfg := resolveActiveModelConfig(
-				p.Cfg,
-				ts.agent.Workspace,
-				[]providers.FallbackCandidate{candidate},
-				candidate.Model,
-				p.Cfg.Agents.Defaults.Provider,
-			)
-			candidateThinking := thinkingSettingsFromModelConfig(candidateCfg)
-			applyThinkingOption(callOpts, candidateProvider, candidateThinking, true, ts.agent.ID)
-			exec.suppressReasoning = shouldSuppressReasoningFor(candidateThinking)
-			return candidateProvider.Chat(ctx, messagesForCall, toolDefsForCall, candidate.Model, callOpts)
-		}
-
-		if len(exec.activeCandidates) > 1 && p.Fallback != nil {
-			var (
-				fbResult *providers.FallbackResult
-				fbErr    error
-			)
-			if hasMediaRefs(messagesForCall) {
-				fbResult, fbErr = p.Fallback.ExecuteImage(
-					providerCtx,
-					exec.activeCandidates,
-					func(ctx context.Context, provider, model string) (*providers.LLMResponse, error) {
-						candidate := providers.FallbackCandidate{Provider: provider, Model: model}
-						for _, configured := range exec.activeCandidates {
-							if configured.Provider == provider && configured.Model == model {
-								candidate = configured
-								break
-							}
-						}
-						return runCandidate(ctx, candidate)
-					},
-				)
-			} else {
-				fbResult, fbErr = p.Fallback.ExecuteCandidate(
-					providerCtx,
-					exec.activeCandidates,
-					runCandidate,
-				)
-			}
-			if fbErr != nil {
-				return nil, fbErr
-			}
-			if fbResult.Provider != "" && len(fbResult.Attempts) > 0 {
-				logger.InfoCF(
-					"agent",
-					fmt.Sprintf("Fallback: succeeded with %s/%s after %d attempts",
-						fbResult.Provider, fbResult.Model, len(fbResult.Attempts)+1),
-					map[string]any{"agent_id": ts.agent.ID, "iteration": iteration},
-				)
-			}
-			for _, candidate := range exec.activeCandidates {
-				if candidate.StableKey() != fbResult.IdentityKey {
-					continue
-				}
-				exec.llmModelName = resolvedCandidateModelName(
-					[]providers.FallbackCandidate{candidate},
-					exec.llmModelName,
-				)
-				break
-			}
-			return fbResult.Response, nil
-		}
-		return exec.activeProvider.Chat(providerCtx, messagesForCall, toolDefsForCall, exec.llmModel, exec.llmOpts)
-	}
-
-	// Retry loop
+	// Single LLM call per retry iteration (Phase 2 refactor: extracted to callLLMCore method
+	// to enable handleHookReplay helper to perform same-iteration replay without burning the
+	// main iteration budget. See plan same-iteration-replay-loop-with-reusable-boundedretry-primitive-20260717.)
 	var err error
 	maxRetries := p.Cfg.Agents.Defaults.MaxLLMRetries
 	if maxRetries <= 0 {
@@ -394,7 +292,7 @@ func (p *Pipeline) CallLLM(
 		backoffSecs = 2
 	}
 	for retry := 0; retry <= maxRetries; retry++ {
-		exec.response, err = callLLM(exec.callMessages, exec.providerToolDefs)
+		exec.response, err = p.callLLMCore(ctx, turnCtx, ts, exec, exec.callMessages, exec.providerToolDefs, iteration)
 		if err == nil {
 			break
 		}
@@ -624,15 +522,13 @@ func (p *Pipeline) CallLLM(
 			// Diagnostic auto-recovery (Step 2): hook detected malformed tool call,
 			// injects recovery message via response.Content, and requests retry.
 			//
-			// Phase-1 wiring (this turn): we keep the pre-Phase-1 message-mutation
-			// semantics — append the original assistant + recovery prompt to
-			// exec.messages, then return ControlContinue so the coordinator re-runs
-			// CallLLM with the augmented messages on the next iteration. Each replay
-			// consumes one iteration of the budget, and ts.replayCount is now wired
-			// into turn_coord via resetReplayCount so the BoundedRetry primitive
-			// (pkg/agent/retry.go) can be reused for in-iteration replay later.
-			//
-			// See plan same-iteration-replay-loop-with-reusable-boundedretry-primitive-20260717.
+			// Phase 2 wiring: we keep the pre-Phase-1 message-mutation semantics for
+			// the FIRST iteration (append original assistant + recovery to exec.messages
+			// so the LLM has context), then hand off to handleHookReplay which runs a
+			// BoundedRetry loop within the same iteration. Subsequent retries (if the
+			// hook keeps returning Replay) append more context to exec.messages without
+			// burning the main iteration budget. See plan
+			// same-iteration-replay-loop-with-reusable-boundedretry-primitive-20260717.
 			cancelConfiguredStreamingLLM(turnCtx, exec)
 			if llmResp != nil && llmResp.Response != nil {
 				exec.response = llmResp.Response
@@ -653,7 +549,7 @@ func (p *Pipeline) CallLLM(
 					Content: recoveryContent,
 				})
 			}
-			return ControlContinue, nil
+			return p.handleHookReplay(ctx, turnCtx, ts, exec, iteration)
 		case HookActionAbortTurn:
 			cancelConfiguredStreamingLLM(turnCtx, exec)
 			exec.abortedByHook = true
@@ -665,6 +561,172 @@ func (p *Pipeline) CallLLM(
 			return ControlBreak, nil
 		}
 	}
+
+	// Post-LLM processing (save finishReason, reasoning, emit event, tool-call
+	// path). Extracted to proceedPastLLM so handleHookReplay can route the same
+	// processing on a recovered response without duplicating the logic at this
+	// call site. See plan
+	// same-iteration-replay-loop-with-reusable-boundedretry-primitive-20260717.
+	return p.proceedPastLLM(ctx, turnCtx, ts, exec, iteration)
+}
+
+
+func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution) {
+	if p == nil || ts == nil || ts.agent == nil || exec == nil {
+		return
+	}
+	rawModel := strings.TrimSpace(exec.llmModel)
+	if rawModel == "" {
+		return
+	}
+
+	defaultProvider := "openai"
+	if p.Cfg != nil {
+		if provider := strings.TrimSpace(p.Cfg.Agents.Defaults.Provider); provider != "" {
+			defaultProvider = provider
+		}
+	}
+	defaultProvider = effectiveDefaultProvider(defaultProvider)
+	candidates := resolveModelCandidates(p.Cfg, defaultProvider, rawModel, nil)
+	exec.activeCandidates = candidates
+	exec.activeModel = resolvedCandidateModel(candidates, rawModel)
+	exec.llmModel = exec.activeModel
+	exec.activeModelConfig = resolveActiveModelConfig(p.Cfg, ts.agent.Workspace, candidates, rawModel, defaultProvider)
+}
+
+// callLLMCore performs a single LLM call with streaming + fallback candidate
+// support. It was extracted from the CallLLM method as part of Phase 2 so that
+// the handleHookReplay helper can re-invoke the same call path during
+// same-iteration replay without invoking the outer retry loop or bumping the
+// iteration counter. See plan
+// same-iteration-replay-loop-with-reusable-boundedretry-primitive-20260717.
+func (p *Pipeline) callLLMCore(
+	ctx context.Context,
+	turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	messagesForCall []providers.Message,
+	toolDefsForCall []providers.ToolDefinition,
+	iteration int,
+) (*providers.LLMResponse, error) {
+	providerCtx, providerCancel := context.WithCancel(turnCtx)
+	ts.setProviderCancel(providerCancel)
+	defer func() {
+		providerCancel()
+		ts.clearProviderCancel(providerCancel)
+	}()
+
+	p.al.activeRequestsInc()
+	defer p.al.activeRequestsDec()
+
+	if response, handled, streamErr := p.tryConfiguredStreamingLLM(
+		providerCtx,
+		ts,
+		exec,
+		messagesForCall,
+		toolDefsForCall,
+	); handled {
+		return response, streamErr
+	}
+
+	runCandidate := func(
+		ctx context.Context,
+		candidate providers.FallbackCandidate,
+	) (*providers.LLMResponse, error) {
+		candidateProvider, err := providerForFallbackCandidate(
+			ts.agent,
+			exec.activeProvider,
+			exec.activeCandidates,
+			candidate.Provider,
+			candidate.Model,
+		)
+		if err != nil {
+			return nil, err
+		}
+		callOpts := shallowCloneLLMOptions(exec.llmOpts)
+		delete(callOpts, "thinking_level")
+		candidateCfg := resolveActiveModelConfig(
+			p.Cfg,
+			ts.agent.Workspace,
+			[]providers.FallbackCandidate{candidate},
+			candidate.Model,
+			p.Cfg.Agents.Defaults.Provider,
+		)
+		candidateThinking := thinkingSettingsFromModelConfig(candidateCfg)
+		applyThinkingOption(callOpts, candidateProvider, candidateThinking, true, ts.agent.ID)
+		exec.suppressReasoning = shouldSuppressReasoningFor(candidateThinking)
+		return candidateProvider.Chat(ctx, messagesForCall, toolDefsForCall, candidate.Model, callOpts)
+	}
+
+	if len(exec.activeCandidates) > 1 && p.Fallback != nil {
+		var (
+			fbResult *providers.FallbackResult
+			fbErr    error
+		)
+		if hasMediaRefs(messagesForCall) {
+			fbResult, fbErr = p.Fallback.ExecuteImage(
+				providerCtx,
+				exec.activeCandidates,
+				func(ctx context.Context, provider, model string) (*providers.LLMResponse, error) {
+					candidate := providers.FallbackCandidate{Provider: provider, Model: model}
+					for _, configured := range exec.activeCandidates {
+						if configured.Provider == provider && configured.Model == model {
+							candidate = configured
+							break
+						}
+					}
+					return runCandidate(ctx, candidate)
+				},
+			)
+		} else {
+			fbResult, fbErr = p.Fallback.ExecuteCandidate(
+				providerCtx,
+				exec.activeCandidates,
+				runCandidate,
+			)
+		}
+		if fbErr != nil {
+			return nil, fbErr
+		}
+		if fbResult.Provider != "" && len(fbResult.Attempts) > 0 {
+			logger.InfoCF(
+				"agent",
+				fmt.Sprintf("Fallback: succeeded with %s/%s after %d attempts",
+					fbResult.Provider, fbResult.Model, len(fbResult.Attempts)+1),
+				map[string]any{"agent_id": ts.agent.ID, "iteration": iteration},
+			)
+		}
+		for _, candidate := range exec.activeCandidates {
+			if candidate.StableKey() != fbResult.IdentityKey {
+				continue
+			}
+			exec.llmModelName = resolvedCandidateModelName(
+				[]providers.FallbackCandidate{candidate},
+				exec.llmModelName,
+			)
+			break
+		}
+		return fbResult.Response, nil
+	}
+	return exec.activeProvider.Chat(providerCtx, messagesForCall, toolDefsForCall, exec.llmModel, exec.llmOpts)
+}
+
+// proceedPastLLM handles the post-LLM-response pipeline: saving finishReason
+// to turnState, suppressing reasoning, publishing pico reasoning, emitting
+// the LLM response event, then dispatching to either the no-tool-call path
+// (direct answer or steering) or the tool-call normalization path.
+//
+// Phase 2 refactor: extracted from CallLLM so that handleHookReplay can return
+// ControlContinue and the caller can chain into the same processing without
+// having to repeat all of this code at the call site.
+func (p *Pipeline) proceedPastLLM(
+	ctx context.Context,
+	turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	iteration int,
+) (Control, error) {
+	al := p.al
 
 	// Save finishReason to turnState for SubTurn truncation detection
 	if innerTS := turnStateFromContext(ctx); innerTS != nil {
@@ -848,34 +910,10 @@ func (p *Pipeline) CallLLM(
 			exec.llmModelName,
 			reasoningContent,
 			exec.response.Content,
-			assistantMsg.ToolCalls,
+			exec.normalizedToolCalls,
 		)
 	}
-
-	return ControlToolLoop, nil
-}
-
-func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution) {
-	if p == nil || ts == nil || ts.agent == nil || exec == nil {
-		return
-	}
-	rawModel := strings.TrimSpace(exec.llmModel)
-	if rawModel == "" {
-		return
-	}
-
-	defaultProvider := "openai"
-	if p.Cfg != nil {
-		if provider := strings.TrimSpace(p.Cfg.Agents.Defaults.Provider); provider != "" {
-			defaultProvider = provider
-		}
-	}
-	defaultProvider = effectiveDefaultProvider(defaultProvider)
-	candidates := resolveModelCandidates(p.Cfg, defaultProvider, rawModel, nil)
-	exec.activeCandidates = candidates
-	exec.activeModel = resolvedCandidateModel(candidates, rawModel)
-	exec.llmModel = exec.activeModel
-	exec.activeModelConfig = resolveActiveModelConfig(p.Cfg, ts.agent.Workspace, candidates, rawModel, defaultProvider)
+	return ControlContinue, nil
 }
 
 func providerForFallbackCandidate(
@@ -965,3 +1003,161 @@ func filterOutExtendTool(defs []providers.ToolDefinition) []providers.ToolDefini
 	return filtered
 }
 
+// handleHookReplay runs the BoundedRetry loop for AfterLLM hook replay
+// decisions. The caller (HookActionReplay case in CallLLM) has already:
+//
+//  1. Called the LLM once (initial response in exec.response).
+//  2. Run the AfterLLM hook, which returned HookActionReplay (response
+//     modified to recovery content).
+//  3. Appended the original assistant content + recovery to exec.messages
+//     so the LLM has proper context for the re-call.
+//
+// handleHookReplay then loops up to ts.replayCap times (BoundedRetry primitive),
+// re-calling the LLM and re-firing the hook. On each Replay decision, the
+// latest pre-hook LLM response + new recovery content is appended to
+// exec.messages so the next LLM call has context. The loop exits when:
+//
+//   - Hook returns Continue/Modify → RetryDecisionDone → coordinator runs
+//     the recovered response through the tool loop.
+//   - Hook returns AbortTurn/HardAbort → RetryDecisionAbort → coordinator
+//     breaks the turn.
+//   - BoundedRetry cap is exhausted → graceful ControlContinue + warn
+//     event so the coordinator bumps iteration and retries from a clean slate
+//     (preserves the original "replay burns an iteration" behavior as a
+//     safety net for runaway hooks).
+//
+// Phase 2 of plan
+// same-iteration-replay-loop-with-reusable-boundedretry-primitive-20260717.
+func (p *Pipeline) handleHookReplay(
+	ctx context.Context,
+	turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	iteration int,
+) (Control, error) {
+	al := p.al
+
+	decision, err := BoundedRetry(ctx, RetryConfig{
+		Name:        "hook_replay",
+		MaxAttempts: ts.replayCap,
+		OnRetry: func(rc RetryContext, _ string) {
+			al.emitEvent(
+				runtimeevents.KindAgentLLMReplayAttempt,
+				ts.eventMeta("runTurn", "turn.llm.replay.attempt"),
+				LLMReplayAttemptPayload{
+					Iteration: iteration,
+					Attempt:   rc.Attempt + 1, // 1-indexed for humans
+					Remaining: rc.Remaining,
+					ElapsedMs: rc.Elapsed.Milliseconds(),
+				},
+			)
+			logger.DebugCF("agent", "Replaying LLM (same iteration)", map[string]any{
+				"agent_id":  ts.agent.ID,
+				"iteration": iteration,
+				"attempt":   rc.Attempt + 1,
+				"remaining": rc.Remaining,
+			})
+		},
+		OnExhausted: func(rc RetryContext) {
+			al.emitEvent(
+				runtimeevents.KindAgentLLMReplayExhausted,
+				ts.eventMeta("runTurn", "turn.llm.replay.exhausted"),
+				LLMReplayExhaustedPayload{
+					Iteration: iteration,
+					Attempts:  rc.MaxAttempts,
+					ElapsedMs: rc.Elapsed.Milliseconds(),
+				},
+			)
+			logger.WarnCF("agent", "Replay cap exhausted, treating as continue", map[string]any{
+				"agent_id":  ts.agent.ID,
+				"iteration": iteration,
+				"cap":       rc.MaxAttempts,
+			})
+		},
+	}, func(ctx context.Context, rc RetryContext) (RetryDecision, error) {
+		// Make the LLM call. callLLMCore uses exec.callMessages which already
+		// contains the appended context from the caller (first attempt) or
+		// the previous attempt's HookActionReplay handler (subsequent attempts).
+		resp, err := p.callLLMCore(ctx, turnCtx, ts, exec, exec.callMessages, exec.providerToolDefs, iteration)
+		if err != nil {
+			return RetryDecisionAbort, err
+		}
+		if resp != nil {
+			exec.response = resp
+		}
+
+		// Save the pre-hook LLM response content (for context appending if the
+		// hook requests another Replay).
+		preHookContent := ""
+		if exec.response != nil {
+			preHookContent = exec.response.Content
+		}
+
+		// Run AfterLLM hook on the new response.
+		if p.Hooks == nil {
+			return RetryDecisionDone, nil
+		}
+		llmResp, hookDecision := p.Hooks.AfterLLM(turnCtx, &LLMHookResponse{
+			Meta:     ts.eventMeta("runTurn", "turn.llm.response"),
+			Context:  cloneTurnContext(ts.turnCtx),
+			Model:    exec.llmModel,
+			Response: exec.response,
+		})
+
+		switch hookDecision.normalizedAction() {
+		case HookActionContinue, HookActionModify:
+			if llmResp != nil && llmResp.Response != nil {
+				exec.response = llmResp.Response
+			}
+			return RetryDecisionDone, nil
+		case HookActionReplay:
+			if llmResp != nil && llmResp.Response != nil {
+				exec.response = llmResp.Response
+			}
+			// Append the previous LLM response (assistant) + new recovery
+			// (user) so the next LLM call has full context.
+			if preHookContent != "" {
+				exec.messages = append(exec.messages, providers.Message{
+					Role:    "assistant",
+					Content: preHookContent,
+				})
+			}
+			recoveryContent := ""
+			if exec.response != nil {
+				recoveryContent = exec.response.Content
+			}
+			if recoveryContent != "" {
+				exec.messages = append(exec.messages, providers.Message{
+					Role:    "user",
+					Content: recoveryContent,
+				})
+			}
+			cancelConfiguredStreamingLLM(turnCtx, exec)
+			return RetryDecisionRetry, nil
+		case HookActionAbortTurn:
+			exec.abortedByHook = true
+			return RetryDecisionAbort, nil
+		case HookActionHardAbort:
+			_ = ts.requestHardAbort()
+			exec.abortedByHardAbort = true
+			return RetryDecisionAbort, nil
+		}
+		return RetryDecisionDone, nil
+	})
+
+	if err != nil {
+		return ControlBreak, err
+	}
+	if decision == RetryDecisionAbort {
+		if exec.abortedByHardAbort {
+			return ControlBreak, nil
+		}
+		if exec.abortedByHook {
+			return ControlBreak, fmt.Errorf("hook requested turn abort")
+		}
+	}
+	// RetryDecisionDone OR exhausted retry → return ControlContinue.
+	// Coordinator bumps iteration normally (for Done: pre-LLM processing
+	// will run with the recovered response; for exhausted: clean re-attempt).
+	return ControlContinue, nil
+}
