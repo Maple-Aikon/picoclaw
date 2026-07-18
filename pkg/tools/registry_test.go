@@ -208,8 +208,12 @@ func TestToolRegistry_Execute_Success(t *testing.T) {
 	if result.IsError {
 		t.Errorf("expected success, got error: %s", result.ForLLM)
 	}
-	if result.ForLLM != "hello" {
-		t.Errorf("expected ForLLM 'hello', got %q", result.ForLLM)
+	// Phase 3 (tool-knowledge-...-20260718): first success in an anon
+	// session now appends SoftPromptFirstSuccess. Tests assert the body
+	// plus the suffix; the body itself is preserved verbatim.
+	want := "hello" + SoftPromptFirstSuccess
+	if result.ForLLM != want {
+		t.Errorf("expected ForLLM %q, got %q", want, result.ForLLM)
 	}
 }
 
@@ -782,8 +786,11 @@ func TestToolRegistry_Execute_PanicDoesNotAffectOtherTools(t *testing.T) {
 	if result2.IsError {
 		t.Errorf("expected success from good tool, got error: %s", result2.ForLLM)
 	}
-	if result2.ForLLM != "success" {
-		t.Errorf("expected 'success', got %q", result2.ForLLM)
+	// Phase 3 (tool-knowledge-...-20260718): first success in anon session
+	// now appends SoftPromptFirstSuccess. The body itself is preserved.
+	want := "success" + SoftPromptFirstSuccess
+	if result2.ForLLM != want {
+		t.Errorf("expected %q, got %q", want, result2.ForLLM)
 	}
 }
 
@@ -830,8 +837,12 @@ func TestToolRegistry_ExecuteWithContext_SanitizesLargeBase64Payload(t *testing.
 		nil,
 	)
 
-	if result.ForLLM != largeBase64OmittedMessage {
-		t.Fatalf("expected sanitized payload, got %q", result.ForLLM)
+	// Phase 3 (tool-knowledge-...-20260718): successful execution in a
+	// named session appends SoftPromptFirstSuccess once per turn. The
+	// sanitization still strips the payload — only the suffix is added.
+	want := largeBase64OmittedMessage + SoftPromptFirstSuccess
+	if result.ForLLM != want {
+		t.Fatalf("expected %q, got %q", want, result.ForLLM)
 	}
 }
 

@@ -19,10 +19,10 @@ func TestEscalation_BelowThreshold_NoEscalation(t *testing.T) {
 	tr := NewSignatureFailureTracker(3)
 	k := keyWithSig("fs.read", ErrInvalidInput, "")
 
-	if got := tr.EscalateIfNeeded(k, "missing arg 'path'"); got != "" {
+	if got := tr.EscalateIfNeeded(k, "missing arg 'path'", ""); got != "" {
 		t.Fatalf("1st fail: want empty, got %q", got)
 	}
-	if got := tr.EscalateIfNeeded(k, "missing arg 'path'"); got != "" {
+	if got := tr.EscalateIfNeeded(k, "missing arg 'path'", ""); got != "" {
 		t.Fatalf("2nd fail: want empty, got %q", got)
 	}
 	if got := tr.Count(k); got != 2 {
@@ -35,9 +35,9 @@ func TestEscalation_AtThreshold_Escalates(t *testing.T) {
 	tr := NewSignatureFailureTracker(3)
 	k := keyWithSig("fs.read", ErrInvalidInput, "")
 
-	tr.EscalateIfNeeded(k, "missing arg 'path'")
-	tr.EscalateIfNeeded(k, "missing arg 'path'")
-	got := tr.EscalateIfNeeded(k, "missing arg 'path'")
+	tr.EscalateIfNeeded(k, "missing arg 'path'", "")
+	tr.EscalateIfNeeded(k, "missing arg 'path'", "")
+	got := tr.EscalateIfNeeded(k, "missing arg 'path'", "")
 	if got == "" {
 		t.Fatal("3rd fail: want escalation message, got empty")
 	}
@@ -65,14 +65,14 @@ func TestEscalation_AboveThreshold_StaysEscalated(t *testing.T) {
 	tr := NewSignatureFailureTracker(3)
 	k := keyWithSig("fs.read", ErrInvalidInput, "")
 
-	tr.EscalateIfNeeded(k, "e1")
-	tr.EscalateIfNeeded(k, "e2")
-	tr.EscalateIfNeeded(k, "e3")
-	got4 := tr.EscalateIfNeeded(k, "e4")
+	tr.EscalateIfNeeded(k, "e1", "")
+	tr.EscalateIfNeeded(k, "e2", "")
+	tr.EscalateIfNeeded(k, "e3", "")
+	got4 := tr.EscalateIfNeeded(k, "e4", "")
 	if got4 == "" {
 		t.Fatal("4th fail: want escalation, got empty")
 	}
-	got5 := tr.EscalateIfNeeded(k, "e5")
+	got5 := tr.EscalateIfNeeded(k, "e5", "")
 	if got5 == "" {
 		t.Fatal("5th fail: want escalation, got empty")
 	}
@@ -90,14 +90,14 @@ func TestEscalation_ResetOnSuccess(t *testing.T) {
 	tr := NewSignatureFailureTracker(3)
 	k := keyWithSig("fs.read", ErrInvalidInput, "")
 
-	tr.EscalateIfNeeded(k, "e1")
-	tr.EscalateIfNeeded(k, "e2")
+	tr.EscalateIfNeeded(k, "e1", "")
+	tr.EscalateIfNeeded(k, "e2", "")
 	tr.MarkSuccess(k)
 	if got := tr.Count(k); got != 0 {
 		t.Fatalf("after MarkSuccess: want count=0, got %d", got)
 	}
 	// Next fail after MarkSuccess starts from 0 again.
-	if got := tr.EscalateIfNeeded(k, "e3"); got != "" {
+	if got := tr.EscalateIfNeeded(k, "e3", ""); got != "" {
 		t.Fatalf("1st fail after MarkSuccess: want empty, got %q", got)
 	}
 }
@@ -109,21 +109,21 @@ func TestEscalation_DifferentSignatures_Independent(t *testing.T) {
 	k2 := keyWithSig("fs.read", ErrTimeout, "")
 	k3 := keyWithSig("web.fetch", ErrInvalidInput, "")
 
-	tr.EscalateIfNeeded(k1, "e1")
-	tr.EscalateIfNeeded(k1, "e2")
+	tr.EscalateIfNeeded(k1, "e1", "")
+	tr.EscalateIfNeeded(k1, "e2", "")
 	// k1 is at 2, k2 and k3 should still be at 0.
 	if tr.Count(k1) != 2 || tr.Count(k2) != 0 || tr.Count(k3) != 0 {
 		t.Fatalf("counts after k1x2: k1=%d k2=%d k3=%d", tr.Count(k1), tr.Count(k2), tr.Count(k3))
 	}
 
 	// Push k1 to 3 → escalates. k2 and k3 remain independent.
-	if got := tr.EscalateIfNeeded(k1, "e3"); got == "" {
+	if got := tr.EscalateIfNeeded(k1, "e3", ""); got == "" {
 		t.Fatal("k1 should escalate at 3rd fail")
 	}
-	if got := tr.EscalateIfNeeded(k2, "timeout1"); got != "" {
+	if got := tr.EscalateIfNeeded(k2, "timeout1", ""); got != "" {
 		t.Fatalf("k2 1st fail: want empty, got %q", got)
 	}
-	if got := tr.EscalateIfNeeded(k3, "missing arg"); got != "" {
+	if got := tr.EscalateIfNeeded(k3, "missing arg", ""); got != "" {
 		t.Fatalf("k3 1st fail: want empty, got %q", got)
 	}
 
@@ -154,7 +154,7 @@ func TestEscalation_ThreadSafe(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < callsEach; i++ {
-				tr.EscalateIfNeeded(k, "concurrent")
+				tr.EscalateIfNeeded(k, "concurrent", "")
 			}
 		}()
 	}
@@ -196,9 +196,9 @@ func TestEscalation_ResetMethodClearsAll(t *testing.T) {
 	k2 := keyWithSig("web.fetch", ErrTimeout, "")
 	k3 := keyWithSig("shell.run", ErrTransient, "")
 
-	tr.EscalateIfNeeded(k1, "e1")
-	tr.EscalateIfNeeded(k2, "e2")
-	tr.EscalateIfNeeded(k3, "e3")
+	tr.EscalateIfNeeded(k1, "e1", "")
+	tr.EscalateIfNeeded(k2, "e2", "")
+	tr.EscalateIfNeeded(k3, "e3", "")
 	if tr.Count(k1) == 0 || tr.Count(k2) == 0 || tr.Count(k3) == 0 {
 		t.Fatalf("pre-reset counts should be > 0: %d %d %d",
 			tr.Count(k1), tr.Count(k2), tr.Count(k3))
@@ -211,7 +211,7 @@ func TestEscalation_ResetMethodClearsAll(t *testing.T) {
 			tr.Count(k1), tr.Count(k2), tr.Count(k3))
 	}
 	// After reset, next fail starts from 0 again.
-	if got := tr.EscalateIfNeeded(k1, "fresh"); got != "" {
+	if got := tr.EscalateIfNeeded(k1, "fresh", ""); got != "" {
 		t.Fatalf("post-reset 1st fail: want empty, got %q", got)
 	}
 }
@@ -241,5 +241,72 @@ func TestEscalationHint_MultilineShape(t *testing.T) {
 	// Also: fmt.Sprintf with %q wraps strings in quotes, so "t" appears.
 	if !strings.Contains(got, fmt.Sprintf("%q", "t")) {
 		t.Errorf("expected %q in output, got %q", fmt.Sprintf("%q", "t"), got)
+	}
+}// --- Phase 2 knowledge wire tests (tool-knowledge-...-20260718) ---
+
+// At threshold: knowledge body, when non-empty, is appended inside the
+// "=== Saved Knowledge ===" section so the LLM sees prior lessons for
+// the same tool together with the escalation directive.
+func TestEscalation_WithKnowledge_AppendsSection(t *testing.T) {
+	tr := NewSignatureFailureTracker(3)
+	k := keyWithSig("fs.read", ErrInvalidInput, "")
+
+	tr.EscalateIfNeeded(k, "missing arg 'path'", "")
+	tr.EscalateIfNeeded(k, "missing arg 'path'", "")
+	got := tr.EscalateIfNeeded(k, "missing arg 'path'", "use fs.stat first")
+	if got == "" {
+		t.Fatal("3rd fail: want escalation message, got empty")
+	}
+	if !strings.Contains(got, "=== Saved Knowledge ===") {
+		t.Errorf("escalation missing knowledge header: %q", got)
+	}
+	if !strings.Contains(got, "use fs.stat first") {
+		t.Errorf("escalation missing knowledge body: %q", got)
+	}
+	if !strings.Contains(got, "=== End Knowledge ===") {
+		t.Errorf("escalation missing knowledge footer: %q", got)
+	}
+}
+
+// Below threshold: knowledge is ignored (no escalation message produced
+// at all — caller stays on transientHint). Empty knowledge must NOT
+// leak the markers into a transient hint either.
+func TestEscalation_NoKnowledge_OmitsSection(t *testing.T) {
+	tr := NewSignatureFailureTracker(3)
+	k := keyWithSig("fs.read", ErrInvalidInput, "")
+
+	got := tr.EscalateIfNeeded(k, "missing arg 'path'", "")
+	if got != "" {
+		t.Errorf("1st fail: want empty below threshold, got %q", got)
+	}
+	if strings.Contains(got, "=== Saved Knowledge ===") {
+		t.Errorf("below-threshold output must not contain knowledge marker: %q", got)
+	}
+}
+
+// At threshold with empty knowledge: escalation still fires (markers
+// must NOT appear because knowledge == "" suppresses the section).
+func TestEscalation_BelowThreshold_IgnoresKnowledge(t *testing.T) {
+	tr := NewSignatureFailureTracker(3)
+	k := keyWithSig("fs.read", ErrInvalidInput, "")
+
+	// 1st call — below threshold; even with knowledge, no escalation.
+	got := tr.EscalateIfNeeded(k, "e", "lesson A")
+	if got != "" {
+		t.Errorf("below-threshold with knowledge: want empty, got %q", got)
+	}
+
+	// Drive to threshold with a different lesson — only THIS lesson
+	// appears in the knowledge section, not the prior one.
+	tr.EscalateIfNeeded(k, "e", "lesson A")
+	got = tr.EscalateIfNeeded(k, "e", "lesson B")
+	if got == "" {
+		t.Fatal("threshold reached: want escalation, got empty")
+	}
+	if !strings.Contains(got, "lesson B") {
+		t.Errorf("expected latest knowledge body in section; got %q", got)
+	}
+	if strings.Contains(got, "lesson A") {
+		t.Errorf("stale knowledge leaked into section; got %q", got)
 	}
 }

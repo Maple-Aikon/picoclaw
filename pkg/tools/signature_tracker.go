@@ -59,7 +59,11 @@ func NewSignatureFailureTracker(threshold int) *SignatureFailureTracker {
 // Counter increments on every call regardless of outcome; once a signature
 // has escalated it stays escalated for subsequent calls (until Reset or
 // MarkSuccess for that key).
-func (t *SignatureFailureTracker) EscalateIfNeeded(key SignatureKey, lastErr string) string {
+//
+// knowledge, if non-empty, is appended to the escalation message inside a
+// "=== Saved Knowledge ===" section so the LLM sees prior lessons learned
+// for this exact tool (Phase 2 wire — registry.go loads from ToolKnowledgeStore).
+func (t *SignatureFailureTracker) EscalateIfNeeded(key SignatureKey, lastErr, knowledge string) string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -73,7 +77,11 @@ func (t *SignatureFailureTracker) EscalateIfNeeded(key SignatureKey, lastErr str
 	c.lastSeen = time.Now()
 
 	if c.count >= t.threshold {
-		return EscalationHint(key.Tool, string(key.ErrKind), c.count, c.lastErr)
+		msg := EscalationHint(key.Tool, string(key.ErrKind), c.count, c.lastErr)
+		if knowledge != "" {
+			msg += "\n\n" + AppendKnowledgeSection(knowledge)
+		}
+		return msg
 	}
 	return ""
 }

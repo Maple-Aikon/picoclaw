@@ -130,6 +130,23 @@ func NewAgentInstance(
 		toolsRegistry.Register(tools.NewAppendFileTool(workspace, restrict, allowWritePaths))
 	}
 
+	// tool_knowledge — persistent "lessons learned" per tool (Phase 1+2+3,
+	// plan: tool-knowledge-experiential-memory-for-tool-failures-3-phases-20260718).
+	// Registered unconditionally: IsToolEnabled defaults to true for unknown
+	// tool names, and the tool itself is hidden (TTL > 0 only after first
+	// discovery) so it does not pollute every prompt. The store lives at
+	// {workspace}/memory/tool_knowledge/ and is plumbed into the registry
+	// so Phase 2 escalation messages can carry prior lessons and Phase 3
+	// can prompt the LLM to save new ones.
+	knowledgeStore, knowledgeErr := tools.NewToolKnowledgeStore(workspace, "")
+	if knowledgeErr != nil {
+		logger.WarnCF("agent", "Failed to initialize tool knowledge store; tool_knowledge disabled",
+			map[string]any{"error": knowledgeErr.Error()})
+	} else {
+		toolsRegistry.SetToolKnowledgeStore(knowledgeStore)
+		toolsRegistry.Register(tools.NewToolKnowledgeTool(knowledgeStore))
+	}
+
 	sessionsDir := filepath.Join(workspace, "sessions")
 	sessions := initSessionStore(sessionsDir)
 

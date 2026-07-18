@@ -30,11 +30,19 @@ type ToolRegistry struct {
 	cbMu           sync.Mutex // serializes lazy allocation of per-session breakers
 	sigTrackerMu   sync.Mutex // serializes lazy allocation of per-session SignatureFailureTrackers
 	version        atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
-	mediaStore     media.MediaStore
-	allowlist      map[string]struct{}
-	cfg            *config.ToolsConfig // optional; nil → fallback DefaultToolTimeoutSeconds
-	timeoutStats   *ToolTimeoutStats   // Q3 metric; nil-safe via lazy init
-	eventPublisher ToolEventPublisher  // optional bridge to runtime event bus (pkg/agent); nil = silent
+	mediaStore      media.MediaStore
+	allowlist       map[string]struct{}
+	cfg             *config.ToolsConfig // optional; nil → fallback DefaultToolTimeoutSeconds
+	timeoutStats    *ToolTimeoutStats   // Q3 metric; nil-safe via lazy init
+	eventPublisher  ToolEventPublisher  // optional bridge to runtime event bus (pkg/agent); nil = silent
+	knowledgeStore  *ToolKnowledgeStore // optional persistent "lessons learned" per tool; nil = feature off
+
+	// seenFirstSuccess tracks (channel:chatID:tool:errKind) keys for which we
+	// have already appended the "consider saving" soft prompt at the execution
+	// site. Per-registry because the prompt fires within a single turn and is
+	// reset by ResetSignatureFailures at the turn boundary (Phase 3).
+	seenFirstSuccessMu sync.Mutex
+	seenFirstSuccess   map[string]struct{}
 }
 
 // ToolBreakerEvent is the primitive metadata about a circuit breaker
@@ -75,16 +83,50 @@ func (r *ToolRegistry) SetEventPublisher(p ToolEventPublisher) {
 	r.eventPublisher = p
 }
 
+// SetToolKnowledgeStore attaches (or clears, with nil) the persistent
+// "lessons learned" store. When nil, the tool_knowledge tool Execute
+// returns an explanatory ErrDependencyDown rather than silently failing.
+//
+// Plan: tool-knowledge-experiential-memory-for-tool-failures-3-phases-20260718
+func (r *ToolRegistry) SetToolKnowledgeStore(s *ToolKnowledgeStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.knowledgeStore = s
+}
+
+// ToolKnowledgeStore returns the configured store, or nil when unconfigured.
+func (r *ToolRegistry) ToolKnowledgeStore() *ToolKnowledgeStore {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.knowledgeStore
+}
+
+// toolKnowledgeFor loads the lesson body for the given tool if a store is
+// configured. Returns "" when unconfigured or no knowledge exists. Used by
+// the signature-tracker escalation wire (Phase 2) so the registry does not
+// need to inline the nil-check at every callsite.
+//
+// Safe for concurrent use — delegates to ToolKnowledgeStore.LoadForEscalation
+// which holds the per-tool mutex internally.
+func (r *ToolRegistry) toolKnowledgeFor(tool string) string {
+	ks := r.ToolKnowledgeStore()
+	if ks == nil {
+		return ""
+	}
+	return ks.LoadForEscalation(tool)
+}
+
 type mediaStoreAware interface {
 	SetMediaStore(store media.MediaStore)
 }
 
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
-		tools:       make(map[string]*ToolEntry),
-		breakers:    make(map[string]*CircuitBreaker),
-		sigTrackers: make(map[string]*SignatureFailureTracker),
-		timeoutStats: newToolTimeoutStats(),
+		tools:            make(map[string]*ToolEntry),
+		breakers:         make(map[string]*CircuitBreaker),
+		sigTrackers:      make(map[string]*SignatureFailureTracker),
+		timeoutStats:     newToolTimeoutStats(),
+		seenFirstSuccess: make(map[string]struct{}),
 	}
 }
 
@@ -350,8 +392,12 @@ func (r *ToolRegistry) getOrCreateSigTracker(channel, chatID string) *SignatureF
 }
 
 // ResetSignatureFailures clears all failure counters in the per-session
-// SignatureFailureTracker. Called at turn boundaries so a new turn starts
-// with a fresh slate. No-op if no tracker exists yet for the session.
+// SignatureFailureTracker and the per-(session,tool) "first success seen"
+// flags surfaced by Phase 3 soft prompts. Called at turn boundaries so a
+// new turn starts with a fresh slate. No-op if no tracker exists yet for
+// the session.
+//
+// Plan: tool-knowledge-experiential-memory-for-tool-failures-3-phases-20260718
 func (r *ToolRegistry) ResetSignatureFailures(channel, chatID string) {
 	key := breakerKey(channel, chatID, "")
 
@@ -361,6 +407,68 @@ func (r *ToolRegistry) ResetSignatureFailures(channel, chatID string) {
 	if ok {
 		tr.Reset()
 	}
+
+	// Clear the seen-first-success flags for this session only. We keep
+	// the map small by filtering on the session prefix; entries for other
+	// sessions stay intact (registry is long-lived across turns).
+	sessionPrefix := channel + "|" + chatID + "|"
+	r.seenFirstSuccessMu.Lock()
+	for k := range r.seenFirstSuccess {
+		if strings.HasPrefix(k, sessionPrefix) {
+			delete(r.seenFirstSuccess, k)
+		}
+	}
+	r.seenFirstSuccessMu.Unlock()
+}
+
+// seenFirstSuccessKey builds the canonical key used by the Phase 3 dedup map.
+// Format: "<channel>|<chatID>|<tool>" — no normalization beyond pipe-safety
+// because channel/chatID come from internal callers (not the LLM) and tool
+// names are sanitized by the knowledge store path.
+func seenFirstSuccessKey(channel, chatID, tool string) string {
+	return channel + "|" + chatID + "|" + tool
+}
+
+// markFirstSuccess records that we have already appended SoftPromptFirstSuccess
+// for this (session, tool) in the current turn. Subsequent successes on the
+// same key are deduped until ResetSignatureFailures clears the entry.
+func (r *ToolRegistry) markFirstSuccess(channel, chatID, tool string) {
+	if channel == "" && chatID == "" {
+		return // anon namespace — soft prompt is meaningless without a session
+	}
+	r.seenFirstSuccessMu.Lock()
+	r.seenFirstSuccess[seenFirstSuccessKey(channel, chatID, tool)] = struct{}{}
+	r.seenFirstSuccessMu.Unlock()
+}
+
+// seenFirstSuccessBefore returns true iff markFirstSuccess has been called
+// for this (session, tool) since the last ResetSignatureFailures. The call
+// is the gating check that prevents SoftPromptFirstSuccess from spamming
+// the prompt on every successful call within the same turn.
+func (r *ToolRegistry) seenFirstSuccessBefore(channel, chatID, tool string) bool {
+	if channel == "" && chatID == "" {
+		return false // anon namespace — always eligible to receive the prompt
+	}
+	r.seenFirstSuccessMu.Lock()
+	_, ok := r.seenFirstSuccess[seenFirstSuccessKey(channel, chatID, tool)]
+	r.seenFirstSuccessMu.Unlock()
+	return ok
+}
+
+// sigTrackerFor returns the SignatureFailureTracker scoped to (channel,
+// chatID) or nil if none has been created yet. Use this when you need
+// read/reset access without forcing lazy allocation — e.g. the success
+// path that only wants to clear stale counters when a tracker already
+// exists (avoiding the alloc + map insert for tools that never failed).
+func (r *ToolRegistry) sigTrackerFor(channel, chatID string) *SignatureFailureTracker {
+	key := breakerKey(channel, chatID, "")
+	r.sigTrackerMu.Lock()
+	tr, ok := r.sigTrackers[key]
+	r.sigTrackerMu.Unlock()
+	if !ok {
+		return nil
+	}
+	return tr
 }
 
 // OpenToolInfo describes a tool whose circuit breaker is currently open.
@@ -506,7 +614,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 						Tool:    name,
 						ErrKind: res.ErrKind,
 						ArgSig:  "",
-					}, res.ForLLM); hint != "" {
+					}, res.ForLLM, r.toolKnowledgeFor(name)); hint != "" {
 						fb.Message = hint
 					}
 				}
@@ -658,8 +766,54 @@ func (r *ToolRegistry) ExecuteWithContext(
 					Tool:    name,
 					ErrKind: result.ErrKind,
 					ArgSig:  "",
-				}, result.ForLLM); hint != "" {
+				}, result.ForLLM, r.toolKnowledgeFor(name)); hint != "" {
 					fb.Message = hint
+				}
+			}
+		}
+
+		// Normalize FIRST so soft prompts append to a sanitized message.
+		// Phase 3 (tool-knowledge-...-20260718): previously normalize ran
+		// after the soft prompt block, but looksLikeLargeBase64Payload
+		// requires a very high base64-like ratio - appending SoftPromptFirstSuccess
+		// (~280 chars of plain English) before sanitize dropped the ratio
+		// below threshold and let huge base64 payloads leak through. Running
+		// normalize first keeps the ratio check honest.
+		result = normalizeToolResult(result, name, r.mediaStore, channel, chatID)
+
+		// Phase 3 — soft prompts (tool-knowledge-...-20260718):
+		//
+		//   - On success: clear the signature counter (so the next failure
+		//     starts fresh from count=1) and append SoftPromptFirstSuccess
+		//     at most once per (session, tool) per turn.
+		//   - On transient failure below threshold: when the count is in
+		//     [2, threshold-1] (i.e. the LLM has retried the same approach
+		//     once and is on the brink of escalation), append
+		//     SoftPromptRepeatedFailure to nudge it toward saving a lesson.
+		//     The threshold-reached case (fb.Message != "") is left alone —
+		//     the escalation template is already strong enough.
+		if fb.Status == StatusOK {
+			if tr := r.sigTrackerFor(channel, chatID); tr != nil {
+				tr.MarkSuccess(SignatureKey{
+					Tool:    name,
+					ErrKind: result.ErrKind,
+					ArgSig:  "",
+				})
+			}
+			if !r.seenFirstSuccessBefore(channel, chatID, name) {
+				r.markFirstSuccess(channel, chatID, name)
+				result.ForLLM += SoftPromptFirstSuccess
+			}
+		} else if fb.Status == StatusTransient && fb.Message == "" {
+			// Count was incremented inside EscalateIfNeeded; if it now
+			// sits in [2, threshold-1] the LLM has retried once but
+			// has not yet been told "stop". SoftPromptRepeatedFailure
+			// bridges that gap with a save-knowledge nudge.
+			if tr := r.sigTrackerFor(channel, chatID); tr != nil {
+				key := SignatureKey{Tool: name, ErrKind: result.ErrKind, ArgSig: ""}
+				c := tr.Count(key)
+				if c >= 2 && c < tr.Threshold() {
+					result.ForLLM += SoftPromptRepeatedFailure
 				}
 			}
 		}
@@ -689,7 +843,6 @@ func (r *ToolRegistry) ExecuteWithContext(
 		}
 	}
 
-	result = normalizeToolResult(result, name, r.mediaStore, channel, chatID)
 
 	duration := time.Since(start)
 
