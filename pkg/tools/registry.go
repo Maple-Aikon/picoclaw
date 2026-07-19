@@ -790,8 +790,10 @@ func (r *ToolRegistry) ExecuteWithContext(
 		//     [2, threshold-1] (i.e. the LLM has retried the same approach
 		//     once and is on the brink of escalation), append
 		//     SoftPromptRepeatedFailure to nudge it toward saving a lesson.
-		//     The threshold-reached case (fb.Message != "") is left alone —
-		//     the escalation template is already strong enough.
+		//     The StatusBlocked path (threshold reached) is handled by the
+		//     escalationHint appended further down — the breaker's directive
+		//     is intentionally stronger than our nudge, so no soft-prompt
+		//     is added there.
 		if fb.Status == StatusOK {
 			if tr := r.sigTrackerFor(channel, chatID); tr != nil {
 				tr.MarkSuccess(SignatureKey{
@@ -804,11 +806,17 @@ func (r *ToolRegistry) ExecuteWithContext(
 				r.markFirstSuccess(channel, chatID, name)
 				result.ForLLM += SoftPromptFirstSuccess
 			}
-		} else if fb.Status == StatusTransient && fb.Message == "" {
+		} else if fb.Status == StatusTransient {
 			// Count was incremented inside EscalateIfNeeded; if it now
 			// sits in [2, threshold-1] the LLM has retried once but
 			// has not yet been told "stop". SoftPromptRepeatedFailure
 			// bridges that gap with a save-knowledge nudge.
+			//
+			// Note: fb.Message is non-empty here (transientHint always
+			// sets it for StatusTransient), but that's the canonical hint
+			// — it composes with our nudge, not conflicts with it. The
+			// soft-prompt is appended first, then the canonical hint is
+			// appended after this block (line ~827).
 			if tr := r.sigTrackerFor(channel, chatID); tr != nil {
 				key := SignatureKey{Tool: name, ErrKind: result.ErrKind, ArgSig: ""}
 				c := tr.Count(key)
