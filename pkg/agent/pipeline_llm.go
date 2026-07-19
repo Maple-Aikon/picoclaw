@@ -913,7 +913,7 @@ func (p *Pipeline) proceedPastLLM(
 			exec.normalizedToolCalls,
 		)
 	}
-	return ControlContinue, nil
+	return ControlToolLoop, nil
 }
 
 func providerForFallbackCandidate(
