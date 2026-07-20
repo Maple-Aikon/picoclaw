@@ -140,6 +140,19 @@ func sortedKeys(values map[string]struct{}) []string {
 	return result
 }
 
+// resolveAgentToolAllowlist is the Phase-3 back-compat wrapper. Pre-Phase-3
+// callers that don't know about lifecycle phases get the original semantic:
+// just the frontmatter-declared base allowlist, no lifecycle union.
+//
+// The full per-phase resolution (base ∪ lifecycle tools) lives in
+// tool_allowlist_phase.go under resolveAgentToolAllowlistWithPhase.
+//
+// Backward-compat note: when this wrapper is called with empty/blank
+// frontmatter `tools` declarations, the result remains an empty
+// allowlist (preserving the pre-Phase-3 "explicit-empty-blocks-all" rule
+// in test TestResolveAgentToolAllowlistDistinguishesMissingAndEmptyToolsField).
+// Phase-3 callers that want lifecycle union semantics MUST call
+// resolveAgentToolAllowlistWithPhase directly so they own the policy.
 func resolveAgentToolAllowlist(definition AgentContextDefinition) []string {
 	if frontmatterParseFailed(definition) {
 		return []string{}
