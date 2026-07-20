@@ -809,6 +809,20 @@ func (p *Pipeline) proceedPastLLM(
 
 	// No-tool-call path: steering check and direct response
 	if len(exec.response.ToolCalls) == 0 || exec.gracefulTerminal {
+		// Phase 5: evaluate goal-lifecycle recovery triggers (empty text + text-only streak).
+		// Only fires when a goal is active. RecoveryAction determines whether we
+		// re-invoke LLM in the same iteration, force-complete, or archive.
+		if ts.hasGoal() && !exec.gracefulTerminal {
+			if action, msg := evaluateRecovery(ts, RecoveryContext{
+				Phase:        string(ts.currentGoalPhase()),
+				Iteration:    iteration,
+				TextEmpty:    exec.response.Content == "",
+				HasToolCalls: false,
+			}); action != RecoveryNone {
+				return p.applyRecoveryAction(ctx, turnCtx, ts, exec, iteration, action, msg)
+			}
+		}
+
 		responseContent := exec.response.Content
 		if responseContent == "" && reasoningContent != "" && ts.channel != "pico" {
 			// Only fall back to ReasoningContent when the channel has a
@@ -1172,4 +1186,83 @@ func (p *Pipeline) handleHookReplay(
 	// Coordinator bumps iteration normally (for Done: pre-LLM processing
 	// will run with the recovered response; for exhausted: clean re-attempt).
 	return ControlContinue, nil
+}
+
+// applyRecoveryAction handles the post-recovery-control flow for Phase 5
+// goal-lifecycle triggers. Per plan §5.3 + §8.3, recovery retries must NOT
+// bump the iteration counter — they reuse the same iteration slot. Caller
+// (CallLLM outer loop) is responsible for re-invoking the LLM without
+// incrementing iteration.
+//
+// For RecoveryRetrySameIteration and RecoveryForceComplete: we log the
+// recovery, then return ControlContinue so the coordinator re-enters
+// CallLLM with the same iteration value.
+//
+// For RecoveryArchiveGoal: we invoke finalizeGoalOnTurnEnd (Phase 6 hook;
+// stub for now → logs the archive signal and ends the turn). Caller stops.
+func (p *Pipeline) applyRecoveryAction(
+	ctx context.Context,
+	turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	iteration int,
+	action RecoveryAction,
+	msg string,
+) (Control, error) {
+	al := p.al
+	fields := map[string]any{
+		"agent_id":  ts.agent.ID,
+		"iteration": iteration,
+		"action":    actionName(action),
+	}
+	if msg != "" {
+		fields["message"] = msg
+	}
+	logger.InfoCF("agent", "Goal-lifecycle recovery action", fields)
+
+	switch action {
+	case RecoveryRetrySameIteration:
+		// Caller (CallLLM outer loop) sees ControlContinue + non-bumped iteration.
+		// The recovery message will be appended to messages via pendingRecoveryMessage
+		// and consumed at the start of the next iteration entry.
+		if msg != "" {
+			ts.pendingRecoveryMessage = msg
+		}
+		return ControlContinue, nil
+
+	case RecoveryForceComplete:
+		// Strip non-goal tools so LLM is forced toward complete_goal.
+		ts.forceCompleteNext = true
+		if msg != "" {
+			ts.pendingRecoveryMessage = msg
+		}
+		return ControlContinue, nil
+
+	case RecoveryArchiveGoal:
+		// Phase 6 hook: finalizeGoalOnTurnEnd will archive the goal and set
+		// status=aborted. Phase 5 stub: log + set flag so caller knows.
+		ts.goalArchiveRequested = true
+		_ = al
+		_ = turnCtx
+		_ = ctx
+		return ControlBreak, nil
+
+	default:
+		return ControlContinue, nil
+	}
+}
+
+// actionName returns a human-readable label for a RecoveryAction.
+func actionName(a RecoveryAction) string {
+	switch a {
+	case RecoveryNone:
+		return "none"
+	case RecoveryRetrySameIteration:
+		return "retry_same_iteration"
+	case RecoveryForceComplete:
+		return "force_complete"
+	case RecoveryArchiveGoal:
+		return "archive_goal"
+	}
+	return "unknown"
 }

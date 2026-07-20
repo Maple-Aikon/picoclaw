@@ -301,6 +301,22 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			toolCtrl := pipeline.ExecuteTools(ctx, turnCtx, ts, exec, iteration)
 			switch toolCtrl {
 			case ToolControlContinue:
+				// Phase 5 trigger #3: tool-execution error recovery.
+				// Evaluate recovery for the most recent tool result (if any).
+				// If archive is requested, break the turn with archive flag.
+				if ts.hasGoal() {
+					if archiveTool, archiveMsg := checkToolExecErrorRecovery(ts, exec); archiveTool != "" {
+						ts.goalArchiveRequested = true
+						logger.InfoCF("agent", "Goal archive triggered by tool-exec error retry exhaustion",
+							map[string]any{
+								"agent_id": ts.agent.ID,
+								"tool":     archiveTool,
+								"message":  archiveMsg,
+							})
+						turnStatus = TurnEndStatusError
+						return turnResult{}, fmt.Errorf("goal archive requested after tool-exec retries exhausted for %s", archiveTool)
+					}
+				}
 				// Re-read exec.messages since ExecuteTools may have updated it
 				// (added tool results/skipped messages) before returning ControlContinue
 				messages = exec.messages

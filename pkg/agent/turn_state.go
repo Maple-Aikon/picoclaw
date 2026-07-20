@@ -254,6 +254,22 @@ type turnState struct {
 	replayCount           int    // bumps per replay attempt (resets each iteration)
 	replayCap             int    // hard cap; defaults to agent.MaxReplayAttempts (or defaultRetryMaxAttempts)
 
+	// Goal-lifecycle retry counters (Phase 5): bound same-iteration recovery retries
+	// per-iteration so they don't consume iterationCap slots. Each field resets
+	// at iteration boundary. See plan §5.2 + §5.3 in
+	// picoclaw-goal-lifecycle-long-running-task-với-setviewcomplete-goal-goal-phase-tool-allowlist-20260719.
+	textOnlyStreak           int      // consecutive iterations with text-only LLM response (no tool calls). Goal Phase 1 only.
+	emptyResponseRecoverySent bool    // once per iteration: have we injected EMPTY_FINAL_RESPONSE_MESSAGE yet?
+	toolExecRecoveryAttempts map[string]int // per-tool execution error retry count (not signature). Same iteration.
+
+	// Goal-lifecycle recovery side-effects (Phase 5): set by applyRecoveryAction.
+	// Consumed at the start of the next iteration (ControlContinue path) to
+	// inject the recovery message into the conversation, strip non-goal tools,
+	// or finalize the goal. See plan §5.2 + §8.3.
+	pendingRecoveryMessage  string // message to inject before next LLM call (empty = no injection)
+	forceCompleteNext       bool   // if true, caller strips non-goal tools before next LLM call
+	goalArchiveRequested    bool   // if true, caller must call finalizeGoalOnTurnEnd (Phase 6 hook)
+
 	startedAt             time.Time
 	finalContent          string
 
