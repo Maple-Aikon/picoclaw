@@ -445,3 +445,53 @@ func TestToolShapes(t *testing.T) {
 		}
 	}
 }
+
+// TestSetGoalTool_RejectsInvalidNameChars guards Fix 4: schema says name must match
+// ^[A-Za-z0-9_-]{1,64}$. Anything else (path traversal, spaces, unicode) must reject.
+func TestSetGoalTool_RejectsInvalidNameChars(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-A", "agent-main")
+	cases := map[string]string{
+		"path_traversal":   "../../etc/passwd",
+		"space":            "has space",
+		"unicode":          "café",
+		"too_long":         strings.Repeat("a", 65),
+		"slash":            "foo/bar",
+		"colon":            "foo:bar",
+		"empty_after_trim": "   ",
+	}
+	for label, bad := range cases {
+		t.Run(label, func(t *testing.T) {
+			res := NewSetGoalTool(ws).Execute(ctx, map[string]any{
+				"name":             bad,
+				"objective":        "x",
+				"success_criteria": []string{"y"},
+			})
+			if !res.IsError {
+				t.Fatalf("expected error for name=%q, got OK", bad)
+			}
+			if res.ErrKind != toolshared.ErrInvalidInput {
+				t.Errorf("expected ErrInvalidInput, got %q", res.ErrKind)
+			}
+		})
+	}
+}
+
+// TestStringSliceArg_WhitespaceOnlyDrops: after Fix 1, ["" ] or ["   "] (whitespace-only)
+// passed as []any should be treated identically to []string — both drop whitespace-only
+// entries. Goal stored with all-whitespace criteria must be rejected (no real criterion).
+func TestStringSliceArg_WhitespaceOnlyDrops(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-A", "agent-main")
+	res := NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "ws",
+		"objective":        "x",
+		"success_criteria": []any{"", "   ", "\t\n"},
+	})
+	if !res.IsError {
+		t.Fatalf("expected error for all-whitespace criteria, got OK")
+	}
+	if res.ErrKind != toolshared.ErrInvalidInput {
+		t.Errorf("expected ErrInvalidInput, got %q", res.ErrKind)
+	}
+}

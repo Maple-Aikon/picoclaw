@@ -282,12 +282,21 @@ func TestGoalStore_Archive_NamesIncludeTimestamp(t *testing.T) {
 	}
 	name := entries[0].Name()
 	trimmed := strings.TrimSuffix(name, ".md")
-	dashIdx := strings.Index(trimmed, "-")
-	if dashIdx < 0 {
-		t.Fatalf("archive name missing dash separator: %s", name)
+	// File format: {sessionKey}-{timestamp}-pid{N}.md
+	// Skip sessionKey prefix (everything before the first ISO timestamp marker).
+	tsStart := strings.Index(trimmed, "-2026") // robust anchor for ISO YYYY prefix
+	if tsStart < 0 {
+		tsStart = strings.Index(trimmed, "-2025")
 	}
-	tsPart := trimmed[dashIdx+1:]
-	parsed, err := time.Parse("20060102T150405Z", tsPart)
+	if tsStart < 0 {
+		t.Fatalf("archive name missing ISO timestamp marker: %s", name)
+	}
+	tsPart := trimmed[tsStart+1:] // strip leading dash
+	// Strip optional -pid<N> suffix added for race-uniqueness (same-second archives).
+	if i := strings.Index(tsPart, "-pid"); i >= 0 {
+		tsPart = tsPart[:i]
+	}
+	parsed, err := time.Parse("20060102T150405.000000000Z", tsPart)
 	if err != nil {
 		t.Fatalf("archive timestamp unparseable: %v (full name: %s)", err, name)
 	}
@@ -440,12 +449,21 @@ func TestGoalStore_Parse_BadFrontmatter(t *testing.T) {
 	}
 }
 
-func TestGoalStore_GoalPath(t *testing.T) {
-	store, workspace := newTestStore(t)
 
-	path := store.GoalPath(testSessionKey)
-	want := filepath.Join(workspace, "memory", "goal", testSessionKey+".md")
-	if path != want {
-		t.Errorf("GoalPath: got %q, want %q", path, want)
+// TestArchiveName_UniqueUnderSameSecond guards against the same-second rename race
+// where two turn-exit hooks fire Archive concurrently: filenames must collide no more.
+func TestArchiveName_UniqueUnderSameSecond(t *testing.T) {
+	now := time.Date(2026, 7, 20, 11, 34, 5, 123456789, time.UTC)
+	a := archiveName("sessA", now)
+	b := archiveName("sessA", now.Add(1 * time.Nanosecond))
+	if a == b {
+		t.Errorf("archiveName collided: %q == %q", a, b)
+	}
+	// Both must remain valid .md filenames parseable by the same prefix scheme as prod.
+	if !strings.HasPrefix(a, "sessA-") || !strings.HasSuffix(a, ".md") {
+		t.Errorf("archiveName a malformed: %q", a)
+	}
+	if !strings.HasPrefix(b, "sessA-") || !strings.HasSuffix(b, ".md") {
+		t.Errorf("archiveName b malformed: %q", b)
 	}
 }

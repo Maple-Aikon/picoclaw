@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,8 +139,8 @@ func (s *Store) Archive(sessionKey string) error {
 }
 
 func archiveName(sessionKey string, at time.Time) string {
-	ts := at.UTC().Format("20060102T150405Z")
-	return sessionKey + "-" + ts + extGoal
+	ts := at.UTC().Format("20060102T150405.000000000Z")
+	return sessionKey + "-" + ts + "-pid" + strconv.Itoa(os.Getpid()) + extGoal
 }
 
 // ReadAny loads the most-recent goal for a session, preferring the active

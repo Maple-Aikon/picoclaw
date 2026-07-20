@@ -9,11 +9,16 @@ package goal
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
+
+// goalNameRe enforces the schema-declared ASCII / hyphen / underscore charset.
+// The pattern also caps length to 64 chars to keep archive filenames predictable.
+var goalNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // shared storeRefs are read from the per-turn context by every goal tool.
 // We pull them in once per Execute rather than at construction time because
@@ -122,6 +127,9 @@ func (t *SetGoalTool) Execute(ctx context.Context, args map[string]any) *toolsha
 
 	if name == "" {
 		return invalidInputForLLM("set_goal: 'name' is required and must be non-empty")
+	}
+	if !goalNameRe.MatchString(name) {
+		return invalidInputForLLM("set_goal: 'name' must match ^[A-Za-z0-9_-]{1,64}$ (ASCII letters, digits, hyphen, underscore; max 64 chars)")
 	}
 	if objective == "" {
 		return invalidInputForLLM("set_goal: 'objective' is required and must be non-empty")
@@ -540,9 +548,11 @@ func stringSliceArg(args map[string]any, key string) []string {
 	case []any:
 		out := make([]string, 0, len(s))
 		for _, e := range s {
-			if str, ok := e.(string); ok && strings.TrimSpace(str) != "" {
-				out = append(out, str)
-			} else if str, ok := e.(string); ok {
+			str, ok := e.(string)
+			if !ok {
+				continue
+			}
+			if str = strings.TrimSpace(str); str != "" {
 				out = append(out, str)
 			}
 		}
