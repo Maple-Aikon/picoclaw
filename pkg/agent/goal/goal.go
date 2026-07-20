@@ -57,6 +57,12 @@ type Goal struct {
 	CreatedAt   time.Time       `yaml:"created_at"`
 	UpdatedAt   time.Time       `yaml:"updated_at"`
 	Status      Status          `yaml:"status"`
+	// StatusSnapshot is the 1-2 sentence current task summary written by the
+	// goal_progress tool (Phase 7, plan §3.7). It replaces the legacy
+	// sessionTaskSummary in-memory field. Empty when the agent hasn't
+	// recorded progress yet. Updated via goal_progress tool calls or
+	// Store.UpdateStatusSnapshot(sessionKey, snapshot).
+	StatusSnapshot string `yaml:"status_snapshot,omitempty"`
 
 	// AbortedAt is set when Status transitions to StatusAborted (Phase 6
 	// Hook 1 — finalizeGoalOnTurnEnd). Nil when the goal completed normally

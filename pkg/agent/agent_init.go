@@ -75,6 +75,11 @@ func NewAgentLoop(
 		steering:          newSteeringQueue(parseSteeringMode(cfg.Agents.Defaults.SteeringMode)),
 		workerSem:         make(chan struct{}, workerPoolSize),
 		ownsRuntimeEvents: true,
+		// Phase 7 (plan §3.7 step 4) — flipped default true. The goal
+		// store is now the canonical cross-turn context source; the legacy
+		// sessionTaskSummary sync.Map is retained only as a graceful-
+		// degradation fallback when no goal has been set yet.
+		useGoalProgress: true,
 	}
 	for _, opt := range opts {
 		if opt != nil {

@@ -69,10 +69,21 @@ type AgentLoop struct {
 	activeTurnStates sync.Map
 	subTurnCounter   atomic.Int64
 
-	// sessionTaskSummary persists the last task summary per session for cross-turn
-	// recovery (e.g. when a turn fails and the user sends a short follow-up).
-	// Keyed by sessionKey (string), value (string) is the 1-2 sentence task summary.
-	sessionTaskSummary sync.Map
+	// useGoalProgress is a Phase 7 migration flag (plan §3.7 step 1).
+	// When false (default v1), cross-turn context recovery reads/writes the
+	// legacy sessionTaskSummary field. When true, it reads/writes the
+	// active goal file via view_goal/goal_progress. The flag flips to true
+	// at step 4, and the legacy field is removed at step 5.
+	useGoalProgress bool
+
+	// legacyTaskSummary is the Phase 7 step-5 retention of the v1-era
+	// in-memory cross-turn context map. It is consulted ONLY when
+	// useGoalProgress=true AND the goal store has no active goal for the
+	// session (the graceful-degradation path described in plan §3.7).
+	// Once goal files are universally populated, this map is empty and can
+	// be dropped in a future phase. Keep this sync.Map untyped (matches the
+	// pre-Phase-7 field shape so the legacy tests still type-check).
+	legacyTaskSummary sync.Map
 
 	turnSeq atomic.Uint64
 

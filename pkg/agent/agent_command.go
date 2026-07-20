@@ -375,8 +375,10 @@ func (al *AgentLoop) buildCommandsRuntime(
 			if opts == nil {
 				return fmt.Errorf("process options not available")
 			}
-			// Clear task summary for the session
-			al.sessionTaskSummary.Delete(opts.SessionKey)
+			// Clear task summary for the session (Phase 7 §3.7: routed
+			// through deleteTaskSummary — useGoalProgress=true keeps the
+			// goal file intact while clearing only the legacy map).
+			al.deleteTaskSummary(opts.SessionKey)
 
 			// Clear session continuity events file to prevent cross-session contamination
 			eventsPath := filepath.Join(agent.Workspace, "sessions", "session-continuity-events.jsonl")

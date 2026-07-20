@@ -172,9 +172,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		}
 
 		var prevTaskSummary string
-		if val, ok := p.al.sessionTaskSummary.Load(ts.sessionKey); ok {
-			prevTaskSummary = val.(string)
-		}
+		prevTaskSummary = p.al.loadTaskSummary(ts.sessionKey)
 
 		var lastAssistantMsg string
 		if !isErrorRecovery {
@@ -206,7 +204,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 				case exec.taskSummaryChan <- taskSummary:
 				default:
 				}
-				p.al.sessionTaskSummary.Store(ts.sessionKey, taskSummary)
+				p.al.storeTaskSummary(ts.sessionKey, taskSummary)
 			}
 		} else {
 			// Background extraction: context + cancel exposed via exec so steering
@@ -249,7 +247,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 					case exec.taskSummaryChan <- taskSummary:
 					default:
 					}
-					p.al.sessionTaskSummary.Store(ts.sessionKey, taskSummary)
+					p.al.storeTaskSummary(ts.sessionKey, taskSummary)
 				}
 			}()
 		}

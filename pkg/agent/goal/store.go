@@ -227,3 +227,51 @@ func (s *Store) List() ([]string, error) {
 	sort.Strings(keys)
 	return keys, nil
 }
+
+// ErrNoActiveGoal is returned by goal store operations when the session has
+// no active goal file. Callers can use errors.Is to distinguish this case and
+// fall back to legacy storage (Phase 7 plan §3.7 graceful degradation).
+var ErrNoActiveGoal = errors.New("no active goal for session")
+
+// UpdateStatusSnapshot updates the active goal's StatusSnapshot field. It is
+// the Phase 7 (plan §3.7) replacement for the legacy sessionTaskSummary
+// in-memory sync.Map — the goal store becomes the single source of truth for
+// cross-turn task context. When the session has no active goal, returns
+// ErrNoActiveGoal so callers can fall back to legacy storage. Idempotent:
+// calling it twice with the same snapshot is safe.
+func (s *Store) UpdateStatusSnapshot(sessionKey, snapshot string) error {
+	if sessionKey == "" {
+		return fmt.Errorf("empty session key")
+	}
+	g, err := s.Read(sessionKey)
+	if err != nil {
+		return err
+	}
+	if g == nil {
+		// No active goal — caller decides whether to fall back to legacy.
+		return ErrNoActiveGoal
+	}
+	if g.StatusSnapshot == snapshot {
+		return nil
+	}
+	g.StatusSnapshot = snapshot
+	g.UpdatedAt = time.Now().UTC()
+	return s.Write(sessionKey, g)
+}
+
+// LoadStatusSnapshot returns the active goal's StatusSnapshot, or "" when
+// no active goal exists. Callers use this instead of
+// al.sessionTaskSummary.Load() when useGoalProgress=true.
+func (s *Store) LoadStatusSnapshot(sessionKey string) (string, error) {
+	if sessionKey == "" {
+		return "", fmt.Errorf("empty session key")
+	}
+	g, err := s.Read(sessionKey)
+	if err != nil {
+		return "", err
+	}
+	if g == nil {
+		return "", nil
+	}
+	return g.StatusSnapshot, nil
+}

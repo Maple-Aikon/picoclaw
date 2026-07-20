@@ -186,10 +186,12 @@ func (p *Pipeline) CallLLM(
 	}
 
 	if shouldInject && taskSummary != "" {
-		// Track first injection
+		// Track first injection (Phase 7 §3.7: routed through
+		// al.storeTaskSummary so useGoalProgress=true writes into the
+		// goal store's StatusSnapshot field).
 		if exec.injectedTaskSummary == "" {
 			exec.injectedTaskSummary = taskSummary
-			al.sessionTaskSummary.Store(ts.sessionKey, taskSummary)
+			al.storeTaskSummary(ts.sessionKey, taskSummary)
 		}
 		// Mark reminder done for this segment
 		if shouldInjectMidpoint {

@@ -245,11 +245,10 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 					steeringText.WriteString(pm.Content)
 				}
 
-				// Get previous summary for fallback
-				prevSummary := ""
-				if prev, ok := al.sessionTaskSummary.Load(ts.sessionKey); ok {
-					prevSummary = prev.(string)
-				}
+				// Get previous summary for fallback (Phase 7 §3.7: routes
+				// through al.loadTaskSummary — goal store when
+				// useGoalProgress=true, otherwise the legacy sync.Map).
+				prevSummary := al.loadTaskSummary(ts.sessionKey)
 
 				extractCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
@@ -265,7 +264,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				)
 
 				if newSummary != "" {
-					al.sessionTaskSummary.Store(ts.sessionKey, newSummary)
+					al.storeTaskSummary(ts.sessionKey, newSummary)
 					exec.injectedTaskSummary = newSummary
 					exec.immediateReminderInjected = true
 					exec.reminderInjected = true
