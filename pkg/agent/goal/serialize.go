@@ -77,6 +77,14 @@ func Serialize(g *Goal) ([]byte, error) {
 	fmt.Fprintf(&buf, "**Status**: %s  \n", g.Status)
 	fmt.Fprintf(&buf, "**Created**: %s  \n", g.CreatedAt.Format(time.RFC3339))
 	fmt.Fprintf(&buf, "**Updated**: %s\n\n", g.UpdatedAt.Format(time.RFC3339))
+	if g.Status == StatusAborted {
+		if g.AbortedAt != nil {
+			fmt.Fprintf(&buf, "**Aborted at**: %s  \n", g.AbortedAt.Format(time.RFC3339))
+		}
+		if g.AbortReason != "" {
+			fmt.Fprintf(&buf, "**Abort reason**: %s  \n\n", g.AbortReason)
+		}
+	}
 	fmt.Fprintf(&buf, "## Objective\n\n%s\n\n", g.Description.Objective)
 	if len(g.Progress) > 0 {
 		buf.WriteString("## Progress log\n\n")

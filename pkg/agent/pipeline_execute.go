@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -589,6 +590,31 @@ toolLoop:
 			asyncCallback,
 		)
 		toolDuration := time.Since(toolStart)
+		// Phase 6 Hook 4 — tool panic safety net. If a tool implementation
+		// panics inside ExecuteWithContext, the framework's own defer/recover
+		// in tools/registry.go catches it and returns a synthetic error
+		// ToolResult, so this guard normally never fires. We keep the
+		// explicit recover() here as defense-in-depth so a future tool
+		// bypass (e.g. goroutine panic surfacing as ExecuteWithContext panic)
+		// is caught, logged, and the in-flight goal is force-archived.
+		// See plan §8.3 Hook 4.
+		defer func() {
+			if r := recover(); r != nil {
+				stack := debug.Stack()
+				logger.ErrorCF("agent", "Tool execution panic recovered",
+					map[string]any{
+						"agent_id": ts.agent.ID,
+						"tool":     toolName,
+						"panic":    fmt.Sprintf("%v", r),
+						"stack":    string(stack),
+					})
+				// Hook 1: archive in-flight goal so next session knows.
+				if err := ts.finalizeGoalOnTurnEnd(GoalAbortReasonToolPanic); err != nil {
+					logger.WarnCF("agent", "Hook 4: finalizeGoalOnTurnEnd failed",
+						map[string]any{"error": err.Error()})
+				}
+			}
+		}()
 
 		if ts.hardAbortRequested() {
 			exec.abortedByHardAbort = true

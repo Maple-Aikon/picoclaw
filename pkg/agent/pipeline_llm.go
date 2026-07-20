@@ -1099,6 +1099,18 @@ func (p *Pipeline) handleHookReplay(
 				"iteration": iteration,
 				"cap":       rc.MaxAttempts,
 			})
+			// Phase 6 Hook 3: BoundedRetry exhausted during LLM replay. If a
+			// goal is active, archive it via Hook 1 (finalizeGoalOnTurnEnd)
+			// with the bexhausted reason so the next session sees why this
+			// goal did not complete. Phase 5's goalArchiveRequested flag is
+			// also set so callers in the iteration loop can detect it.
+			if ts.hasGoal() {
+				ts.goalArchiveRequested = true
+				if err := ts.finalizeGoalOnTurnEnd(GoalAbortReasonBexhausted + ":hook_replay"); err != nil {
+					logger.WarnCF("agent", "Hook 3: finalizeGoalOnTurnEnd failed",
+						map[string]any{"error": err.Error()})
+				}
+			}
 		},
 	}, func(ctx context.Context, rc RetryContext) (RetryDecision, error) {
 		// Make the LLM call. callLLMCore uses exec.callMessages which already

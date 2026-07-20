@@ -888,9 +888,16 @@ func TestSpawnSubTurn_PanicRecovery(t *testing.T) {
 		t.Error("expected error from panic recovery")
 	}
 
-	// Result should be nil because panic occurred before runTurn could return
-	if result != nil {
-		t.Error("expected nil result after panic")
+	// Phase 6 Hook 2 (defer recover in runTurn) now catches the panic inside
+	// runTurn, archives the goal, and returns a clean (turnResult{}, error).
+	// The outer spawnSubTurn sees a normal err != nil from runTurn and produces
+	// an error-ToolResult (NOT nil) — this is the new contract: callers see
+	// structured error info via the ToolResult instead of an opaque nil.
+	if result == nil {
+		t.Error("expected non-nil error ToolResult (Phase 6 Hook 2 contract)")
+	}
+	if result != nil && result.Err == nil {
+		t.Error("expected ToolResult.Err to carry the recovered panic error")
 	}
 
 	time.Sleep(10 * time.Millisecond) // let event goroutine flush

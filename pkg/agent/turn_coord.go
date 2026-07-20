@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/routing"
 )
 
-func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipeline) (turnResult, error) {
+func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipeline) (result turnResult, err error) {
 	turnCtx, turnCancel := context.WithCancel(ctx)
 	defer turnCancel()
 	ts.setTurnCancel(turnCancel)
@@ -23,6 +24,38 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	// Inject turnState and AgentLoop into context so tools (e.g. spawn) can retrieve them.
 	turnCtx = withTurnState(turnCtx, ts)
 	turnCtx = WithAgentLoop(turnCtx, al)
+
+	// Phase 6 Hook 2 — defer recover() is the panic safety net for the entire
+	// turn. If any tool, LLM call, or iteration panics, we catch it, log the
+	// stack trace, finalize the in-flight goal (Hook 1), and convert the panic
+	// into a normal error return so callers (agent.go:575) see a clean failure
+	// instead of crashing the agent loop. Goal archive reason is runTurn_panic
+	// so the next view_goal call shows what happened.
+	//
+	// We use named return (result, err) so the recover handler can populate
+	// `err` and zero `result` — this preserves the existing call-site contract
+	// (spawnSubTurn's outer defer at subturn.go:456 still sees an error and
+	// treats the sub-turn as failed, NOT completed).
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			logger.ErrorCF("agent", "runTurn panic recovered",
+				map[string]any{
+					"agent_id": ts.agent.ID,
+					"session":  ts.sessionKey,
+					"panic":    fmt.Sprintf("%v", r),
+					"stack":    string(stack),
+				})
+			// Hook 1: archive in-flight goal so the next session knows.
+			if finalizeErr := ts.finalizeGoalOnTurnEnd(GoalAbortReasonRunTurnPanic); finalizeErr != nil {
+				logger.WarnCF("agent", "runTurn recover: finalizeGoalOnTurnEnd failed",
+					map[string]any{"error": finalizeErr.Error()})
+			}
+			// Preserve call-site contract: panic → err set + result cleared.
+			result = turnResult{}
+			err = fmt.Errorf("runTurn panicked: %v", r)
+		}
+	}()
 
 	al.registerActiveTurn(ts)
 	defer al.clearActiveTurn(ts)
@@ -366,7 +399,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		return al.abortTurn(ts)
 	}
 
-	result, err := pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
+	result, err = pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
 	if err != nil {
 		turnStatus = TurnEndStatusError
 	}

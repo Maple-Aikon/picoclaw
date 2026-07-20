@@ -20,6 +20,12 @@ const (
 	StatusActive    Status = "active"
 	StatusCompleted Status = "completed"
 	StatusArchived  Status = "archived"
+	// StatusAborted is set when a goal is force-archived because the agent
+	// loop could not recover (Phase 6 Hook 1 — finalizeGoalOnTurnEnd). An
+	// aborted goal is written back to disk with StatusAborted + AbortedAt +
+	// AbortReason so the next session can inspect why the prior attempt ended
+	// without explicit user-driven completion.
+	StatusAborted Status = "aborted"
 )
 
 // Description is the structured objective block set by set_goal (Phase 2).
@@ -51,6 +57,15 @@ type Goal struct {
 	CreatedAt   time.Time       `yaml:"created_at"`
 	UpdatedAt   time.Time       `yaml:"updated_at"`
 	Status      Status          `yaml:"status"`
+
+	// AbortedAt is set when Status transitions to StatusAborted (Phase 6
+	// Hook 1 — finalizeGoalOnTurnEnd). Nil when the goal completed normally
+	// or is still active.
+	AbortedAt *time.Time `yaml:"aborted_at,omitempty"`
+	// AbortReason captures the trigger source for an aborted goal — one of:
+	//   "runTurn_panic", "tool_panic", "bexhausted:<loop-name>", "user_abort"
+	// Empty string when status != StatusAborted.
+	AbortReason string `yaml:"abort_reason,omitempty"`
 }
 
 // ErrInvalidGoal is returned by Validate when required fields are missing.
