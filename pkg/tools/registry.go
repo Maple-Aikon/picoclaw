@@ -173,6 +173,24 @@ func (r *ToolRegistry) Register(tool Tool) {
 	r.registerLocked(tool, true)
 }
 
+// GetAllowlist returns a sorted copy of the current runtime allowlist.
+// A nil slice means "no allowlist filter active (all registered tools
+// pass through)". An empty-but-non-nil slice means "allow none".
+// Callers must not mutate the returned slice.
+func (r *ToolRegistry) GetAllowlist() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.allowlist == nil {
+		return nil
+	}
+	out := make([]string, 0, len(r.allowlist))
+	for name := range r.allowlist {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // RegisterHidden saves hidden tools (visible only via TTL)
 func (r *ToolRegistry) RegisterHidden(tool Tool) {
 	r.mu.Lock()

@@ -36,6 +36,18 @@ func (p *Pipeline) CallLLM(
 
 	// PreLLM: graceful terminal handling
 	exec.gracefulTerminal, _ = ts.gracefulInterruptRequested()
+
+	// Per-iteration goal-phase allowlist (Delivery Phase 4). Recompute
+	// the tool allowlist based on the session's current goal phase so
+	// the LLM only sees the lifecycle tools appropriate to where it is
+	// in the goal lifecycle (Lock → set_goal only; Open → base ∪
+	// view_goal + complete_goal; Checkpoint → base ∪ goal_progress +
+	// complete_goal). This call is cheap (one YAML-less store read) and
+	// idempotent — it must run on EVERY iteration so phase transitions
+	// (e.g. set_goal during a turn) are picked up on the very next
+	// iteration without an explicit transition hook.
+	ts.applyPhaseAllowlist(ts.currentGoalPhase())
+
 	exec.providerToolDefs = ts.agent.Tools.ToProviderDefs()
 	exec.providerToolDefs = filterToolsByTurnProfile(exec.providerToolDefs, ts.profile)
 
