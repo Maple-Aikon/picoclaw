@@ -142,6 +142,66 @@ func archiveName(sessionKey string, at time.Time) string {
 	return sessionKey + "-" + ts + extGoal
 }
 
+// ReadAny loads the most-recent goal for a session, preferring the active
+// file and falling back to the most-recent archive when none is active.
+//
+// Returns (nil, nil) when no goal exists in either location. Used by
+// complete_goal to detect the "already-completed" replay state — once the
+// active file has been moved to archive/, Read alone would report absence.
+func (s *Store) ReadAny(sessionKey string) (*Goal, error) {
+	if g, err := s.Read(sessionKey); err != nil {
+		return nil, err
+	} else if g != nil {
+		return g, nil
+	}
+	return s.readNewestArchive(sessionKey)
+}
+
+// readNewestArchive returns the most-recent archived goal for the session
+// key, or (nil, nil) if no archive exists.
+func (s *Store) readNewestArchive(sessionKey string) (*Goal, error) {
+	entries, err := os.ReadDir(s.archiveDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read archive dir %s: %w", s.archiveDir, err)
+	}
+	prefix := sessionKey + "-"
+	var newest os.FileInfo
+	var newestName string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, extGoal) {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if newest == nil || fi.ModTime().After(newest.ModTime()) {
+			newest = fi
+			newestName = name
+		}
+	}
+	if newestName == "" {
+		return nil, nil
+	}
+	path := filepath.Join(s.archiveDir, newestName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read archive %s: %w", path, err)
+	}
+	g, err := Parse(path, data)
+	if err != nil {
+		return nil, fmt.Errorf("parse archive %s: %w", path, err)
+	}
+	return g, nil
+}
+
 // List returns all session keys with an active goal, sorted alphabetically.
 // Archived keys (those in archive/ only) are not returned.
 func (s *Store) List() ([]string, error) {

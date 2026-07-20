@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/agent/goal"
 	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/audio/tts"
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -402,6 +403,16 @@ func registerSharedTools(
 			})
 			agent.Tools.Register(delegateTool)
 		}
+
+		// Goal-lifecycle tools (Phase 2). Always-registered like extend_turn:
+		// per-turn context (sessionKey, agentID) is resolved from each Execute
+		// call's ctx, not at construction time. The same 4 tool instances are
+		// shared across turns and agents; each Execute rebuilds the workspace
+		// root from the agent's own Workspace field.
+		agent.Tools.Register(goal.NewSetGoalTool(agent.Workspace))
+		agent.Tools.Register(goal.NewViewGoalTool(agent.Workspace))
+		agent.Tools.Register(goal.NewGoalProgressTool(agent.Workspace))
+		agent.Tools.Register(goal.NewCompleteGoalTool(agent.Workspace))
 
 		// extend_turn_iteration: always-registered tool for per-turn iteration
 		// extension. Per-turn gating happens via ts.extendEnabled (set when user
