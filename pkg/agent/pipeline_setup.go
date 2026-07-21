@@ -5,7 +5,6 @@ package agent
 import (
 	"context"
 	"strings"
-	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -150,277 +149,126 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	exec.tier = tier
 	exec.usedLight = tier == routing.TierLight
 
-	// Background task extraction for goal-drift prevention.
-	// Spawn a goroutine to extract a concise task summary from the user's initial
-	// message + conversation context. The result is delivered via taskSummaryChan
-	// and read by CallLLM at the threshold iteration (maxIter/2) for ephemeral
-	// steering injection. Failures are non-critical — the turn proceeds normally.
+	// Phase 8.2 — task context reminder is now sourced from the active
+	// goal's StatusSnapshot (written by set_goal / goal_progress, see
+	// pkg/agent/goal/snapshot.go). No LLM call is made here: the snapshot
+	// is the LLM's own self-evaluation from its last goal_progress entry,
+	// so what we inject into the next CallLLM is exactly what the agent
+	// last said it was working on.
 	//
-	// Error recovery: when the prior turn failed (last history message is a tool
-	// result with no subsequent assistant response), the extraction runs
-	// synchronously with the previous task summary as additional context so the
-	// LLM can pick up where it left off. The new summary is stored to
-	// sessionTaskSummary for cross-turn recovery.
+	// When no goal is set (or the snapshot is empty), we fall back to a
+	// raw-text concat of the user's message + the last assistant content,
+	// same as the legacy extractTaskWithFallback tier #4 used to do. The
+	// reminder is then re-evaluated by CallLLM at the threshold iteration
+	// and can also be refreshed by user steering in turn_coord.go.
 	if strings.TrimSpace(ts.userMessage) != "" {
-		isErrorRecovery := false
+		// Preserve isErrorRecovery semantics: when the prior turn ended with
+		// a tool result, mark the next CallLLM as recovery so it can inject
+		// the snapshot at iteration 1 instead of waiting for the threshold.
 		if len(history) > 0 && history[len(history)-1].Role == "tool" {
-			isErrorRecovery = true
 			exec.isErrorRecovery = true
 			logger.InfoCF("agent", "Error recovery mode detected: previous turn ended with tool result", map[string]any{
 				"session_key": ts.sessionKey,
 			})
 		}
 
-		var prevTaskSummary string
-		prevTaskSummary = p.al.loadTaskSummary(ts.sessionKey)
-
-		var lastAssistantMsg string
-		if !isErrorRecovery {
-			for i := len(history) - 1; i >= 0; i-- {
-				if history[i].Role == "assistant" {
-					lastAssistantMsg = history[i].Content
-					break
-				}
-			}
-		}
-
-		if isErrorRecovery {
-			// Blocking extraction: the result must be available before the
-			// iteration loop starts so CallLLM can inject it at iteration 1.
-			extractCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			taskSummary := extractTaskWithFallback(
-				extractCtx,
-				p.al,
-				ts,
-				exec,
-				prevTaskSummary,
-				summary,
-				lastAssistantMsg,
-				ts.userMessage,
-			)
-			if taskSummary != "" {
-				select {
-				case exec.taskSummaryChan <- taskSummary:
-				default:
-				}
-				p.al.storeTaskSummary(ts.sessionKey, taskSummary)
-			}
-		} else {
-			// Background extraction: context + cancel exposed via exec so steering
-			// in runTurn can cancel it mid-flight and prevent stale overwrites.
-			//
-			// NOTE: We deliberately use context.Background() here (not the request
-			// ctx) because the request ctx can be canceled mid-turn by steering
-			// injection. We want extraction to outlive a single turn's ctx so its
-			// summary is available to the NEXT turn's context assembly. The 60s
-			// timeout caps the worst-case wallclock, and exec.taskExtractCancel
-			// exposes the cancel func for steering to call explicitly when it
-			// wants to discard the result immediately.
-			extractCtx, taskCancel := context.WithTimeout(context.Background(), 60*time.Second)
-			exec.taskExtractCancel = taskCancel
-			go func() {
-				defer func() {
-					if r := recover(); r != nil {
-						logger.WarnCF("agent", "Task extraction panic",
-							map[string]any{"session_key": ts.sessionKey})
-					}
-				}()
-				defer taskCancel()
-
-				taskSummary := extractTaskWithFallback(
-					extractCtx,
-					p.al,
-					ts,
-					exec,
-					prevTaskSummary,
-					summary,
-					lastAssistantMsg,
-					ts.userMessage,
-				)
-				if extractCtx.Err() != nil {
-					// Context was canceled (steering) — discard results.
-					return
-				}
-				if taskSummary != "" {
-					select {
-					case exec.taskSummaryChan <- taskSummary:
-					default:
-					}
-					p.al.storeTaskSummary(ts.sessionKey, taskSummary)
-				}
-			}()
+		exec.injectedTaskSummary = p.al.loadTaskSummary(ts.sessionKey)
+		if exec.injectedTaskSummary == "" {
+			// Raw-text fallback (replaces extractTaskWithFallback tier #4).
+			lastAssistant := lastAssistantContent(history)
+			exec.injectedTaskSummary = buildRawTextReminder(ts.userMessage, lastAssistant)
 		}
 	}
 
 	return exec, nil
 }
 
-// extractTaskWithFallback attempts to produce a task summary using a fallback chain.
+// lastAssistantContent returns the Content of the most recent assistant
+// message in history, or "" when there is none. Extracted from the inline
+// loop that used to live in SetupTurn before Phase 8.2.
+func lastAssistantContent(history []providers.Message) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "assistant" {
+			return history[i].Content
+		}
+	}
+	return ""
+}
+
+// buildRawTextReminder assembles the fallback reminder text from the user's
+// message and the tail of the last assistant content. Capped at 280 chars so
+// the [Task context reminder] line stays compact.
+//
+// When one of the two halves is empty, we emit only the non-empty half
+// (no stray " | " separator) so a no-goal session whose history is also
+// empty produces a clean user-message-only reminder.
+func buildRawTextReminder(userMessage, lastAssistant string) string {
+	const maxTail = 200
+	tail := lastAssistant
+	if len(tail) > maxTail {
+		tail = tail[len(tail)-maxTail:]
+	}
+	user := strings.TrimSpace(userMessage)
+	tail = strings.TrimSpace(tail)
+	var out string
+	switch {
+	case user == "" && tail == "":
+		return ""
+	case user == "":
+		out = tail
+	case tail == "":
+		out = user
+	default:
+		out = user + " | " + tail
+	}
+	if len(out) > 280 {
+		out = out[len(out)-280:]
+	}
+	return out
+}
+
+// extractTaskWithFallback is DEPRECATED as of Phase 8.2 (2026-07-21).
+//
+// The function previously tried a 4-tier LLM fallback chain (task_model →
+// light_model → medium_model → active_model) to produce a 1-2 sentence
+// task summary that was injected into the LLM as "[Task context reminder]".
+// The mechanism was redundant with the goal_progress tool's self-evaluation
+// (Phase 2 of the goal lifecycle), so callers now read the reminder text
+// directly from the active goal's StatusSnapshot via al.loadTaskSummary.
+//
+// This stub is kept for one minor version (per plan §6 Q2 default) to
+// preserve the function signature for any external callers; the body is a
+// no-op that always returns "". Do not reintroduce the LLM call chain —
+// the reminder is now generated by the goal writer (see
+// pkg/agent/goal/snapshot.go::RenderGoalSnapshot). Full removal is
+// scheduled for Phase 9.
+//
+// Removal target: Phase 9. See plan
+// picoclaw-phase8-replace-task-summary-with-goal-checkpoint-20260721.md
+// §6 Q2.
 func extractTaskWithFallback(
-	ctx context.Context,
-	al *AgentLoop,
-	ts *turnState,
-	exec *turnExecution,
-	prevTaskSummary string,
-	convSummary string,
+	_ context.Context,
+	_ *AgentLoop,
+	_ *turnState,
+	_ *turnExecution,
+	_ string,
+	_ string,
 	lastAssistantMsg string,
 	userContent string,
 ) string {
-	cfg := al.cfg
-	logger.DebugCF("agent", "Starting task extraction fallback chain", nil)
-
-	// 1. Try summarize_task_model (30s timeout)
-	if cfg.Agents.Defaults.SummarizeTaskModel != "" {
-		logger.DebugCF("agent", "Task extraction: trying summarize_task_model", map[string]any{
-			"model": cfg.Agents.Defaults.SummarizeTaskModel,
-		})
-		// Look up the full ModelConfig from model_list (with api_key, api_base, etc.)
-		// instead of passing a bare Model{Model: "alias"} which fails provider init.
-		mc := lookupModelConfigByRef(cfg, cfg.Agents.Defaults.SummarizeTaskModel)
-		if mc == nil {
-			// No explicit config — fall back to constructing one with ensureProtocolModel
-			mc = &config.ModelConfig{Model: ensureProtocolModel(cfg.Agents.Defaults.SummarizeTaskModel)}
-		}
-		provider, model, err := al.providerFactory(mc)
-		if err == nil {
-			summarizeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			summary := extractTaskSummary(
-				summarizeCtx,
-				provider,
-				model,
-				prevTaskSummary,
-				convSummary,
-				lastAssistantMsg,
-				userContent,
-			)
-			cancel()
-			if summary != "" {
-				return summary
-			}
-			logger.DebugCF(
-				"agent",
-				"Task extraction: summarize_task_model returned empty, falling back to light_model",
-				map[string]any{
-					"model": cfg.Agents.Defaults.SummarizeTaskModel,
-				},
-			)
-		} else {
-			logger.WarnCF(
-				"agent",
-				"Task extraction: summarize_task_model provider init failed, falling back to light_model",
-				map[string]any{
-					"model": cfg.Agents.Defaults.SummarizeTaskModel,
-					"error": err.Error(),
-				},
-			)
-		}
-	} else {
-		logger.DebugCF("agent", "Task extraction: summarize_task_model not configured, skipping", nil)
-	}
-
-	// 2. Try light_model (10s timeout)
-	var lightModelName string
-	if cfg.Agents.Defaults.Routing != nil {
-		lightModelName = cfg.Agents.Defaults.Routing.LightModel
-	}
-	lightProvider, lightModel := resolveTaskModel(cfg, ts.agent.LightProvider, ts.agent.LightCandidates, lightModelName)
-	if lightProvider != nil && lightModel != "" {
-		logger.DebugCF("agent", "Task extraction: trying light_model", map[string]any{"model": lightModel})
-		lightCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		summary := extractTaskSummary(
-			lightCtx,
-			lightProvider,
-			lightModel,
-			prevTaskSummary,
-			convSummary,
-			lastAssistantMsg,
-			userContent,
-		)
-		cancel()
-		if summary != "" {
-			return summary
-		}
-		logger.DebugCF(
-			"agent",
-			"Task extraction: light_model returned empty, falling back to medium_model",
-			map[string]any{"model": lightModel},
-		)
-	} else {
-		logger.DebugCF("agent", "Task extraction: light_model not configured, falling back to medium_model", nil)
-	}
-
-	// 3. Try medium_model (10s timeout)
-	var mediumModelName string
-	if cfg.Agents.Defaults.Routing != nil {
-		mediumModelName = cfg.Agents.Defaults.Routing.MediumModel
-	}
-	mediumProvider, mediumModel := resolveTaskModel(
-		cfg,
-		ts.agent.MediumProvider,
-		ts.agent.MediumCandidates,
-		mediumModelName,
-	)
-	if mediumProvider != nil && mediumModel != "" {
-		logger.DebugCF("agent", "Task extraction: trying medium_model", map[string]any{"model": mediumModel})
-		mediumCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		summary := extractTaskSummary(
-			mediumCtx,
-			mediumProvider,
-			mediumModel,
-			prevTaskSummary,
-			convSummary,
-			lastAssistantMsg,
-			userContent,
-		)
-		cancel()
-		if summary != "" {
-			return summary
-		}
-		logger.DebugCF(
-			"agent",
-			"Task extraction: medium_model returned empty, falling back to active_model",
-			map[string]any{"model": mediumModel},
-		)
-	} else {
-		logger.DebugCF("agent", "Task extraction: medium_model not configured, falling back to active_model", nil)
-	}
-
-	// 4. Try active model (10s timeout)
-	logger.DebugCF(
-		"agent",
-		"Task extraction: trying active_model (medium_model failed)",
-		map[string]any{"model": exec.activeModel},
-	)
-	activeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	summary := extractTaskSummary(
-		activeCtx,
-		exec.activeProvider,
-		exec.activeModel,
-		prevTaskSummary,
-		convSummary,
-		lastAssistantMsg,
-		userContent,
-	)
-	cancel()
-	if summary == "" {
-		logger.WarnCF("agent", "Task extraction: all models failed, falling back to raw text concatenation", nil)
-		// Fallback: combine previous summary with the latest user message
-		if prevTaskSummary != "" && userContent != "" {
-			return prevTaskSummary + "\n---\n" + userContent
-		} else if prevTaskSummary != "" {
-			return prevTaskSummary
-		} else if userContent != "" {
-			return userContent
-		}
-		return ""
-	}
-	return summary
+	_ = lastAssistantMsg
+	_ = userContent
+	// Phase 8.2: stub — see DEPRECATED comment on extractTaskWithFallback above.
+	return ""
 }
 
 // resolveTaskModel resolves a task extraction model, preferring pre-resolved
 // provider/candidates (from routing initialization) and falling back to
 // direct config lookup when routing is disabled.
+//
+// DEPRECATED as of Phase 8.2 (2026-07-21): was only used by
+// extractTaskWithFallback which is now a no-op stub. Kept for one minor
+// version to avoid breaking external imports; full removal in Phase 9.
 func resolveTaskModel(
 	cfg *config.Config,
 	preResolvedProvider providers.LLMProvider,
@@ -458,8 +306,15 @@ func resolveTaskModel(
 // messages arrive mid-turn. The summary is used for goal-drift prevention.
 // prevTaskSummary and convSummary provide context; userContent is what to
 // extract the task from. Returns "" if extraction fails for any reason.
+//
+// DEPRECATED as of Phase 8.2 (2026-07-21): was only used by
+// extractTaskWithFallback which is now a no-op stub. Kept for one minor
+// version to avoid breaking external imports; full removal in Phase 9.
+// See plan picoclaw-phase8-replace-task-summary-with-goal-checkpoint-20260721.md
+// §6 Q2.
 func extractTaskSummary(
 	ctx context.Context,
+	al *AgentLoop,
 	provider providers.LLMProvider,
 	model string,
 	prevTaskSummary string,
@@ -514,9 +369,17 @@ func extractTaskSummary(
 	prompt += "<user_message>\n" + userContent + "\n</user_message>\n\n" +
 		"Output:"
 
-	resp, err := provider.Chat(ctx,
-		[]providers.Message{{Role: "user", Content: prompt}},
-		nil, model, map[string]any{"max_tokens": 256, "stop": []string{"\n\n"}})
+	resp, err := func() (*providers.LLMResponse, error) {
+		// Track this background provider request as an in-flight call so
+		// ReloadProviderAndConfig waits for it to complete before closing
+		// the underlying provider instance. Without this guard, the reload
+		// path can race ahead and close the provider mid-Chat.
+		al.activeRequestsInc()
+		defer al.activeRequestsDec()
+		return provider.Chat(ctx,
+			[]providers.Message{{Role: "user", Content: prompt}},
+			nil, model, map[string]any{"max_tokens": 256, "stop": []string{"\n\n"}})
+	}()
 	if err != nil {
 		logger.WarnCF("agent", "Task extraction failed", map[string]any{
 			"model": model,

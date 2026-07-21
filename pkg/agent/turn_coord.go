@@ -247,24 +247,16 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 
 				// Get previous summary for fallback (Phase 7 §3.7: routes
 				// through al.loadTaskSummary — goal store when
-				// useGoalProgress=true, otherwise the legacy sync.Map).
-				prevSummary := al.loadTaskSummary(ts.sessionKey)
-
-				extractCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-				defer cancel()
-				newSummary := extractTaskWithFallback(
-					extractCtx,
-					al,
-					ts,
-					exec,
-					prevSummary,
-					exec.summary,
-					"",
-					steeringText.String(),
-				)
+				// Phase 8.2 — task reminder is now sourced directly from the
+				// active goal's StatusSnapshot (no LLM call). If the snapshot
+				// is empty (no goal / cleared), we fall back to a raw-text
+				// concat of the steering message + last assistant tail.
+				newSummary := al.loadTaskSummary(ts.sessionKey)
+				if newSummary == "" {
+					newSummary = buildRawTextReminder(steeringText.String(), lastAssistantContent(exec.messages))
+				}
 
 				if newSummary != "" {
-					al.storeTaskSummary(ts.sessionKey, newSummary)
 					exec.injectedTaskSummary = newSummary
 					exec.immediateReminderInjected = true
 					exec.reminderInjected = true
