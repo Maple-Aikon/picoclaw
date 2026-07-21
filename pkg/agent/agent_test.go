@@ -33,6 +33,12 @@ import (
 
 // taskExtractionResponse returns a valid task-summary echo for background
 // extraction calls from pipeline_setup.go extractTaskWithFallback.
+//
+// DEPRECATED as of Phase 8.2 (2026-07-21): see isTaskExtractionCall above.
+// Returns the trimmed <user_message> contents (capped at 200 chars) as a
+// canned response, used only by test fixtures that route task-extraction
+// calls to a mock provider. Real extraction is now a no-op. Removal
+// target: Phase 9.
 func taskExtractionResponse(messages []providers.Message) string {
 	for _, m := range messages {
 		if m.Role == "user" && strings.Contains(m.Content, "<user_message>") {
@@ -52,6 +58,15 @@ func taskExtractionResponse(messages []providers.Message) string {
 // isTaskExtractionCall detects the background task-extraction LLM call from
 // pipeline_setup.go SetupTurn (extractTaskWithFallback).
 // Signature: 1 user message with <user_message> tag, 0 tools, max_tokens=256.
+//
+// DEPRECATED as of Phase 8.2 (2026-07-21): extractTaskWithFallback is now
+// a no-op stub (returns "" without making any LLM call), so this detector
+// will no longer match any real call. Test fixtures still keep the branch
+// for defensive reasons — if someone reintroduces a task-extraction path
+// before Phase 9 removes the deprecated fns entirely, the fixture will
+// resume returning canned responses. Removal target: Phase 9.
+// See plan picoclaw-phase8-replace-task-summary-with-goal-checkpoint-20260721.md
+// §6 Q2.
 func isTaskExtractionCall(messages []providers.Message, tools []providers.ToolDefinition, opts map[string]any) bool {
 	if len(messages) != 1 || len(tools) != 0 {
 		return false
@@ -2970,6 +2985,53 @@ func (m *picoInterleavedContentProvider) Chat(
 
 func (m *picoInterleavedContentProvider) GetDefaultModel() string {
 	return "pico-interleaved-content-model"
+}
+
+// picoInterleavedFeedbackProvider simulates a Pico LLM that returns an interim
+// assistant message AND a tool call whose ExtraContent.ToolFeedbackExplanation
+// mirrors the interim content exactly. This is the canonical "duplicate
+// explanation" pattern the dedupe logic in publishPicoToolCallInterim is
+// designed to suppress — the LLM has already told the user what it plans to do
+// via the tool's explanation, so re-publishing the same text as interim
+// content would echo it twice.
+type picoInterleavedFeedbackProvider struct {
+	calls int
+}
+
+func (m *picoInterleavedFeedbackProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	if isTaskExtractionCall(messages, tools, opts) {
+		return &providers.LLMResponse{Content: taskExtractionResponse(messages)}, nil
+	}
+	m.calls++
+	if m.calls == 1 {
+		return &providers.LLMResponse{
+			Content: "intermediate model text",
+			ToolCalls: []providers.ToolCall{{
+				ID:        "call_tool_limit_test",
+				Type:      "function",
+				Name:      "tool_limit_test_tool",
+				Arguments: map[string]any{"value": "x"},
+				ExtraContent: &providers.ExtraContent{
+					ToolFeedbackExplanation: "intermediate model text",
+				},
+			}},
+		}, nil
+	}
+
+	return &providers.LLMResponse{
+		Content:   "final model text",
+		ToolCalls: []providers.ToolCall{},
+	}, nil
+}
+
+func (m *picoInterleavedFeedbackProvider) GetDefaultModel() string {
+	return "pico-interleaved-feedback-model"
 }
 
 type picoDistinctToolCallContentProvider struct {
@@ -6552,7 +6614,7 @@ func TestRun_PicoToolFeedbackSuppressesDuplicateInterimAssistantContent(t *testi
 	}
 
 	msgBus := bus.NewMessageBus()
-	provider := &picoInterleavedContentProvider{}
+	provider := &picoInterleavedFeedbackProvider{}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
 	agent := al.GetRegistry().GetDefaultAgent()
