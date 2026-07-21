@@ -495,3 +495,105 @@ func TestStringSliceArg_WhitespaceOnlyDrops(t *testing.T) {
 		t.Errorf("expected ErrInvalidInput, got %q", res.ErrKind)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Phase 8.1 — StatusSnapshot wiring (set_goal / goal_progress / complete_goal)
+// ---------------------------------------------------------------------------
+
+func TestSetGoalTool_WritesInitialSnapshot(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-snap-1", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "Ship Phase 8.1",
+		"success_criteria": []string{"tests pass"},
+		"in_scope":         []string{"write snapshot renderer"},
+	})
+
+	g, err := NewStore(ws).Read("sess-snap-1")
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	want := "Goal: Ship Phase 8.1. Next: write snapshot renderer."
+	if g.StatusSnapshot != want {
+		t.Errorf("StatusSnapshot = %q, want %q", g.StatusSnapshot, want)
+	}
+}
+
+func TestGoalProgressTool_RefreshesSnapshot(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-snap-2", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "obj",
+		"success_criteria": []string{"c"},
+	})
+
+	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
+		"completed_steps": []string{"wrote code"},
+		"next_action":     "run tests",
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+
+	g, err := NewStore(ws).Read("sess-snap-2")
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if g.StatusSnapshot != "Goal: obj. Next: run tests." {
+		t.Errorf("post-progress snapshot wrong: %q", g.StatusSnapshot)
+	}
+}
+
+func TestGoalProgressTool_DriftAppendsPrefix(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-snap-3", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "ship",
+		"success_criteria": []string{"c"},
+	})
+
+	NewGoalProgressTool(ws).Execute(ctx, map[string]any{
+		"next_action":    "replan",
+		"drift_detected": true,
+	})
+
+	g, _ := NewStore(ws).Read("sess-snap-3")
+	if !strings.HasPrefix(g.StatusSnapshot, "⚠ DRIFT: ") {
+		t.Errorf("drift prefix missing on persisted snapshot: %q", g.StatusSnapshot)
+	}
+}
+
+func TestCompleteGoalTool_ClearsSnapshot(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-snap-4", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "obj",
+		"success_criteria": []string{"c"},
+	})
+	// Sanity: snapshot was set.
+	pre, _ := NewStore(ws).Read("sess-snap-4")
+	if pre.StatusSnapshot == "" {
+		t.Fatal("setup invariant: set_goal did not seed snapshot")
+	}
+
+	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{})
+	if res.IsError {
+		t.Fatalf("complete_goal errored: %v", res.Err)
+	}
+
+	// After archive, Read() returns ErrNoActiveGoal; snapshot is irrelevant
+	// (the file is in archive/) but we still want to confirm the in-flight
+	// goal file was zeroed before the move. Use ReadAny which doesn't error
+	// on archived.
+	g, err := NewStore(ws).ReadAny("sess-snap-4")
+	if err != nil {
+		t.Fatalf("ReadAny failed: %v", err)
+	}
+	if g.StatusSnapshot != "" {
+		t.Errorf("complete_goal should clear snapshot before archive, got %q", g.StatusSnapshot)
+	}
+}

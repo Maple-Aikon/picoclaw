@@ -175,6 +175,20 @@ func (t *SetGoalTool) Execute(ctx context.Context, args map[string]any) *toolsha
 			return tr
 		}
 	}
+	// Phase 8.1 — write the initial StatusSnapshot so cross-turn reminders
+	// have something to inject even before goal_progress fires. Snapshot is
+	// rendered from the goal's own state (Objective + first in_scope item);
+	// no LLM call involved. Write failures are non-fatal: the goal file
+	// itself is already persisted, and a missing snapshot just means the
+	// [Task context reminder] slot stays empty until goal_progress runs.
+	snapshot := RenderGoalSnapshot(g, nil)
+	if snapshot != "" {
+		if err := store.UpdateStatusSnapshot(sessionKey, snapshot); err != nil && err != ErrNoActiveGoal {
+			// Log but don't fail the tool — snapshot is best-effort.
+			// (callers may decide to wire a WarnCF here in 8.2 audit.)
+			_ = err
+		}
+	}
 
 	action := "created"
 	if replaced {
@@ -409,6 +423,16 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 			return tr
 		}
 	}
+	// Phase 8.1 — refresh StatusSnapshot from the latest entry so the next
+	// turn's [Task context reminder] reflects the LLM's most recent
+	// self-evaluation. This is the replacement for the LLM-driven
+	// extractTaskWithFallback path that previously ran once per turn.
+	snapshot := RenderGoalSnapshot(g, &entry)
+	if snapshot != "" {
+		if err := store.UpdateStatusSnapshot(sessionKey, snapshot); err != nil && err != ErrNoActiveGoal {
+			_ = err // best-effort; see SetGoalTool comment
+		}
+	}
 
 	idx := len(g.Progress)
 	summary := fmt.Sprintf("Logged progress entry #%d for session %s.\n\n%s",
@@ -479,6 +503,11 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, _ map[string]any) *tools
 	completedCount := len(g.Progress)
 	g.Status = StatusCompleted
 	g.UpdatedAt = time.Now().UTC()
+	// Phase 8.1 — clear StatusSnapshot before archiving so the reminder
+	// slot stays empty on the next turn (until a fresh set_goal is issued).
+	// Without this, an archived goal's stale snapshot would still surface in
+	// [Task context reminder] because Store.ReadAny still finds the file.
+	g.StatusSnapshot = ""
 	if err := store.Write(sessionKey, g); err != nil {
 		if tr := mapStoreError(err); tr != nil {
 			return tr

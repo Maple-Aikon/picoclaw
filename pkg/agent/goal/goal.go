@@ -57,11 +57,21 @@ type Goal struct {
 	CreatedAt   time.Time       `yaml:"created_at"`
 	UpdatedAt   time.Time       `yaml:"updated_at"`
 	Status      Status          `yaml:"status"`
-	// StatusSnapshot is the 1-2 sentence current task summary written by the
-	// goal_progress tool (Phase 7, plan §3.7). It replaces the legacy
-	// sessionTaskSummary in-memory field. Empty when the agent hasn't
-	// recorded progress yet. Updated via goal_progress tool calls or
-	// Store.UpdateStatusSnapshot(sessionKey, snapshot).
+	// StatusSnapshot is the 1-2 sentence current task summary. It is the
+	// single source of truth for cross-turn task context (Phase 7, plan
+	// §3.7) and replaces the legacy sessionTaskSummary in-memory field.
+	// Empty when no goal is set or the goal is archived/completed.
+	//
+	// Writers (Phase 8.1):
+	//   - SetGoalTool: writes "Goal: <objective>. Next: <first in_scope>."
+	//     after a fresh goal is persisted.
+	//   - GoalProgressTool: refreshes from the just-appended ProgressEntry
+	//     (next_action + first remaining_step, with ⚠ DRIFT: prefix when
+	//     entry.DriftDetected == true).
+	//   - CompleteGoalTool: clears the field to "" so the archived goal
+	//     does not leave stale reminder text behind.
+	// Rendering: pkg/agent/goal/snapshot.go::RenderGoalSnapshot.
+	// Storage: Store.UpdateStatusSnapshot / Store.LoadStatusSnapshot.
 	StatusSnapshot string `yaml:"status_snapshot,omitempty"`
 
 	// AbortedAt is set when Status transitions to StatusAborted (Phase 6
