@@ -445,6 +445,10 @@ type AgentDefaults struct {
 	SteeringMode              string             `json:"steering_mode,omitempty"          env:"PICOCLAW_AGENTS_DEFAULTS_STEERING_MODE"`      // "one-at-a-time" (default) or "all"
 	MaxParallelTurns          int                `json:"max_parallel_turns,omitempty"     env:"PICOCLAW_AGENTS_DEFAULTS_MAX_PARALLEL_TURNS"` // Max concurrent turns (0 or 1 = sequential)
 	SubTurn                   SubTurnConfig      `json:"subturn"                                                                                      envPrefix:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_"`
+	// SummarizeTaskModel is deprecated since Phase 8.2 and ignored at runtime.
+	// Task context is now stored in goal.StatusSnapshot (see pkg/agent/goal/snapshot.go).
+	// Setting this field triggers a boot-time WarnCF log but otherwise has no effect.
+	// Removal target: Phase 9 (next minor).
 	SummarizeTaskModel        string             `json:"summarize_task_model,omitempty"   env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_TASK_MODEL"`
 	ToolFeedback              ToolFeedbackConfig `json:"tool_feedback,omitempty"`
 	SplitOnMarker             bool               `json:"split_on_marker"                  env:"PICOCLAW_AGENTS_DEFAULTS_SPLIT_ON_MARKER"` // split messages on <|[SPLIT]|> marker
@@ -1543,6 +1547,8 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 	applySkillsRegistryEnvCompat(cfg)
+
+	applyLegacySummarizeTaskModelMigration(cfg)
 
 	if err = InitChannelList(cfg.Channels); err != nil {
 		return nil, err

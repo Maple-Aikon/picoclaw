@@ -261,7 +261,8 @@ func (s *Store) UpdateStatusSnapshot(sessionKey, snapshot string) error {
 
 // LoadStatusSnapshot returns the active goal's StatusSnapshot, or "" when
 // no active goal exists. Callers use this instead of
-// al.sessionTaskSummary.Load() when useGoalProgress=true.
+// al.sessionTaskSummary.Load() when the Phase 7 migration flag was enabled.
+	// Phase 8.3: legacy map removed — this is the sole read path.
 func (s *Store) LoadStatusSnapshot(sessionKey string) (string, error) {
 	if sessionKey == "" {
 		return "", fmt.Errorf("empty session key")

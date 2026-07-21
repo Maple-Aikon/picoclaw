@@ -4,6 +4,19 @@ import (
 	"github.com/sipeed/picoclaw/pkg/agent/goal"
 )
 
+// goalStore returns a fresh goal.Store rooted at the configured workspace, or
+// nil if no workspace is configured. The store is cheap to construct (just a
+// path wrapper) and stateless, so per-call construction is safe.
+func (al *AgentLoop) goalStore() *goal.Store {
+	ws := al.goalWorkspace()
+	if ws == "" {
+		return nil
+	}
+	return goal.NewStore(ws)
+}
+
+// goalWorkspace returns the on-disk workspace root for goal file storage.
+// Returns "" when no config is wired (test stubs).
 func (al *AgentLoop) goalWorkspace() string {
 	if al.cfg == nil {
 		return ""
@@ -11,25 +24,21 @@ func (al *AgentLoop) goalWorkspace() string {
 	return al.cfg.WorkspacePath()
 }
 
-// loadTaskSummary returns the 1-2 sentence task summary for a session.
-// When useGoalProgress=true, reads from the active goal's StatusSnapshot field
-// (Phase 7 plan §3.7 — single source of truth for cross-turn task context).
-// When useGoalProgress=false, falls back to the legacy in-memory
-// sessionTaskSummary sync.Map (Phases 1-5 default).
+// loadTaskSummary returns the cross-turn task context for the given session key.
+// Phase 8.3: single-path implementation — reads from goal.StatusSnapshot only.
+// Legacy in-memory sync.Map fallback was removed (was unreachable in production
+// since Phase 7 flipped useGoalProgress=true; Phase 8.2 confirmed via live tests).
+//
+// Returns "" when no goal is active OR no snapshot has been written yet.
+// Caller is responsible for raw-text fallback synthesis (see pipeline_setup.go).
 func (al *AgentLoop) loadTaskSummary(sessionKey string) string {
-	if !al.useGoalProgress {
-		if val, ok := al.legacyTaskSummary.Load(sessionKey); ok {
-			if s, ok := val.(string); ok {
-				return s
-			}
-		}
+	if sessionKey == "" {
 		return ""
 	}
-	ws := al.goalWorkspace()
-	if ws == "" {
+	store := al.goalStore()
+	if store == nil {
 		return ""
 	}
-	store := goal.NewStore(ws)
 	snapshot, err := store.LoadStatusSnapshot(sessionKey)
 	if err != nil {
 		return ""
@@ -37,41 +46,33 @@ func (al *AgentLoop) loadTaskSummary(sessionKey string) string {
 	return snapshot
 }
 
-// storeTaskSummary persists a 1-2 sentence task summary for a session.
-// Routes to either the active goal's StatusSnapshot (when useGoalProgress=true)
-// or the legacy sessionTaskSummary sync.Map. Errors from the goal store are
-// non-fatal — we silently keep using the in-memory path if the goal write
-// fails. The function is safe to call concurrently from goroutines.
+// storeTaskSummary persists the rendered cross-turn task context to the active
+// goal's StatusSnapshot. Phase 8.3: direct write via goal.Store.UpdateStatusSnapshot.
+// (Was a 3-call LLM extraction path in v1; Phase 8 collapsed it to a single
+// RenderGoalSnapshot call whose output is committed here.)
+//
+// No-op when sessionKey/summary empty, no workspace, or no active goal.
 func (al *AgentLoop) storeTaskSummary(sessionKey, summary string) {
-	if summary == "" {
+	if sessionKey == "" || summary == "" {
 		return
 	}
-	if !al.useGoalProgress {
-		al.legacyTaskSummary.Store(sessionKey, summary)
+	store := al.goalStore()
+	if store == nil {
 		return
 	}
-	ws := al.goalWorkspace()
-	if ws == "" {
-		return
-	}
-	store := goal.NewStore(ws)
-	if err := store.UpdateStatusSnapshot(sessionKey, summary); err != nil {
-		// ErrNoActiveGoal = graceful fallback to legacy map. Any other error
-		// (transient I/O, permission) also falls back so cross-turn recovery
-		// keeps working even if the disk write fails.
-		al.legacyTaskSummary.Store(sessionKey, summary)
-	}
+	_ = store.UpdateStatusSnapshot(sessionKey, summary)
 }
 
 // deleteTaskSummary clears any persisted task summary for a session, used by
-// /clear and /new commands. Idempotent — safe to call when no summary exists.
+// /clear and /new commands. Phase 8.3: no-op for goal-backed sessions because
+// the goal store is the system-of-record and /clear should not nuke goal state
+// (preserves the historical-record invariant from Phase 7 plan §3.7).
+// Idempotent and safe to call when no summary exists.
 func (al *AgentLoop) deleteTaskSummary(sessionKey string) {
-	if !al.useGoalProgress {
-		al.legacyTaskSummary.Delete(sessionKey)
+	if sessionKey == "" {
 		return
 	}
-	// For useGoalProgress=true we deliberately do NOT clear the goal file's
-	// StatusSnapshot — the goal store is the system-of-record; /clear should
-	// only affect legacy in-memory state. To fully reset a goal, callers use
-	// the complete_goal tool (Phase 4 ship).
+	// Intentional no-op — see comment above. Retained as a stable API for
+	// /clear and /new command handlers so future phases can decide whether
+	// to also archive the active goal.
 }

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,104 +21,91 @@ func newSnapshotConfig(ws string) *config.Config {
 	}
 }
 
-// TestLoadTaskSummary_LegacyMode_NoFlag verifies useGoalProgress=false
-// (Phase 1-5 default) continues to use the in-memory sync.Map. The flag
-// stays off through steps 2-3 so existing behavior is preserved unchanged.
-func TestLoadTaskSummary_LegacyMode_NoFlag(t *testing.T) {
-	al := &AgentLoop{useGoalProgress: false}
-	al.legacyTaskSummary.Store("sess-legacy", "alpha legacy")
+// ---------------------------------------------------------------------------
+// Phase 8.3 — single-path implementation (goal store as sole source of truth)
+// ---------------------------------------------------------------------------
 
-	got := al.loadTaskSummary("sess-legacy")
-	if got != "alpha legacy" {
-		t.Fatalf("loadTaskSummary legacy = %q, want %q", got, "alpha legacy")
-	}
-}
-
-// TestStoreTaskSummary_LegacyMode_NoFlag verifies the legacy store path
-// keeps working when useGoalProgress=false.
-func TestStoreTaskSummary_LegacyMode_NoFlag(t *testing.T) {
-	al := &AgentLoop{useGoalProgress: false}
-	al.storeTaskSummary("sess-legacy", "storing now")
-	got := al.loadTaskSummary("sess-legacy")
-	if got != "storing now" {
-		t.Fatalf("after store legacy = %q, want %q", got, "storing now")
-	}
-}
-
-// TestStoreTaskSummary_EmptySummary_NoOp verifies that an empty summary
-// must never get written to either store.
-func TestStoreTaskSummary_EmptySummary_NoOp(t *testing.T) {
-	al := &AgentLoop{useGoalProgress: false}
-	al.storeTaskSummary("sess-empty", "") // must not panic
-	if val, ok := al.legacyTaskSummary.Load("sess-empty"); ok {
-		t.Fatalf("empty summary was stored: %v", val)
-	}
-}
-
-// TestDeleteTaskSummary_LegacyMode_NoFlag verifies the legacy delete path.
-func TestDeleteTaskSummary_LegacyMode_NoFlag(t *testing.T) {
-	al := &AgentLoop{useGoalProgress: false}
-	al.legacyTaskSummary.Store("sess-del", "before")
-	al.deleteTaskSummary("sess-del")
-	if _, ok := al.legacyTaskSummary.Load("sess-del"); ok {
-		t.Fatalf("delete did not remove entry")
-	}
-	// Idempotent.
-	al.deleteTaskSummary("sess-del")
-}
-
-// TestLoadTaskSummary_LegacyMode_MissingKey_ReturnsEmpty verifies the
-// legacy map miss returns "" without an error.
-func TestLoadTaskSummary_LegacyMode_MissingKey_ReturnsEmpty(t *testing.T) {
-	al := &AgentLoop{useGoalProgress: false}
+// TestLoadTaskSummary_MissingKey_ReturnsEmpty verifies the no-op contract
+// when no goal has been written for the session key.
+func TestLoadTaskSummary_MissingKey_ReturnsEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	al := &AgentLoop{cfg: newSnapshotConfig(tmpDir)}
 	if got := al.loadTaskSummary("never-stored"); got != "" {
 		t.Fatalf("missing key = %q, want empty", got)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// useGoalProgress=true path (Phase 7 step 4 — goal store as source of truth)
-// ---------------------------------------------------------------------------
-
-// TestStoreTaskSummary_GoalMode_WritesToGoalStore verifies useGoalProgress=true
-// writes the summary into goal.StatusSnapshot (not the legacy map).
-func TestStoreTaskSummary_GoalMode_WritesToGoalStore(t *testing.T) {
-	tmpDir := t.TempDir()
-	al := &AgentLoop{
-		useGoalProgress: true,
-		cfg:            newSnapshotConfig(tmpDir),
+// TestLoadTaskSummary_NoCfg_ReturnsEmpty verifies graceful nil handling.
+func TestLoadTaskSummary_NoCfg_ReturnsEmpty(t *testing.T) {
+	al := &AgentLoop{cfg: nil}
+	if got := al.loadTaskSummary("anything"); got != "" {
+		t.Fatalf("nil cfg: got %q, want empty", got)
 	}
+}
+
+// TestLoadTaskSummary_EmptySessionKey_ReturnsEmpty verifies that an empty
+// session key never reaches the goal store.
+func TestLoadTaskSummary_EmptySessionKey_ReturnsEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	al := &AgentLoop{cfg: newSnapshotConfig(tmpDir)}
+	if got := al.loadTaskSummary(""); got != "" {
+		t.Fatalf("empty session key: got %q, want empty", got)
+	}
+}
+
+// TestStoreTaskSummary_EmptySummary_NoOp verifies that an empty summary
+// must never get written to the goal store.
+func TestStoreTaskSummary_EmptySummary_NoOp(t *testing.T) {
+	tmpDir := t.TempDir()
+	al := &AgentLoop{cfg: newSnapshotConfig(tmpDir)}
+	store := goal.NewStore(tmpDir)
+	if err := store.Write("sess-empty", &goal.Goal{
+		Name:        "phase83-empty",
+		Status:      goal.StatusActive,
+		Description: goal.Description{Objective: "t", SuccessCriteria: []string{"d"}},
+	}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	al.storeTaskSummary("sess-empty", "") // must not panic and must not write
+	snap, _ := store.LoadStatusSnapshot("sess-empty")
+	if snap != "" {
+		t.Fatalf("empty summary was stored: %q", snap)
+	}
+}
+
+// TestStoreTaskSummary_WritesToGoalStore verifies Phase 8.3 single-path:
+// the summary is written into goal.StatusSnapshot (no other side effects).
+func TestStoreTaskSummary_WritesToGoalStore(t *testing.T) {
+	tmpDir := t.TempDir()
+	al := &AgentLoop{cfg: newSnapshotConfig(tmpDir)}
 	store := goal.NewStore(tmpDir)
 	if err := store.Write("sess-goal", &goal.Goal{
-		Name:        "phase7-test",
+		Name:        "phase83-store",
 		Status:      goal.StatusActive,
 		Description: goal.Description{Objective: "test", SuccessCriteria: []string{"done"}},
 	}); err != nil {
 		t.Fatalf("setup goal: %v", err)
 	}
 
-	al.storeTaskSummary("sess-goal", "phase 7 in flight")
+	al.storeTaskSummary("sess-goal", "phase 8.3 in flight")
 
 	snap, err := store.LoadStatusSnapshot("sess-goal")
 	if err != nil {
 		t.Fatalf("LoadStatusSnapshot: %v", err)
 	}
-	if snap != "phase 7 in flight" {
-		t.Fatalf("goal.StatusSnapshot = %q, want %q", snap, "phase 7 in flight")
+	if snap != "phase 8.3 in flight" {
+		t.Fatalf("goal.StatusSnapshot = %q, want %q", snap, "phase 8.3 in flight")
 	}
 }
 
-// TestLoadTaskSummary_GoalMode_ReadsFromGoalStore verifies useGoalProgress=true
-// reads the summary from the goal store, not the legacy sync.Map.
-func TestLoadTaskSummary_GoalMode_ReadsFromGoalStore(t *testing.T) {
+// TestLoadTaskSummary_ReadsFromGoalStore verifies Phase 8.3 single-path:
+// load reads from goal.StatusSnapshot.
+func TestLoadTaskSummary_ReadsFromGoalStore(t *testing.T) {
 	tmpDir := t.TempDir()
-	al := &AgentLoop{
-		useGoalProgress: true,
-		cfg:            newSnapshotConfig(tmpDir),
-	}
+	al := &AgentLoop{cfg: newSnapshotConfig(tmpDir)}
 	store := goal.NewStore(tmpDir)
 	if err := store.Write("sess-load-goal", &goal.Goal{
-		Name:        "phase7-load-test",
+		Name:        "phase83-load",
 		Status:      goal.StatusActive,
 		Description: goal.Description{Objective: "t", SuccessCriteria: []string{"d"}},
 	}); err != nil {
@@ -132,62 +118,44 @@ func TestLoadTaskSummary_GoalMode_ReadsFromGoalStore(t *testing.T) {
 	if got := al.loadTaskSummary("sess-load-goal"); got != "snap from disk" {
 		t.Fatalf("load from goal store = %q, want %q", got, "snap from disk")
 	}
-
-	// Legacy map must remain ignored: even if it has a stale value, the
-	// goal mode reads from disk only.
-	al.legacyTaskSummary.Store("sess-load-goal", "stale map value")
-	if got := al.loadTaskSummary("sess-load-goal"); got != "snap from disk" {
-		t.Fatalf("goal mode leaked from legacy map: got %q, want %q", got, "snap from disk")
-	}
 }
 
-// TestLoadTaskSummary_GoalMode_NoActiveGoal_ReturnsEmpty verifies the no-op
-// contract when set_goal hasn't been called.
-func TestLoadTaskSummary_GoalMode_NoActiveGoal_ReturnsEmpty(t *testing.T) {
+// TestLoadTaskSummary_NoActiveGoal_ReturnsEmpty verifies the no-op contract
+// when set_goal hasn't been called for the session.
+func TestLoadTaskSummary_NoActiveGoal_ReturnsEmpty(t *testing.T) {
 	tmpDir := t.TempDir()
-	al := &AgentLoop{
-		useGoalProgress: true,
-		cfg:            newSnapshotConfig(tmpDir),
-	}
+	al := &AgentLoop{cfg: newSnapshotConfig(tmpDir)}
 	if got := al.loadTaskSummary("nonexistent-session"); got != "" {
 		t.Fatalf("no active goal: got %q, want empty", got)
 	}
 }
 
-// TestStoreTaskSummary_GoalMode_NoActiveGoal_StillPersistsLegacy verifies
-// that when the goal store has no goal for this session (pre-set_goal),
-// storeTaskSummary still preserves the cross-turn context by writing to
-// the legacy map. This is the Phase 7 graceful-degradation contract:
-// set_goal is not a precondition for cross-turn recovery.
-func TestStoreTaskSummary_GoalMode_NoActiveGoal_StillPersistsLegacy(t *testing.T) {
+// TestStoreTaskSummary_NoActiveGoal_NoOp verifies Phase 8.3 — when no goal
+// is set, storeTaskSummary is a silent no-op. (Phase 7 used to fall back to
+// legacy map; Phase 8.3 removed that path. Cross-turn context recovery is
+// only available once set_goal has been called.)
+func TestStoreTaskSummary_NoActiveGoal_NoOp(t *testing.T) {
 	tmpDir := t.TempDir()
-	al := &AgentLoop{
-		useGoalProgress: true,
-		cfg:            newSnapshotConfig(tmpDir),
-	}
-	// No goal has been written yet for this session.
-	al.storeTaskSummary("nonexistent-session", "still need to track this")
-
-	// Verify the legacy map absorbed the summary (fallback path).
-	if val, ok := al.legacyTaskSummary.Load("nonexistent-session"); !ok {
-		t.Fatalf("legacy fallback did not happen")
-	} else if val != "still need to track this" {
-		t.Fatalf("legacy fallback = %q, want %q", val, "still need to track this")
+	al := &AgentLoop{cfg: newSnapshotConfig(tmpDir)}
+	// No goal has been written yet — must not panic and must not error.
+	al.storeTaskSummary("nonexistent-session", "no goal here")
+	// Verify no file was created on disk.
+	store := goal.NewStore(tmpDir)
+	snap, _ := store.LoadStatusSnapshot("nonexistent-session")
+	if snap != "" {
+		t.Fatalf("no-goal store leaked to disk: %q", snap)
 	}
 }
 
-// TestDeleteTaskSummary_GoalMode_DoesNotClearGoalFile verifies that even in
-// goal mode, /clear does NOT clear the goal file (Phase 4 established the
-// goal file as the system of record).
-func TestDeleteTaskSummary_GoalMode_DoesNotClearGoalFile(t *testing.T) {
+// TestDeleteTaskSummary_PreservesGoalFile verifies the Phase 7+ contract
+// (preserved in 8.3): /clear does NOT clear the goal file's StatusSnapshot
+// because the goal store is the system of record.
+func TestDeleteTaskSummary_PreservesGoalFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	al := &AgentLoop{
-		useGoalProgress: true,
-		cfg:            newSnapshotConfig(tmpDir),
-	}
+	al := &AgentLoop{cfg: newSnapshotConfig(tmpDir)}
 	store := goal.NewStore(tmpDir)
 	if err := store.Write("sess-clear", &goal.Goal{
-		Name:        "phase7-clear-test",
+		Name:        "phase83-clear",
 		Status:      goal.StatusActive,
 		Description: goal.Description{Objective: "t", SuccessCriteria: []string{"d"}},
 	}); err != nil {
@@ -204,19 +172,27 @@ func TestDeleteTaskSummary_GoalMode_DoesNotClearGoalFile(t *testing.T) {
 	}
 }
 
-// TestPhase7_CrossTurnContextRecovery_GoalMode is the Phase 7 (plan §3.7)
-// success criterion: turn 1 stores a summary, turn 2 reads it via a fresh
-// agent loop instance — demonstrating the goal file is the single source
-// of truth for cross-turn context.
-func TestPhase7_CrossTurnContextRecovery_GoalMode(t *testing.T) {
+// TestDeleteTaskSummary_IdempotentNoCfg verifies the no-op contract holds
+// even with no config wired.
+func TestDeleteTaskSummary_IdempotentNoCfg(t *testing.T) {
+	al := &AgentLoop{cfg: nil}
+	al.deleteTaskSummary("anything") // must not panic
+	al.deleteTaskSummary("")         // empty key must also not panic
+}
+
+// TestCrossTurnContextRecovery_GoalModeOnly is the Phase 8.3 success
+// criterion: turn 1 stores a summary, turn 2 reads it via a fresh agent
+// loop instance — demonstrating the goal file is the single source of
+// truth for cross-turn context.
+func TestCrossTurnContextRecovery_GoalModeOnly(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := newSnapshotConfig(tmpDir)
-	alTurn1 := &AgentLoop{useGoalProgress: true, cfg: cfg}
-	alTurn2 := &AgentLoop{useGoalProgress: true, cfg: cfg}
+	alTurn1 := &AgentLoop{cfg: cfg}
+	alTurn2 := &AgentLoop{cfg: cfg}
 
 	store := goal.NewStore(tmpDir)
 	if err := store.Write("sess-cross-turn", &goal.Goal{
-		Name:        "phase7-cross",
+		Name:        "phase83-cross",
 		Status:      goal.StatusActive,
 		Description: goal.Description{Objective: "multi-turn", SuccessCriteria: []string{"recovered"}},
 	}); err != nil {
@@ -237,7 +213,7 @@ func TestPhase7_CrossTurnContextRecovery_GoalMode(t *testing.T) {
 
 // TestGoalWorkspace_NoCfg_ReturnsEmpty verifies graceful nil handling.
 func TestGoalWorkspace_NoCfg_ReturnsEmpty(t *testing.T) {
-	al := &AgentLoop{useGoalProgress: true, cfg: nil}
+	al := &AgentLoop{cfg: nil}
 	if got := al.goalWorkspace(); got != "" {
 		t.Fatalf("nil cfg: got %q, want empty", got)
 	}
@@ -275,7 +251,6 @@ func TestBuildRawTextReminder_Simple(t *testing.T) {
 func TestBuildRawTextReminder_TailCap(t *testing.T) {
 	tail := strings.Repeat("Z", 500)
 	got := buildRawTextReminder("hi", tail)
-	// user part + " | " + last 200 chars of tail
 	want := "hi | " + strings.Repeat("Z", 200)
 	if got != want {
 		t.Errorf("got len=%d, want len=%d\ngot=%q\nwant=%q", len(got), len(want), got, want)
@@ -340,70 +315,3 @@ func TestLastAssistantContent_None(t *testing.T) {
 		t.Errorf("got %q, want empty", got)
 	}
 }
-
-// TestExtractTaskWithFallback_IsNoOp verifies the Phase 8.2 stub: the
-// function must always return "" regardless of its arguments. This is the
-// hard contract that enables the call-site removal — the reminder text
-// now comes from al.loadTaskSummary, not from this fn.
-func TestExtractTaskWithFallback_IsNoOp(t *testing.T) {
-	ctx := context.Background()
-	al := &AgentLoop{}
-	ts := &turnState{}
-	exec := &turnExecution{}
-	// Pass realistic args. Output must be "" regardless.
-	got := extractTaskWithFallback(
-		ctx, al, ts, exec,
-		"prev summary",
-		"conv summary",
-		"last assistant",
-		"user content",
-	)
-	if got != "" {
-		t.Errorf("DEPRECATED stub must return empty, got %q", got)
-	}
-}
-
-// TestSetupTurn_PreFillsSnapshotFromGoalStore is the load-bearing test
-// for Phase 8.2: after SetupTurn, exec.injectedTaskSummary must equal the
-// goal.StatusSnapshot text, NOT an LLM-generated summary.
-//
-// Wiring coverage: the underlying loadTaskSummary → goal-store path is
-// already covered by TestLoadTaskSummary_GoalMode_ReadsFromGoalStore
-// (above). The SetupTurn-level wiring is exercised by the full
-// pkg/agent/ test suite via real Provider + ContextManager setups. A
-// dedicated unit test here would require a working ContextManager stub
-// which would duplicate that fixture, so we keep the lower-level tests
-// as the Phase 8.2 read-side contract and rely on the existing suite
-// for end-to-end coverage.
-//
-// If the snapshot path breaks at the SetupTurn level, the pre-Phase-8.2
-// tests (e.g. TestPipeline_SetupTurn_BasicInitialization,
-// TestPipeline_SetupTurn_ModelNameDoesNotUseFallbackAliasBeforeFallback)
-// will fail with a missing/empty injectedTaskSummary — that's the
-// canary.
-
-// TestSetupTurn_EmptySnapshotFallsToRawText — see contract note on
-// TestSetupTurn_PreFillsSnapshotFromGoalStore above. The end-to-end
-// SetupTurn path is covered by the existing pkg/agent/ suite. This file
-// keeps the helper-level tests (buildRawTextReminder, lastAssistantContent)
-// as the Phase 8.2 read-side contract.
-
-
-
-// TestSetupTurn_NoBackgroundExtraction — see contract note above.
-// SetupTurn no longer spawns a background extraction goroutine; this is
-// the load-bearing property of Phase 8.2. The implementation lives at
-// pipeline_setup.go SetupTurn. We do not re-verify it at the unit-test
-// level because that would require a working ContextManager fixture;
-// instead, the post-Phase-8.2 test suite (and the absence of test
-// failures on extraction-related paths) serves as the regression net.
-
-
-
-// TestSetupTurn_ErrorRecoveryStillPrefills — see contract note above.
-// The error-recovery branch in SetupTurn is unchanged in 8.2: when
-// history ends with a tool result, exec.isErrorRecovery is set so the
-// snapshot is read at iteration 1 instead of at the threshold. The
-// end-to-end behavior is covered by the existing pkg/agent/ suite.
-
-

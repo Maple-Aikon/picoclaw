@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Phase 8.3: Deprecate LLM-driven task summary extraction (post-replacement cleanup)**
+  - Removed `legacyTaskSummary sync.Map` field from `pkg/agent/agent.go` and the `useGoalProgress` migration flag. Phase 7's graceful-degradation path is no longer reachable in production (`useGoalProgress=true` since 2026-07-21, confirmed unreachable on live binary).
+  - Simplified `pkg/agent/turn_state_snapshot.go` to single-path implementation: all cross-turn context reads/writes go through `goal.Store.UpdateStatusSnapshot` / `LoadStatusSnapshot`. The two-tier flag dispatch (`!useGoalProgress` vs `useGoalProgress`) is gone.
+  - `extractTaskWithFallback` and `extractTaskSummary` remain as no-op stubs for one minor (Q2 default from plan §8.3) — full removal targeted for Phase 9.
+  - `agents.defaults.summarize_task_model` config field is now deprecated. Setting it triggers a boot-time `WarnCF` log (`reason="Phase 8.2 replaced LLM-based task summary extraction with goal.StatusSnapshot"`) but the field is otherwise ignored. Removal target: Phase 9.
+
+### Tests
+
+- `pkg/agent/turn_state_snapshot_test.go` rewritten — 15 single-path tests covering goal-store read/write/preserve contracts and raw-text fallback synthesis. Legacy-mode tests deleted.
+- `pkg/config/legacy_summarize_task_model_test.go` added — 3 tests covering nil-safety, no-op when empty, and live WarnCF when set.
+
 ## [v0.3.0.1] - 2026-07-01
 
 ### Added

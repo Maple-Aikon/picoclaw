@@ -187,7 +187,7 @@ func (p *Pipeline) CallLLM(
 
 	if shouldInject && taskSummary != "" {
 		// Track first injection (Phase 7 §3.7: routed through
-		// al.storeTaskSummary so useGoalProgress=true writes into the
+		// al.storeTaskSummary so the call writes into the
 		// goal store's StatusSnapshot field).
 		if exec.injectedTaskSummary == "" {
 			exec.injectedTaskSummary = taskSummary

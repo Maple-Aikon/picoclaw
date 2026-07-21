@@ -375,9 +375,9 @@ func (al *AgentLoop) buildCommandsRuntime(
 			if opts == nil {
 				return fmt.Errorf("process options not available")
 			}
-			// Clear task summary for the session (Phase 7 §3.7: routed
-			// through deleteTaskSummary — useGoalProgress=true keeps the
-			// goal file intact while clearing only the legacy map).
+			// Clear task summary for the session (Phase 8.3 — single-path goal store,
+			// no legacy map to clear. The goal store's StatusSnapshot is preserved so
+			// /clear doesn't lose cross-turn context for an active goal.)
 			al.deleteTaskSummary(opts.SessionKey)
 
 			// Clear session continuity events file to prevent cross-session contamination
