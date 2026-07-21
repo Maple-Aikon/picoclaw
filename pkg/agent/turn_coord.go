@@ -258,8 +258,6 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 
 				if newSummary != "" {
 					exec.injectedTaskSummary = newSummary
-					exec.immediateReminderInjected = true
-					exec.reminderInjected = true
 
 					reminderMsg := providers.Message{
 						Role:    "user",
@@ -282,8 +280,6 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				"agent_id":  ts.agent.ID,
 				"iteration": iteration,
 				"max":         ts.iterationCap,
-				"max_initial": ts.agent.MaxIterations,
-				"max_abs":     ts.agent.MaxIterationsCap,
 			})
 
 		// Execute LLM call via Pipeline

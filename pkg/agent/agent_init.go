@@ -414,19 +414,6 @@ func registerSharedTools(
 		agent.Tools.Register(goal.NewGoalProgressTool(agent.Workspace))
 		agent.Tools.Register(goal.NewCompleteGoalTool(agent.Workspace))
 
-		// extend_turn_iteration: always-registered tool for per-turn iteration
-		// extension. Per-turn gating happens via ts.extendEnabled (set when user
-		// invokes /extend); the tool is filtered out of provider tool defs in
-		// non-/extend turns. Requires max_iterations_cap > 0 to function — the
-		// tool returns a runtime error if cap is 0, so we log info (not warn) to
-		// surface the misconfiguration without blocking startup.
-		agent.Tools.Register(tools.NewExtendTurnIterationTool())
-		if agent.MaxIterationsCap == 0 {
-			logger.InfoCF("agent", "extend_turn_iteration registered but max_iterations_cap is 0; tool will return a runtime error until cap is configured", map[string]any{
-				"agent_id": agentID,
-			})
-		}
-
 		warnOnUnknownAgentToolDeclarations(agentID, agent.Workspace, agent.Definition, agent.Tools)
 	}
 }

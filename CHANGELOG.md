@@ -7,9 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Phase 10: Remove `extend_turn_iteration` tool + `/extend` command (vĩnh viễn)**
+  - Removed `extend_turn_iteration` core tool. The iteration cap is now constant per turn (equal to `agent.MaxIterations`). Users typing `/extend` are treated as unknown commands — no error message, no announcement (silent rollout).
+  - Removed 3-tier windowed hint logic in `pkg/agent/pipeline_llm.go` (`iterationExtendingHintMessage`, `iterationCapReachedMessage`); only Tier 3 (tool-stripped final summary) remains.
+  - Removed `MaxIterationsCap` field from `AgentInstance` and `Config`; `max_iterations_cap` is now rejected as an unknown config field (same pattern as Phase 9's `summarize_task_model`).
+  - Removed `/extend` slash command from `BuiltinDefinitions` and its dispatcher in `pkg/agent/agent_command.go`.
+  - Net: −1952 LOC across 21 files. Test count: `pkg/agent/` 694 PASS / 2 FAIL (pre-existing baseline accepted since Phase 4), `pkg/agent/goal/` 72 PASS / 0 FAIL.
+
+### Added
+
+- **Phase 12 (deferred): `/new-goal <objective>` slash command** — first-class user UX to seed a goal from the user side (replaces what `/extend` previously provided). Skeleton in plan §7.1.
+
 ### Changed
 
-- **Phase 8.3: Deprecate LLM-driven task summary extraction (post-replacement cleanup)**
+- **Phase 9: Remove `extractTaskWithFallback` / `resolveTaskModel` / `extractTaskSummary` (post-replacement cleanup)**
+  - Removed 3 dead LLM-driven task-summary functions in `pkg/agent/pipeline_setup.go` (−165 LOC).
+  - Removed `pkg/config/legacy_summarize_task_model.go` + its test (−73 LOC).
+  - Removed `SummarizeTaskModel` field + env binding + call site in `pkg/config/config.go`. The `agents.defaults.summarize_task_model` config field is now rejected as an unknown field at boot.
+  - Net: −209 LOC. Live verified: post-deploy gateway restart fires 0 WarnCF logs (Phase 8.3 had fired `setting="pico-gemma-local"` every boot).
   - Removed `legacyTaskSummary sync.Map` field from `pkg/agent/agent.go` and the `useGoalProgress` migration flag. Phase 7's graceful-degradation path is no longer reachable in production (`useGoalProgress=true` since 2026-07-21, confirmed unreachable on live binary).
   - Simplified `pkg/agent/turn_state_snapshot.go` to single-path implementation: all cross-turn context reads/writes go through `goal.Store.UpdateStatusSnapshot` / `LoadStatusSnapshot`. The two-tier flag dispatch (`!useGoalProgress` vs `useGoalProgress`) is gone.
   - `extractTaskWithFallback` and `extractTaskSummary` remain as no-op stubs for one minor (Q2 default from plan §8.3) — full removal targeted for Phase 9.

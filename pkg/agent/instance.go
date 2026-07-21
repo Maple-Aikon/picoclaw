@@ -27,7 +27,6 @@ type AgentInstance struct {
 	Fallbacks                 []string
 	Workspace                 string
 	MaxIterations             int
-	MaxIterationsCap          int   // Absolute ceiling for extend_turn_iteration tool; 0 = disabled
 	MaxReplayAttempts         int   // Cap for AfterLLM hook replay retries within a single iteration; 0 = use default (5). Set to 1 to disable replay.
 	MaxTokens                 int
 	Temperature               float64
@@ -191,20 +190,6 @@ func NewAgentInstance(
 		maxIter = 20
 	}
 
-	maxIterCap := defaults.MaxIterationsCap
-	// Self-healing: if cap < maxIter, the extension tool would have no room to
-	// extend to. Clamp up to maxIter and warn so the user knows their config
-	// was sanitized. 0 = feature disabled (no validation needed).
-	if maxIterCap > 0 && maxIterCap < maxIter {
-		logger.WarnCF("agent", "max_iterations_cap below max_tool_iterations; clamping", map[string]any{
-			"agent_id":          agentID,
-			"configured_cap":    maxIterCap,
-			"max_tool_iter":     maxIter,
-			"clamped_to":        maxIter,
-		})
-		maxIterCap = maxIter
-	}
-
 	maxTokens := defaults.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 8192
@@ -353,7 +338,6 @@ func NewAgentInstance(
 		Fallbacks:                 fallbacks,
 		Workspace:                 workspace,
 		MaxIterations:             maxIter,
-		MaxIterationsCap:          maxIterCap,
 		MaxTokens:                 maxTokens,
 		Temperature:               temperature,
 		ThinkingLevel:             thinkingLevel,

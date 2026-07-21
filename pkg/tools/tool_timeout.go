@@ -102,8 +102,6 @@ func lookupToolTimeout(cfg *config.ToolsConfig, name string) int {
 		return cfg.SpawnStatus.TimeoutSeconds
 	case "spi":
 		return cfg.SPI.TimeoutSeconds
-	case "extend_turn_iteration":
-		return cfg.ExtendTurnIteration.TimeoutSeconds
 	case "message":
 		return cfg.Message.TimeoutSeconds // promoted from embedded ToolConfig
 	case "web", "web_search":

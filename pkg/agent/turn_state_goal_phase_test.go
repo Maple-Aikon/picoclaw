@@ -61,124 +61,102 @@ func newPhaseTestTurnState(agent *AgentInstance, sessionKey, workspace string) *
 	return ts
 }
 
+// =============================================================================
+// Goal Phase Tests (Phase 10 simplified)
+// =============================================================================
+//
+// Phase 10 removed extend_turn_iteration tool, so the iteration cap is
+// effectively constant per turn (equal to agent.MaxIterations).
+//
+// - iterationCapReached removed (dead code; identical to iterationCapFinalized)
+// - iterationCapFinalized remains: iteration >= iterationCap
+// - currentGoalPhase reduced to: Lock / Open / Lock (when cap hit)
+//   GoalPhaseCheckpoint is still a valid phase value, but no longer
+//   reachable via currentGoalPhase in production. Tests cover Open + Lock.
+
 // TestTurnState_HasGoal covers the active-only semantics: completed /
-// archived / missing goals must all return false so the LLM is forced
-// back to set_goal.
+// archived / aborted goals do NOT count as an active goal.
 func TestTurnState_HasGoal(t *testing.T) {
 	_, agent, workspace := newPhaseTestLoop(t)
-	sessionKey := "test-session-hasgoal"
 
-	t.Run("missing goal file", func(t *testing.T) {
-		ts := newPhaseTestTurnState(agent, sessionKey+"-missing", workspace)
+	t.Run("no goal file → false", func(t *testing.T) {
+		ts := newPhaseTestTurnState(agent, "phase-no-file", workspace)
 		if ts.hasGoal() {
-			t.Fatalf("expected hasGoal()=false for missing file")
+			t.Fatal("hasGoal() = true with no goal file, want false")
 		}
 	})
 
-	t.Run("active goal", func(t *testing.T) {
-		key := sessionKey + "-active"
+	t.Run("active goal file → true", func(t *testing.T) {
+		key := "phase-active"
 		writeGoalFile(t, workspace, key, string(goal.StatusActive))
 		ts := newPhaseTestTurnState(agent, key, workspace)
 		if !ts.hasGoal() {
-			t.Fatalf("expected hasGoal()=true for active goal")
+			t.Fatal("hasGoal() = false with active goal file, want true")
 		}
 	})
 
-	t.Run("completed goal", func(t *testing.T) {
-		key := sessionKey + "-completed"
+	t.Run("completed goal → false", func(t *testing.T) {
+		key := "phase-completed"
 		writeGoalFile(t, workspace, key, string(goal.StatusCompleted))
 		ts := newPhaseTestTurnState(agent, key, workspace)
 		if ts.hasGoal() {
-			t.Fatalf("expected hasGoal()=false for completed goal (lock the LLM out)")
+			t.Fatal("hasGoal() = true with completed goal, want false")
 		}
 	})
 
-	t.Run("empty session key", func(t *testing.T) {
-		ts := newPhaseTestTurnState(agent, "", workspace)
+	t.Run("archived goal → false", func(t *testing.T) {
+		key := "phase-archived"
+		writeGoalFile(t, workspace, key, string(goal.StatusArchived))
+		ts := newPhaseTestTurnState(agent, key, workspace)
 		if ts.hasGoal() {
-			t.Fatalf("expected hasGoal()=false for empty sessionKey (fail-closed)")
+			t.Fatal("hasGoal() = true with archived goal, want false")
 		}
 	})
 
-	t.Run("empty workspace", func(t *testing.T) {
-		ts := newPhaseTestTurnState(agent, sessionKey+"-noWorkspace", "")
+	t.Run("aborted goal → false", func(t *testing.T) {
+		key := "phase-aborted"
+		writeGoalFile(t, workspace, key, string(goal.StatusAborted))
+		ts := newPhaseTestTurnState(agent, key, workspace)
 		if ts.hasGoal() {
-			t.Fatalf("expected hasGoal()=false for empty workspace (fail-closed)")
+			t.Fatal("hasGoal() = true with aborted goal, want false")
 		}
 	})
 }
 
-// TestTurnState_IterationCapReached verifies the Tier-2 predicate stays
-// in lockstep with the Tier-2 hint logic in pipeline_llm.go.
-func TestTurnState_IterationCapReached(t *testing.T) {
+// TestTurnState_IterationCapFinalized locks in the Phase 10 cap predicate.
+// Phase 10: extend_turn_iteration was removed, so iterationCap is constant
+// for the turn. The predicate reduces to iteration >= iterationCap.
+func TestTurnState_IterationCapFinalized(t *testing.T) {
 	_, agent, _ := newPhaseTestLoop(t)
-	agent.MaxIterationsCap = 50
+	agent.MaxIterations = 20
 
 	cases := []struct {
 		name         string
 		iteration    int
 		iterationCap int
-		extendOn     bool
-		absCap       int
 		want         bool
 	}{
-		{"below cap", 5, 20, true, 50, false},
-		{"at cap", 20, 20, true, 50, true},
-		{"above cap", 25, 20, true, 50, true},
-		{"at abs cap (Tier 3 wins)", 50, 50, true, 50, false},
-		{"extend disabled", 25, 20, false, 50, false},
-		{"abs cap unset", 25, 20, true, 0, false}, // absCap=0 → feature off
+		{"below cap", 5, 20, false},
+		{"at cap", 20, 20, true},
+		{"above cap", 25, 20, true},
 	}
 
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			agent.MaxIterationsCap = c.absCap
-			ts := newPhaseTestTurnState(agent, "phase-iter-cap-"+c.name, "")
-			ts.iteration = c.iteration
-			ts.iterationCap = c.iterationCap
-			ts.extendEnabled = c.extendOn
-			got := ts.iterationCapReached()
-			if got != c.want {
-				t.Fatalf("iterationCapReached: got %v, want %v (absCap=%d iter=%d iterCap=%d extend=%v)",
-					got, c.want, c.absCap, c.iteration, c.iterationCap, c.extendOn)
-			}
-		})
-	}
-}
-
-// TestTurnState_IterationCapFinalized verifies the Tier-3 predicate.
-func TestTurnState_IterationCapFinalized(t *testing.T) {
-	_, agent, _ := newPhaseTestLoop(t)
-	agent.MaxIterationsCap = 50
-
-	cases := []struct {
-		name         string
-		iterationCap int
-		want         bool
-	}{
-		{"below ceiling", 20, false},
-		{"at ceiling", 50, true},
-		{"above ceiling", 100, true},
-		{"abs cap unset", 20, false},
-	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ts := newPhaseTestTurnState(agent, "phase-finalized-"+c.name, "")
+			ts.iteration = c.iteration
 			ts.iterationCap = c.iterationCap
-			if agent.MaxIterationsCap == 0 && c.name == "abs cap unset" {
-				ts.agent.MaxIterationsCap = 0
-			}
 			if got := ts.iterationCapFinalized(); got != c.want {
-				t.Fatalf("iterationCapFinalized: got %v, want %v", got, c.want)
+				t.Fatalf("iterationCapFinalized: got %v, want %v (iter=%d iterCap=%d)",
+					got, c.want, c.iteration, c.iterationCap)
 			}
 		})
 	}
 }
 
-// TestTurnState_CurrentGoalPhase covers the 4 classification paths.
 func TestTurnState_CurrentGoalPhase(t *testing.T) {
 	_, agent, workspace := newPhaseTestLoop(t)
-	agent.MaxIterationsCap = 50
+	agent.MaxIterations = 20
 
 	t.Run("nil turnState → Lock", func(t *testing.T) {
 		var ts *turnState
@@ -198,7 +176,6 @@ func TestTurnState_CurrentGoalPhase(t *testing.T) {
 		key := "phase-open"
 		writeGoalFile(t, workspace, key, string(goal.StatusActive))
 		ts := newPhaseTestTurnState(agent, key, workspace)
-		ts.extendEnabled = true
 		ts.iteration = 5
 		ts.iterationCap = 20
 		if got := ts.currentGoalPhase(); got != GoalPhaseOpen {
@@ -206,39 +183,16 @@ func TestTurnState_CurrentGoalPhase(t *testing.T) {
 		}
 	})
 
-	t.Run("active goal, iterCap reached, extendEnabled → Checkpoint", func(t *testing.T) {
-		key := "phase-checkpoint"
-		writeGoalFile(t, workspace, key, string(goal.StatusActive))
-		ts := newPhaseTestTurnState(agent, key, workspace)
-		ts.extendEnabled = true
-		ts.iteration = 25
-		ts.iterationCap = 20
-		if got := ts.currentGoalPhase(); got != GoalPhaseCheckpoint {
-			t.Fatalf("want Checkpoint, got %s", got)
-		}
-	})
-
-	t.Run("active goal, abs ceiling hit → Lock", func(t *testing.T) {
+	t.Run("active goal, iterCap finalized → Lock", func(t *testing.T) {
+		// Phase 10: with extend removed, hitting iterationCap drops back
+		// to Lock so the LLM must set a fresh goal before next iteration.
 		key := "phase-finalized"
 		writeGoalFile(t, workspace, key, string(goal.StatusActive))
 		ts := newPhaseTestTurnState(agent, key, workspace)
-		ts.extendEnabled = true
-		ts.iteration = 50
-		ts.iterationCap = 50 // == abs cap
-		if got := ts.currentGoalPhase(); got != GoalPhaseLock {
-			t.Fatalf("want Lock (Tier 3 drops back), got %s", got)
-		}
-	})
-
-	t.Run("extend disabled → Open regardless of iterCap", func(t *testing.T) {
-		key := "phase-no-extend"
-		writeGoalFile(t, workspace, key, string(goal.StatusActive))
-		ts := newPhaseTestTurnState(agent, key, workspace)
-		ts.extendEnabled = false
 		ts.iteration = 25
 		ts.iterationCap = 20
-		if got := ts.currentGoalPhase(); got != GoalPhaseOpen {
-			t.Fatalf("want Open (no extend = no Tier 2), got %s", got)
+		if got := ts.currentGoalPhase(); got != GoalPhaseLock {
+			t.Fatalf("want Lock (iterCap finalized → force fresh goal), got %s", got)
 		}
 	})
 }
@@ -250,7 +204,6 @@ func TestTurnState_CurrentGoalPhase(t *testing.T) {
 // nil → SetAllowlist(nil) means "no filter", which is harder to assert).
 func TestTurnState_ApplyPhaseAllowlist(t *testing.T) {
 	_, agent, workspace := newPhaseTestLoop(t)
-	agent.MaxIterationsCap = 50
 	agent.Definition.Agent = &AgentPromptDefinition{
 		Frontmatter: AgentFrontmatter{
 			Tools: []string{"alpha", "beta"},
@@ -284,6 +237,9 @@ func TestTurnState_ApplyPhaseAllowlist(t *testing.T) {
 	})
 
 	t.Run("Checkpoint allows goal_progress + complete_goal", func(t *testing.T) {
+		// Checkpoint is still a valid GoalPhase value even though production
+		// no longer reaches it via currentGoalPhase. ApplyPhaseAllowlist
+		// must still produce the correct allowlist for callers that pin the phase.
 		ts := newPhaseTestTurnState(agent, "phase-checkpoint-allow", workspace)
 		ts.applyPhaseAllowlist(GoalPhaseCheckpoint)
 		names := agent.Tools.GetAllowlist()
@@ -301,7 +257,6 @@ func TestTurnState_ApplyPhaseAllowlist(t *testing.T) {
 	})
 }
 
-// helpers (kept package-private so we do not leak into the public API).
 func equalStringSlices(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
