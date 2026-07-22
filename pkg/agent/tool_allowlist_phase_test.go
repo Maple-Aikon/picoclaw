@@ -172,11 +172,11 @@ func TestCurrentGoalPhase_NoActiveGoal(t *testing.T) {
 	workspace := tempWorkspaceLocal(t)
 	defer cleanupWorkspace(t, workspace)
 
-	got := currentGoalPhase(workspace, "session-A", 0, 100)
+	got := currentGoalPhase(workspace, "session-A", 0, 100, 200)
 	if got != GoalPhaseLock {
 		t.Fatalf("no-goal workspace should yield Lock, got %s", got)
 	}
-	got = currentGoalPhase(workspace, "session-A", 99, 100)
+	got = currentGoalPhase(workspace, "session-A", 99, 100, 200)
 	if got != GoalPhaseLock {
 		t.Fatalf("no-goal workspace at iteration 99 should still be Lock, got %s", got)
 	}
@@ -185,10 +185,10 @@ func TestCurrentGoalPhase_NoActiveGoal(t *testing.T) {
 // TestCurrentGoalPhase_EmptyArgs covers the fail-closed defaults when
 // workspace or sessionKey is empty.
 func TestCurrentGoalPhase_EmptyArgs(t *testing.T) {
-	if got := currentGoalPhase("", "sess", 0, 0); got != defaultGoalPhase {
+	if got := currentGoalPhase("", "sess", 0, 0, 0); got != defaultGoalPhase {
 		t.Fatalf("empty workspace should return defaultGoalPhase=%s, got %s", defaultGoalPhase, got)
 	}
-	if got := currentGoalPhase("/any", "", 0, 0); got != defaultGoalPhase {
+	if got := currentGoalPhase("/any", "", 0, 0, 0); got != defaultGoalPhase {
 		t.Fatalf("empty session should return defaultGoalPhase=%s, got %s", defaultGoalPhase, got)
 	}
 }

@@ -87,7 +87,7 @@ var GoalToolNames = []string{
 //
 // If workspace == "" or sessionKey == "" we return defaultGoalPhase (Lock)
 // — fail-closed so the LLM is forced through set_goal first.
-func currentGoalPhase(workspace, sessionKey string, iteration, iterationCap int) GoalPhase {
+func currentGoalPhase(workspace, sessionKey string, iteration, iterationCap int, maxIterationsCap int) GoalPhase {
 	if workspace == "" || sessionKey == "" {
 		return defaultGoalPhase
 	}
@@ -98,6 +98,9 @@ func currentGoalPhase(workspace, sessionKey string, iteration, iterationCap int)
 	}
 	if g.Status != goal.StatusActive {
 		return GoalPhaseLock
+	}
+	if maxIterationsCap > 0 && iterationCap >= maxIterationsCap {
+		return GoalPhaseFinal
 	}
 	if iterationCap > 0 && iteration >= iterationCap {
 		return GoalPhaseCheckpoint
