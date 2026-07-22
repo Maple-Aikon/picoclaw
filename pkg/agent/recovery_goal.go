@@ -50,7 +50,7 @@ const (
 // RecoveryContext bundles the inputs needed by trigger evaluation. Created
 // fresh per-iteration by the caller.
 type RecoveryContext struct {
-	Phase         string // current goal phase ("" / "Lock" / "Open" / "Checkpoint" / "Final")
+	Phase         string // current goal phase ("" / "set" / "open" / "checkpoint" / "final") — matches GoalPhase* constants in tool_allowlist_phase.go
 	Iteration     int
 	TextEmpty     bool   // LLM response text was empty
 	HasToolCalls  bool   // LLM response included at least one tool call
@@ -119,7 +119,7 @@ const (
 // unit-tested without mocking the full pipeline.
 func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, string) {
 	// Out of goal-phase: no recovery needed. Caller proceeds normally.
-	if ctx.Phase == "" || ctx.Phase == "Final" {
+	if ctx.Phase == "" || ctx.Phase == string(GoalPhaseFinal) {
 		return RecoveryNone, ""
 	}
 
@@ -136,7 +136,7 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 	// Phase 12: when about to retry, fetch tool_knowledge for that tool
 	// (lessons learned from prior calls) and append to the prompt so the
 	// LLM gets relevant guidance instead of repeating the same mistake.
-	if ctx.ToolName != "" && ctx.Phase != "Lock" {
+	if ctx.ToolName != "" && ctx.Phase != string(GoalPhaseSet) { // GoalPhaseLock aliases to GoalPhaseSet per Phase 11
 		if ts.toolExecRecoveryAttempts == nil {
 			ts.toolExecRecoveryAttempts = make(map[string]int)
 		}
@@ -148,9 +148,9 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 		return RecoveryArchiveGoal, "Tool execution error retry exhausted for " + ctx.ToolName + "."
 	}
 
-	// Triggers #1 and #2 only apply in Phase 1 (Open) where the LLM has
+	// Triggers #1 and #2 only apply in Open phase where the LLM has
 	// freedom to call any goal-aware tool. In other phases, these are silent.
-	if ctx.Phase != "Open" {
+	if ctx.Phase != string(GoalPhaseOpen) {
 		return RecoveryNone, ""
 	}
 

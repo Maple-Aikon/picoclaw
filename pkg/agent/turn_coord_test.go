@@ -1134,13 +1134,9 @@ func TestTurnState_SkillContextSnapshotsTrackLatestSuccessfulPath(t *testing.T) 
 // =============================================================================
 // returns the tool name to signal goal archive.
 func TestTurnCoord_RecoveryTrigger_ToolExecError(t *testing.T) {
-	ts := &turnState{
-		toolExecRecoveryAttempts: make(map[string]int),
-	}
-	// Simulate the cap being hit via 3 prior errors.
-	for i := 0; i < ToolExecErrorRetryCap; i++ {
-		evaluateRecovery(ts, RecoveryContext{Phase: "Open", ToolName: "view_goal"})
-	}
+	ts := newPhase5TurnState(t)
+	// Bump cap manually instead of via evaluateRecovery (which now respects wire-path Phase).
+	ts.toolExecRecoveryAttempts["view_goal"] = ToolExecErrorRetryCap
 	exec := &turnExecution{
 		messages: []providers.Message{
 			{Role: "tool", ToolCallID: "view_goal", Content: "Tool execution failed: timeout"},
@@ -1181,11 +1177,11 @@ func TestTurnCoord_RecoveryTrigger_LockPhaseSilenced(t *testing.T) {
 		toolExecRecoveryAttempts: make(map[string]int),
 	}
 	// Lock phase + empty text → silent
-	if a, _ := evaluateRecovery(ts, RecoveryContext{Phase: "Lock", TextEmpty: true}); a != RecoveryNone {
+	if a, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseSet), TextEmpty: true}); a != RecoveryNone {
 		t.Fatalf("Lock phase + empty should be silent, got %v", a)
 	}
 	// Lock phase + tool error → silent (no retry)
-	if a, _ := evaluateRecovery(ts, RecoveryContext{Phase: "Lock", ToolName: "view_goal"}); a != RecoveryNone {
+	if a, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseSet), ToolName: "view_goal"}); a != RecoveryNone {
 		t.Fatalf("Lock phase + tool error should be silent, got %v", a)
 	}
 	if len(ts.toolExecRecoveryAttempts) != 0 {
@@ -1374,8 +1370,8 @@ func TestHook2_ThreeConcurrentPanics_AllArchiveGoal(t *testing.T) {
 // → soft prompt; text-only x2 → hard prompt; text-only x3 → archive.
 // Counters reset when LLM produces tool calls.
 func TestRunTurn_Phase12_TextOnly2x_ThenArchive(t *testing.T) {
-	ts := newPhase5TurnState()
-	ctx := RecoveryContext{Phase: "Open", HasToolCalls: false, TextEmpty: false}
+	ts := newPhase5TurnState(t)
+	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), HasToolCalls: false, TextEmpty: false}
 
 	act1, msg1 := evaluateRecovery(ts, ctx)
 	if act1 != RecoveryRetrySameIteration || msg1 != TextOnlySoftRetryMessage {
@@ -1399,7 +1395,7 @@ func TestRunTurn_Phase12_TextOnly2x_ThenArchive(t *testing.T) {
 	}
 
 	// Tool-call response resets counters (defensive).
-	ctx2 := RecoveryContext{Phase: "Open", HasToolCalls: true, TextEmpty: false}
+	ctx2 := RecoveryContext{Phase: string(GoalPhaseOpen), HasToolCalls: true, TextEmpty: false}
 	_, _ = evaluateRecovery(ts, ctx2)
 	if ts.textOnlySoftRetriesDone != 0 || ts.textOnlyHardRetriesDone != 0 || ts.textOnlyStreak != 0 {
 		t.Fatalf("counters should reset on tool call: soft=%d hard=%d streak=%d",
