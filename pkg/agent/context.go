@@ -232,6 +232,10 @@ type systemPromptBuildOptions struct {
 	IncludeToolUseRule  bool
 	AllowedSkills       []string
 	AllowedTools        []string
+	// GoalPhase is the per-turn goal lifecycle phase (string(GoalPhaseSet / Open
+	// / Checkpoint / Final)). Phase 12.3 contributors inject phase-specific
+	// hints into the Capability / Tooling layer based on this value.
+	GoalPhase string
 }
 
 func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) []PromptPart {
@@ -337,6 +341,16 @@ Each part separated by the marker will be sent as an independent message.`,
 		})
 	}
 
+	// Phase 12.3 — GoalPhaseSet hint contributor. Fires ONLY when the per-turn
+	// goal lifecycle is in SET phase (iter 1, no active goal). Tells the LLM
+	// that all tools except set_goal are temporarily locked and explains the
+	// two valid forward paths: (a) call set_goal to unlock tools, or
+	// (b) reply directly without any tool call. See plan file
+	// ~/.picoclaw/workspace/memory/plan/picoclaw-phase12.3-execution-gate-allowlist-prompt-20260723.md §3.2.
+	if hintPart := goalPhaseSetHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase}); hintPart != nil {
+		add(*hintPart)
+	}
+
 	stack.Seal()
 	return stack.Parts()
 }
@@ -413,6 +427,7 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 		IncludeToolUseRule:  !req.SuppressToolUseRule,
 		AllowedSkills:       req.AllowedSkills,
 		AllowedTools:        req.AllowedTools,
+		GoalPhase:           req.GoalPhase,
 	})
 	staticPrompt := renderPromptPartsLegacy(parts)
 	blocks := make([]providers.ContentBlock, 0, len(parts))

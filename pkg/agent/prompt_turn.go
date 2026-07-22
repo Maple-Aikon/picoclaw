@@ -27,6 +27,7 @@ func promptBuildRequestForTurn(
 		SenderDisplayName: ts.opts.SenderDisplayName,
 		ActiveSkills:      activeSkillNames(ts.agent, ts.opts),
 		Overlays:          promptOverlaysForOptions(ts.opts),
+		GoalPhase:         string(ts.currentGoalPhase()),
 	}
 	hasCallableTools := true
 	if ts.profile.Enabled {

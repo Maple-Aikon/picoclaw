@@ -151,6 +151,93 @@ func TestToolRegistry_AllowlistStillAllowsDiscoveryTools(t *testing.T) {
 	}
 }
 
+// Phase 12.3 — execution gate
+func TestToolRegistry_IsAllowed(t *testing.T) {
+	r := NewToolRegistry()
+
+	// No allowlist set: everything allowed.
+	if !r.IsAllowed("anything") {
+		t.Error("expected IsAllowed=true when allowlist is nil")
+	}
+
+	// Allowlist set, name in list.
+	r.SetAllowlist([]string{"set_goal", "view_goal"})
+	if !r.IsAllowed("set_goal") {
+		t.Error("expected IsAllowed=true for name in allowlist")
+	}
+
+	// Allowlist set, name not in list.
+	if r.IsAllowed("write_file") {
+		t.Error("expected IsAllowed=false for name outside allowlist")
+	}
+
+	// Discovery tools exempt even when not in allowlist.
+	if !r.IsAllowed(BM25SearchToolName) {
+		t.Error("expected IsAllowed=true for BM25 discovery tool (exempt)")
+	}
+	if !r.IsAllowed(RegexSearchToolName) {
+		t.Error("expected IsAllowed=true for Regex discovery tool (exempt)")
+	}
+}
+
+func TestToolRegistry_ExecuteWithContext_BlockedByAllowlist(t *testing.T) {
+	// Pre-register the tool BEFORE setting allowlist so the registry has it
+	// indexed — this matches Phase 12.2 evidence where signet-memory recall
+	// made LLM call view_goal even though it was projected-out of the
+	// tool schema. The execution gate must catch it.
+	r := NewToolRegistry()
+	r.Register(newMockTool("view_goal", "view active goal"))
+	r.Register(newMockTool("set_goal", "set active goal"))
+
+	// Now apply the GoalPhaseSet allowlist (set_goal only).
+	r.SetAllowlist([]string{"set_goal"})
+
+	// Tool not in allowlist → must be blocked at EXECUTION, not just at projection.
+	result := r.ExecuteWithContext(context.Background(), "view_goal", nil, "telegram", "chat-1", nil)
+	if result == nil {
+		t.Fatal("expected non-nil result for blocked tool")
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true for blocked tool, got %v", result)
+	}
+	if result.Err == nil {
+		t.Error("expected Err set via WithError")
+	}
+	if result.ForLLM == "" {
+		t.Error("expected ForLLM to contain explanation for blocked tool")
+	}
+	if !strings.Contains(result.ForLLM, "view_goal") {
+		t.Errorf("expected ForLLM to mention blocked tool name, got %q", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "set_goal") {
+		t.Errorf("expected ForLLM to list allowed tools, got %q", result.ForLLM)
+	}
+}
+
+func TestToolRegistry_ExecuteWithContext_AllowedWhenNoAllowlist(t *testing.T) {
+	// No allowlist set → all registered tools can execute.
+	r := NewToolRegistry()
+	r.Register(newMockTool("view_goal", "view active goal"))
+
+	result := r.ExecuteWithContext(context.Background(), "view_goal", nil, "telegram", "chat-1", nil)
+	if result.IsError {
+		t.Errorf("expected success when no allowlist active, got error: %s", result.ForLLM)
+	}
+}
+
+func TestToolRegistry_ExecuteWithContext_DiscoveryToolBypassesAllowlist(t *testing.T) {
+	// Discovery tools (BM25/Regex) are exempt at the execution gate too,
+	// matching the registration-time exemption (Phase 12.2 design).
+	r := NewToolRegistry()
+	r.Register(newMockTool(BM25SearchToolName, "discover hidden tools"))
+	r.SetAllowlist([]string{"set_goal"})
+
+	result := r.ExecuteWithContext(context.Background(), BM25SearchToolName, nil, "telegram", "chat-1", nil)
+	if result.IsError {
+		t.Errorf("expected discovery tool to bypass execution gate, got error: %s", result.ForLLM)
+	}
+}
+
 func TestToolRegistry_HasRegisteredIncludesHiddenTools(t *testing.T) {
 	r := NewToolRegistry()
 	r.SetAllowlist([]string{"visible", "hidden"})

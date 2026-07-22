@@ -65,6 +65,7 @@ const (
 	PromptSourceToolResult     PromptSourceID = "turn:tool_result"
 	PromptSourceInterrupt      PromptSourceID = "turn:interrupt"
 	PromptSourceRecovery        PromptSourceID = "turn:recovery"
+	PromptSourceGoalPhaseSetHint PromptSourceID = "capability:goal_phase_set_hint"
 )
 
 type PromptCachePolicy string
@@ -126,6 +127,12 @@ type PromptBuildRequest struct {
 	AllowedSkills               []string
 	AllowedTools                []string
 	ToolUseFallback             bool
+
+	// GoalPhase is the per-turn goal lifecycle phase at prompt-build time
+	// (string(GoalPhaseSet / GoalPhaseOpen / GoalPhaseCheckpoint / GoalPhaseFinal)).
+	// Empty means "no phase info available" (e.g. legacy callers / tests).
+	// Phase 12.3 contributors use this to inject phase-specific hints.
+	GoalPhase string
 }
 
 type PromptContributor interface {
@@ -247,6 +254,13 @@ func builtinPromptSources() []PromptSourceDescriptor {
 			Owner:           "subturn",
 			Description:     "Child agent profile instructions",
 			Allowed:         []PromptPlacement{{Layer: PromptLayerInstruction, Slot: PromptSlotWorkspace}},
+			StableByDefault: false,
+		},
+		{
+			ID:              PromptSourceGoalPhaseSetHint,
+			Owner:           "agent",
+			Description:     "Goal-phase SET hint: explains iter-1 tool lockdown and 2 forward paths (set_goal OR no-tool reply)",
+			Allowed:         []PromptPlacement{{Layer: PromptLayerCapability, Slot: PromptSlotTooling}},
 			StableByDefault: false,
 		},
 		{

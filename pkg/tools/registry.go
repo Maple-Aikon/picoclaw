@@ -291,6 +291,16 @@ func (r *ToolRegistry) Version() uint64 {
 	return r.version.Load()
 }
 
+// IsAllowed reports whether a tool name passes the runtime allowlist check.
+// Returns true when no allowlist is active (allowlist == nil) or when the
+// name is in the allowlist or is a discovery tool (exempt). Safe for callers
+// that do not already hold r.mu — takes the read lock internally.
+func (r *ToolRegistry) IsAllowed(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.toolAllowedLocked(name)
+}
+
 func (r *ToolRegistry) toolAllowedLocked(name string) bool {
 	if r.allowlist == nil {
 		return true
@@ -560,6 +570,28 @@ func (r *ToolRegistry) ExecuteWithContext(
 	channel, chatID string,
 	asyncCallback AsyncCallback,
 ) *ToolResult {
+	// Phase 12.3 fix: enforce the runtime allowlist at the EXECUTION gate.
+	// Phase 12.2 fixed the projection gate (ToProviderDefs honours
+	// toolAllowedLocked) but execution was still a gap — LLM could call
+	// tools outside the 4-phase goal allowlist (set/open/checkpoint/final)
+	// if it knew their names from prior turns (signet-memory recall).
+	// This check happens BEFORE r.Get() so disallowed tools cannot execute
+	// even if they remain registered. Discovery tools are exempt via
+	// toolAllowedLocked (MCP control plane). See plan
+	// ~/.picoclaw/workspace/memory/plan/picoclaw-phase12.3-execution-gate-allowlist-prompt-20260723.md
+	if !r.IsAllowed(name) {
+		allowed := r.GetAllowlist()
+		logger.WarnCF("tool", "Tool execution blocked by runtime allowlist",
+			map[string]any{
+				"tool":    name,
+				"allowed": allowed,
+				"reason":  "toolAllowedLocked returned false",
+			})
+		return ErrorResult(
+			fmt.Sprintf("tool %q is not available in the current phase (allowed tools: %v)", name, allowed),
+		).WithError(fmt.Errorf("tool %q not in runtime allowlist", name))
+	}
+
 	logger.InfoCF("tool", "Tool execution started",
 		map[string]any{
 			"tool": name,
