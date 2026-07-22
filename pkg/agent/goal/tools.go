@@ -476,14 +476,18 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 		idx, shortSessionKey(sessionKey), lastEntryRendered(g.Progress[len(g.Progress)-1]))
 
 	// Phase 10.1: self-extend the turn's iteration cap so the agent can keep
-	// working through remaining_steps in subsequent iterations of this turn.
-	// Wire: goal_progress -> ExtendIterationCap(N=agent.MaxIterations, ...).
+	// working through remaining_steps across iterations of this turn.
+	// Wire: goal_progress -> ExtendIterationCap(n=1, ...). Each call adds one
+	// more iteration slot, clamped at the agent's MaxIterationsCap ceiling.
 	// Guard: only extend when there is at least one remaining step AND the
-	// current iteration has hit the cap (RemainingIterations==0), otherwise
-	// we'd log a redundant extension event on every checkpoint.
+	// turn still has iteration slots remaining (RemainingIterations > 0) AND
+	// we have not yet hit the absolute ceiling. We can NOT extend after the
+	// cap is hit: Tier 3 force-wrap-up (pipeline_llm.go:84) strips tools
+	// before the LLM can call goal_progress, so any guard checking
+	// RemainingIterations==0 would never fire.
 	if ext := IterationExtenderFromContext(ctx); ext != nil {
-		if len(remaining) > 0 && ext.RemainingIterations() == 0 && ext.CanExtendIterationCap() {
-			_, _ = ext.ExtendIterationCap(0, "goal_progress: remaining_steps>0, hit cap, self-extending")
+		if len(remaining) > 0 && ext.RemainingIterations() > 0 && ext.CanExtendIterationCap() {
+			_, _ = ext.ExtendIterationCap(1, "goal_progress: remaining_steps>0, extending cap for next iteration")
 		}
 	}
 

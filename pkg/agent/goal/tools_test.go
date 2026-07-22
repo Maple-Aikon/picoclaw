@@ -635,7 +635,11 @@ func (f *fakeExtender) recorded() (string, int) {
 	return f.lastReason, f.lastN
 }
 
-func TestGoalProgressTool_ExtendsIterationCap_WhenRemainingSteps_AtCap(t *testing.T) {
+func TestGoalProgressTool_ExtendsIterationCap_WhenRemainingSteps_HasRoom(t *testing.T) {
+	// Phase 10.1: Tier 3 force-wrap-up (pipeline_llm.go:84) strips all tools
+	// when RemainingIterations()==0, so the LLM cannot call goal_progress
+	// AT cap. Wire instead fires when still has iteration slots, proactively
+	// adding room for the next iteration.
 	ws := tempWorkspace(t)
 	ctx := ctxWithSession("sess-extend", "agent")
 	NewSetGoalTool(ws).Execute(ctx, map[string]any{
@@ -644,7 +648,7 @@ func TestGoalProgressTool_ExtendsIterationCap_WhenRemainingSteps_AtCap(t *testin
 		"success_criteria": []string{"c"},
 	})
 
-	ext := &fakeExtender{remaining: 0, canExtend: true} // hit cap
+	ext := &fakeExtender{remaining: 1, canExtend: true} // has slot, ceiling available
 	ctx = WithIterationExtender(ctx, ext)
 
 	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
@@ -658,13 +662,17 @@ func TestGoalProgressTool_ExtendsIterationCap_WhenRemainingSteps_AtCap(t *testin
 	if ext.callCount() != 1 {
 		t.Errorf("expected 1 ExtendIterationCap call, got %d", ext.callCount())
 	}
-	reason, _ := ext.recorded()
+	reason, n := ext.recorded()
 	if !strings.Contains(reason, "goal_progress") {
 		t.Errorf("expected reason to mention goal_progress, got %q", reason)
 	}
+	if n != 1 {
+		t.Errorf("expected n=1, got %d", n)
+	}
 }
 
-func TestGoalProgressTool_NoExtend_WhenRemainingSteps_StillHasSlots(t *testing.T) {
+func TestGoalProgressTool_NoExtend_WhenNoCanExtend(t *testing.T) {
+	// Remaining>0 but ceiling reached (CanExtend==false) — wire must not fire.
 	ws := tempWorkspace(t)
 	ctx := ctxWithSession("sess-noextend", "agent")
 	NewSetGoalTool(ws).Execute(ctx, map[string]any{
@@ -673,7 +681,7 @@ func TestGoalProgressTool_NoExtend_WhenRemainingSteps_StillHasSlots(t *testing.T
 		"success_criteria": []string{"c"},
 	})
 
-	ext := &fakeExtender{remaining: 5, canExtend: true} // NOT at cap
+	ext := &fakeExtender{remaining: 5, canExtend: false} // ceiling reached
 	ctx = WithIterationExtender(ctx, ext)
 
 	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
@@ -685,11 +693,13 @@ func TestGoalProgressTool_NoExtend_WhenRemainingSteps_StillHasSlots(t *testing.T
 		t.Fatalf("unexpected error: %v", res.Err)
 	}
 	if ext.callCount() != 0 {
-		t.Errorf("expected 0 ExtendIterationCap calls when remaining>0, got %d", ext.callCount())
+		t.Errorf("expected 0 ExtendIterationCap calls when ceiling reached, got %d", ext.callCount())
 	}
 }
 
 func TestGoalProgressTool_NoExtend_WhenAtCeiling(t *testing.T) {
+	// Both remaining==0 (Tier 3 will force wrap-up next iter, so no LLM
+	// can fire this anyway) AND CanExtend==false — wire must not fire.
 	ws := tempWorkspace(t)
 	ctx := ctxWithSession("sess-ceiling", "agent")
 	NewSetGoalTool(ws).Execute(ctx, map[string]any{
@@ -698,7 +708,7 @@ func TestGoalProgressTool_NoExtend_WhenAtCeiling(t *testing.T) {
 		"success_criteria": []string{"c"},
 	})
 
-	ext := &fakeExtender{remaining: 0, canExtend: false} // at ceiling
+	ext := &fakeExtender{remaining: 0, canExtend: false} // at cap + ceiling
 	ctx = WithIterationExtender(ctx, ext)
 
 	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
@@ -710,7 +720,7 @@ func TestGoalProgressTool_NoExtend_WhenAtCeiling(t *testing.T) {
 		t.Fatalf("unexpected error: %v", res.Err)
 	}
 	if ext.callCount() != 0 {
-		t.Errorf("expected 0 ExtendIterationCap calls when at ceiling, got %d", ext.callCount())
+		t.Errorf("expected 0 ExtendIterationCap calls when at cap+ceiling, got %d", ext.callCount())
 	}
 }
 
