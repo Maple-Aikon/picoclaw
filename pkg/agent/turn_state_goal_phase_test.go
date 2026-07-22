@@ -183,16 +183,17 @@ func TestTurnState_CurrentGoalPhase(t *testing.T) {
 		}
 	})
 
-	t.Run("active goal, iterCap finalized → Lock", func(t *testing.T) {
-		// Phase 10: with extend removed, hitting iterationCap drops back
-		// to Lock so the LLM must set a fresh goal before next iteration.
+	t.Run("active goal, iterCap >= MaxIterCap → Final", func(t *testing.T) {
+		// Phase 11: hitting the absolute MaxIterationsCap ceiling routes
+		// the turn to GoalPhaseFinal (only [complete_goal] allowed).
 		key := "phase-finalized"
 		writeGoalFile(t, workspace, key, string(goal.StatusActive))
 		ts := newPhaseTestTurnState(agent, key, workspace)
 		ts.iteration = 25
-		ts.iterationCap = 20
-		if got := ts.currentGoalPhase(); got != GoalPhaseLock {
-			t.Fatalf("want Lock (iterCap finalized → force fresh goal), got %s", got)
+		ts.iterationCap = 25
+		ts.maxIterationsCap = 25
+		if got := ts.currentGoalPhase(); got != GoalPhaseFinal {
+			t.Fatalf("want Final (iterCap >= MaxIterCap), got %s", got)
 		}
 	})
 }

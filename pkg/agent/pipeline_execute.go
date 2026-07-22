@@ -582,6 +582,9 @@ toolLoop:
 		// only the narrow IterationExtender interface that pkg/agent/goal
 		// declares and depends on.
 		execCtx = goalpkg.WithIterationExtender(execCtx, ts.AsExtender())
+		// Phase 11: also surface the turn state itself so complete_goal
+		// can call ts.MarkGoalFinalized() and break the per-turn loop.
+		execCtx = goalpkg.WithTurnState(execCtx, ts)
 		toolResult := ts.agent.Tools.ExecuteWithContext(
 			execCtx,
 			toolName,

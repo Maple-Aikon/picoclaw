@@ -16,6 +16,22 @@ import (
 // turnExecution populated with history, messages, and candidate selection.
 // It replaces lines 56-145 of the original runTurn.
 func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution, error) {
+	// Phase 11: stale goal recovery (Hook 1 for turn boundary). Must run
+	// before any other state read on this turn so the LLM never sees a
+	// goal left over from a prior turn (which would confuse the
+	// per-turn scope). Idempotent — no-op if no active goal exists.
+	if ts.sessionKey != "" {
+		if err := archiveStaleGoalOnTurnStart(p.al, ts.sessionKey); err != nil {
+			// Best-effort: log and continue. A failure here means
+			// a stale file might leak to the next view_goal read;
+			// recoverable on the next iteration's view_goal.
+			logger.WarnCF("agent", "stale goal recovery failed", map[string]any{
+				"session_key": ts.sessionKey,
+				"error":       err.Error(),
+			})
+		}
+	}
+
 	cfg := p.Cfg
 	maxMediaSize := cfg.Agents.Defaults.GetMaxMediaSize()
 
@@ -172,12 +188,11 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 			})
 		}
 
-		exec.injectedTaskSummary = p.al.loadTaskSummary(ts.sessionKey)
-		if exec.injectedTaskSummary == "" {
-			// Raw-text fallback (replaces extractTaskWithFallback tier #4).
-			lastAssistant := lastAssistantContent(history)
-			exec.injectedTaskSummary = buildRawTextReminder(ts.userMessage, lastAssistant)
-		}
+		// Phase 11: per-turn goal scope. No cross-turn injectedTaskSummary.
+		// exec.injectedTaskSummary is left as ""; pipeline_llm.go no
+		// longer reads it.
+		// (Preserve isErrorRecovery detection above for any future
+		//  error-recovery path that still wants to short-circuit.)
 	}
 
 	return exec, nil

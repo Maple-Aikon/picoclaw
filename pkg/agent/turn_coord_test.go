@@ -1209,22 +1209,18 @@ func TestTurnCoord_RecoveryTrigger_ApplyActionState(t *testing.T) {
 	if ts.pendingRecoveryMessage == "" {
 		t.Fatalf("expected pendingRecoveryMessage set after retry action")
 	}
-	if ts.forceCompleteNext {
-		t.Fatalf("retry action should not set forceCompleteNext")
-	}
 	if ts.goalArchiveRequested {
 		t.Fatalf("retry action should not set goalArchiveRequested")
 	}
 
-	// RecoveryForceComplete sets forceCompleteNext + pendingRecoveryMessage.
+	// RecoveryForceComplete: phase 11 removed forceCompleteNext flag —
+	// complete_goal now sets ts.goalFinalized directly and the loop
+	// breaks at the next turn_coord.go check. Recovery just records
+	// the message and lets the LLM run another iteration.
 	ts2 := &turnState{toolExecRecoveryAttempts: make(map[string]int)}
-	ts2.forceCompleteNext = true
 	ts2.pendingRecoveryMessage = TextOnlyForceCompleteMessage
-	if !ts2.forceCompleteNext {
-		t.Fatalf("expected forceCompleteNext=true after force-complete")
-	}
-	if ts2.goalArchiveRequested {
-		t.Fatalf("force-complete should not set goalArchiveRequested")
+	if ts2.pendingRecoveryMessage == "" {
+		t.Fatalf("expected pendingRecoveryMessage set after force-complete")
 	}
 
 	// RecoveryArchiveGoal sets goalArchiveRequested only.

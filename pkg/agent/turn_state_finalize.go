@@ -123,3 +123,54 @@ func (ts *turnState) goalArchiveRequestedFromState() string {
 	// trigger (tool-exec error retry exhaustion).
 	return GoalAbortReasonBexhausted + ":recovery_trigger"
 }
+
+// archiveStaleGoalOnTurnStart is the Phase 11 stale-recovery hook fired at
+// the START of every turn (before SetUpTurn reads the goal store). It
+// sweeps any StatusActive goal left on disk from a prior turn — the
+// per-turn scope means a goal that did not transition to
+// StatusCompleted/StatusArchived/StatusAborted before the previous turn
+// ended is by definition stale and must not confuse the LLM on the new
+// turn.
+//
+// Behavior:
+//   - No workspace / no session key / no store → return nil (no-op).
+//   - No active goal on disk → return nil (idempotent).
+//   - Active goal on disk → mark StatusAborted + AbortReason="stale_turn_boundary"
+//     + AbortedAt=now, write back, then move to archive/ dir.
+//   - All errors are propagated (caller logs but does not fail SetupTurn
+//     because the worst case is a stale file that the LLM will
+//     surface via view_goal — recoverable on the next iteration).
+//
+// Wired from pkg/agent/pipeline_setup.go::SetupTurn as the very first
+// step before any other state read.
+func archiveStaleGoalOnTurnStart(al *AgentLoop, sessionKey string) error {
+	if al == nil || al.goalStore() == nil {
+		return nil
+	}
+	if sessionKey == "" {
+		return nil
+	}
+	store := al.goalStore()
+	g, err := store.Read(sessionKey)
+	if err != nil {
+		// Missing/unreadable file → not stale.
+		return nil
+	}
+	if g == nil || g.Status != goal.StatusActive {
+		return nil
+	}
+	now := time.Now().UTC()
+	g.Status = goal.StatusAborted
+	g.AbortedAt = &now
+	g.AbortReason = "stale_turn_boundary"
+	g.UpdatedAt = now
+	if err := store.Write(sessionKey, g); err != nil {
+		return err
+	}
+	logger.InfoCF("agent", "Stale active goal archived on turn start",
+		map[string]any{
+			"session": sessionKey,
+			"name":    g.Name,
+		})
+	return store.Archive(sessionKey)
+}

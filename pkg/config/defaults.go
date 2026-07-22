@@ -30,7 +30,7 @@ func DefaultConfig() *Config {
 				Provider:                  "",
 				MaxTokens:                 32768,
 				Temperature:               nil, // nil means use provider default
-				MaxToolIterations:         50,
+				MaxToolIterations:         20, // Phase 11: smaller per-turn default; per-turn goal scope keeps each turn scoped tight.
 				MaxIterationsCap:          200,
 				SummarizeMessageThreshold: 20,
 				SummarizeTokenPercent:     75,

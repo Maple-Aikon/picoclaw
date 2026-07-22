@@ -87,71 +87,15 @@ func (p *Pipeline) CallLLM(
 		}
 	}
 
-	// Task summary injection:
+	// Task summary injection: REMOVED in Phase 11.
 	//
-	// Phase 10 removed extend_turn_iteration, so the iteration cap is now
-	// effectively constant per turn (equal to agent.MaxIterations). Two
-	// injection points remain:
-	//
-	//   1. First injection — error recovery at iteration 1 (blocking extraction
-	//      from SetupTurn already placed summary in taskSummaryChan).
-	//   2. Reminder at 50% threshold — for ALL turns (both normal and error
-	//      recovery). If injectedTaskSummary is already set (from iter 1 or
-	//      steering), reuse it directly. Otherwise poll the channel.
-	maxIter := ts.agent.MaxIterations
-	if maxIter == 0 {
-		maxIter = 20
-	}
-
-	shouldInject := false
-	var taskSummary string
-
-	// Case 1: Error recovery first injection at iteration 1
-	if exec.isErrorRecovery && iteration == 1 && exec.injectedTaskSummary == "" {
-		select {
-		case taskSummary = <-exec.taskSummaryChan:
-			shouldInject = taskSummary != ""
-		default:
-		}
-	}
-
-	// Case 2: Reminder at 50% threshold for ALL turns
-	// (Phase 10 removed extension-segment reminders — extension no longer
-	// resets the segment, so the 50% threshold covers the entire turn.)
-	atThreshold := iteration >= maxIter/2 && iteration > 1
-
-	shouldInjectMidpoint := atThreshold
-	shouldInjectImmediate := false
-
-	if shouldInjectMidpoint || shouldInjectImmediate {
-		if exec.injectedTaskSummary != "" {
-			// Error recovery, steering, or prior reminder: reuse existing summary
-			taskSummary = exec.injectedTaskSummary
-			shouldInject = true
-		} else {
-			// Normal turn: first injection from channel
-			select {
-			case taskSummary = <-exec.taskSummaryChan:
-				shouldInject = taskSummary != ""
-			default:
-			}
-		}
-	}
-
-	if shouldInject && taskSummary != "" {
-		// Track first injection (Phase 7 §3.7: routed through
-		// al.storeTaskSummary so the call writes into the
-		// goal store's StatusSnapshot field).
-		if exec.injectedTaskSummary == "" {
-			exec.injectedTaskSummary = taskSummary
-			al.storeTaskSummary(ts.sessionKey, taskSummary)
-		}
-		reminderMsg := providers.Message{
-			Role:    "user",
-			Content: fmt.Sprintf("[Task context reminder] Remember your original task: %s", taskSummary),
-		}
-		exec.callMessages = append(append([]providers.Message(nil), exec.callMessages...), reminderMsg)
-	}
+	// Per-turn goal scope means there is no cross-turn task context to
+	// inject. The previous mechanism (StatusSnapshot +
+	// injectedTaskSummary + taskSummaryChan + 50% threshold reminder) is
+	// gone: turns are independent, the LLM seeds a fresh goal at turn
+	// start, and the user-facing reply is emitted via complete_goal's
+	// `summary` arg (or assistantText) at the end of the turn. There is
+	// no longer a [Task context reminder] slot.
 	if err := p.routeMediaTurn(ts, exec); err != nil {
 		return ControlBreak, err
 	}
@@ -772,6 +716,9 @@ func (p *Pipeline) proceedPastLLM(
 		}
 
 		responseContent := exec.response.Content
+		// Phase 11: capture LLM text output so complete_goal can use it as
+		// the final user reply when the tool's `summary` arg is empty.
+		ts.assistantText = responseContent
 		if responseContent == "" && reasoningContent != "" && ts.channel != "pico" {
 			// Only fall back to ReasoningContent when the channel has a
 			// configured reasoning_channel_id. Without one, publishing
@@ -1164,8 +1111,11 @@ func (p *Pipeline) applyRecoveryAction(
 		return ControlContinue, nil
 
 	case RecoveryForceComplete:
-		// Strip non-goal tools so LLM is forced toward complete_goal.
-		ts.forceCompleteNext = true
+		// Phase 11: force-complete no longer needs a separate flag —
+		// the per-turn loop already exits as soon as the LLM calls
+		// complete_goal (which sets ts.goalFinalized via the goal tool
+		// handler). We just append a recovery message instructing the
+		// LLM to wrap up with a final reply + complete_goal call.
 		if msg != "" {
 			ts.pendingRecoveryMessage = msg
 		}

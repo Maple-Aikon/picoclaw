@@ -343,7 +343,10 @@ func TestGoalProgressTool_RejectsAfterCompletion(t *testing.T) {
 		"objective":        "o",
 		"success_criteria": []string{"c"},
 	})
-	NewCompleteGoalTool(ws).Execute(ctx, nil)
+	// Phase 11: complete_goal requires a `summary` arg (1-500 chars).
+	NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
+		"summary": "first summary",
+	})
 
 	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
 		"completed_steps": []string{"x"},
@@ -369,7 +372,9 @@ func TestCompleteGoalTool_ArchivesFile(t *testing.T) {
 		"completed_steps": []string{"x"},
 	})
 
-	res := NewCompleteGoalTool(ws).Execute(ctx, nil)
+	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
+		"summary": "all done",
+	})
 	if res.IsError {
 		t.Fatalf("unexpected error: %v", res.Err)
 	}
@@ -406,14 +411,88 @@ func TestCompleteGoalTool_IdempotentGuard(t *testing.T) {
 		"objective":        "o",
 		"success_criteria": []string{"c"},
 	})
-	NewCompleteGoalTool(ws).Execute(ctx, nil)
+	NewCompleteGoalTool(ws).Execute(ctx, map[string]any{"summary": "first"})
 
-	res := NewCompleteGoalTool(ws).Execute(ctx, nil)
+	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{"summary": "second"})
 	if !res.IsError || res.ErrKind != toolshared.ErrInvalidInput {
 		t.Errorf("expected invalid_input on second call, got isErr=%v kind=%q", res.IsError, res.ErrKind)
 	}
 	if !strings.Contains(res.ForLLM, "already completed") {
 		t.Errorf("expected 'already completed' message, got: %s", res.ForLLM)
+	}
+}
+
+// TestCompleteGoalTool_RequiresSummary verifies Phase 11: complete_goal
+// must be called with a `summary` arg (1-500 chars). Empty / missing
+// summary returns invalid_input so the LLM retries in the same
+// iteration. The runtime cannot fabricate a final reply on the LLM's
+// behalf — that would defeat the audit trail.
+func TestCompleteGoalTool_RequiresSummary(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-summary", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+
+	// Missing summary arg
+	res := NewCompleteGoalTool(ws).Execute(ctx, nil)
+	if !res.IsError || res.ErrKind != toolshared.ErrInvalidInput {
+		t.Errorf("missing summary: want invalid_input, got isErr=%v kind=%q", res.IsError, res.ErrKind)
+	}
+	if !strings.Contains(res.ForLLM, "summary") {
+		t.Errorf("missing summary: error message should mention 'summary', got: %s", res.ForLLM)
+	}
+
+	// Empty summary arg
+	res = NewCompleteGoalTool(ws).Execute(ctx, map[string]any{"summary": ""})
+	if !res.IsError || res.ErrKind != toolshared.ErrInvalidInput {
+		t.Errorf("empty summary: want invalid_input, got isErr=%v kind=%q", res.IsError, res.ErrKind)
+	}
+
+	// Whitespace-only summary
+	res = NewCompleteGoalTool(ws).Execute(ctx, map[string]any{"summary": "   "})
+	if !res.IsError || res.ErrKind != toolshared.ErrInvalidInput {
+		t.Errorf("whitespace summary: want invalid_input, got isErr=%v kind=%q", res.IsError, res.ErrKind)
+	}
+
+	// Verify goal was NOT archived (still active after 3 invalid attempts).
+	st := NewStore(ws)
+	if g, _ := st.Read("sess-summary"); g == nil {
+		t.Fatalf("expected goal to still be active after invalid summary attempts")
+	}
+	if g, _ := st.Read("sess-summary"); g != nil && g.Status != "active" {
+		t.Errorf("expected status=active after invalid summary, got %q", g.Status)
+	}
+}
+
+// TestCompleteGoalTool_PersistsSummary verifies the LLM-supplied
+// `summary` is persisted in the archive file's YAML frontmatter so
+// operators can read it post-hoc.
+func TestCompleteGoalTool_PersistsSummary(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-persist", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+	NewCompleteGoalTool(ws).Execute(ctx, map[string]any{"summary": "all done — foo and bar"})
+
+	st := NewStore(ws)
+	post, err := st.ReadAny("sess-persist")
+	if err != nil {
+		t.Fatalf("ReadAny: %v", err)
+	}
+	if post == nil {
+		t.Fatalf("expected archive to be readable via ReadAny, got nil")
+	}
+	if post.Summary != "all done — foo and bar" {
+		t.Errorf("Summary = %q, want %q", post.Summary, "all done — foo and bar")
+	}
+	if post.Status != "completed" {
+		t.Errorf("Status = %q, want completed", post.Status)
 	}
 }
 
@@ -498,108 +577,6 @@ func TestStringSliceArg_WhitespaceOnlyDrops(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 8.1 — StatusSnapshot wiring (set_goal / goal_progress / complete_goal)
-// ---------------------------------------------------------------------------
-
-func TestSetGoalTool_WritesInitialSnapshot(t *testing.T) {
-	ws := tempWorkspace(t)
-	ctx := ctxWithSession("sess-snap-1", "agent")
-	NewSetGoalTool(ws).Execute(ctx, map[string]any{
-		"name":             "n",
-		"objective":        "Ship Phase 8.1",
-		"success_criteria": []string{"tests pass"},
-		"in_scope":         []string{"write snapshot renderer"},
-	})
-
-	g, err := NewStore(ws).Read("sess-snap-1")
-	if err != nil {
-		t.Fatalf("Read failed: %v", err)
-	}
-	want := "Goal: Ship Phase 8.1. Next: write snapshot renderer."
-	if g.StatusSnapshot != want {
-		t.Errorf("StatusSnapshot = %q, want %q", g.StatusSnapshot, want)
-	}
-}
-
-func TestGoalProgressTool_RefreshesSnapshot(t *testing.T) {
-	ws := tempWorkspace(t)
-	ctx := ctxWithSession("sess-snap-2", "agent")
-	NewSetGoalTool(ws).Execute(ctx, map[string]any{
-		"name":             "n",
-		"objective":        "obj",
-		"success_criteria": []string{"c"},
-	})
-
-	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
-		"completed_steps": []string{"wrote code"},
-		"next_action":     "run tests",
-	})
-	if res.IsError {
-		t.Fatalf("unexpected error: %v", res.Err)
-	}
-
-	g, err := NewStore(ws).Read("sess-snap-2")
-	if err != nil {
-		t.Fatalf("Read failed: %v", err)
-	}
-	if g.StatusSnapshot != "Goal: obj. Next: run tests." {
-		t.Errorf("post-progress snapshot wrong: %q", g.StatusSnapshot)
-	}
-}
-
-func TestGoalProgressTool_DriftAppendsPrefix(t *testing.T) {
-	ws := tempWorkspace(t)
-	ctx := ctxWithSession("sess-snap-3", "agent")
-	NewSetGoalTool(ws).Execute(ctx, map[string]any{
-		"name":             "n",
-		"objective":        "ship",
-		"success_criteria": []string{"c"},
-	})
-
-	NewGoalProgressTool(ws).Execute(ctx, map[string]any{
-		"next_action":    "replan",
-		"drift_detected": true,
-	})
-
-	g, _ := NewStore(ws).Read("sess-snap-3")
-	if !strings.HasPrefix(g.StatusSnapshot, "⚠ DRIFT: ") {
-		t.Errorf("drift prefix missing on persisted snapshot: %q", g.StatusSnapshot)
-	}
-}
-
-func TestCompleteGoalTool_ClearsSnapshot(t *testing.T) {
-	ws := tempWorkspace(t)
-	ctx := ctxWithSession("sess-snap-4", "agent")
-	NewSetGoalTool(ws).Execute(ctx, map[string]any{
-		"name":             "n",
-		"objective":        "obj",
-		"success_criteria": []string{"c"},
-	})
-	// Sanity: snapshot was set.
-	pre, _ := NewStore(ws).Read("sess-snap-4")
-	if pre.StatusSnapshot == "" {
-		t.Fatal("setup invariant: set_goal did not seed snapshot")
-	}
-
-	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{})
-	if res.IsError {
-		t.Fatalf("complete_goal errored: %v", res.Err)
-	}
-
-	// After archive, Read() returns ErrNoActiveGoal; snapshot is irrelevant
-	// (the file is in archive/) but we still want to confirm the in-flight
-	// goal file was zeroed before the move. Use ReadAny which doesn't error
-	// on archived.
-	g, err := NewStore(ws).ReadAny("sess-snap-4")
-	if err != nil {
-		t.Fatalf("ReadAny failed: %v", err)
-	}
-	if g.StatusSnapshot != "" {
-		t.Errorf("complete_goal should clear snapshot before archive, got %q", g.StatusSnapshot)
-	}
-}
-
-// --- Phase 10.1: goal_progress → ExtendIterationCap wire tests ---
 
 // fakeExtender is a minimal IterationExtender used to verify the
 // goal_progress → ExtendIterationCap wire contract without needing a real
@@ -608,6 +585,8 @@ type fakeExtender struct {
 	mu             sync.Mutex
 	remaining      int
 	canExtend      bool
+	iterCap        int
+	maxPerCheck    int
 	extendCalls    int
 	lastReason     string
 	lastN          int
@@ -615,13 +594,25 @@ type fakeExtender struct {
 
 func (f *fakeExtender) RemainingIterations() int { return f.remaining }
 func (f *fakeExtender) CanExtendIterationCap() bool { return f.canExtend }
+func (f *fakeExtender) IterationCap() int {
+	if f.iterCap == 0 {
+		return 50
+	}
+	return f.iterCap
+}
+func (f *fakeExtender) MaxIterationsPerCheckpoint() int {
+	if f.maxPerCheck == 0 {
+		return 20
+	}
+	return f.maxPerCheck
+}
 func (f *fakeExtender) ExtendIterationCap(n int, reason string) (int, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.extendCalls++
 	f.lastReason = reason
 	f.lastN = n
-	return f.iterationCap() + n, n
+	return f.IterationCap() + n, n
 }
 func (f *fakeExtender) iterationCap() int { return 50 }
 func (f *fakeExtender) callCount() int {
@@ -666,8 +657,12 @@ func TestGoalProgressTool_ExtendsIterationCap_WhenRemainingSteps_HasRoom(t *test
 	if !strings.Contains(reason, "goal_progress") {
 		t.Errorf("expected reason to mention goal_progress, got %q", reason)
 	}
-	if n != 1 {
-		t.Errorf("expected n=1, got %d", n)
+	// Phase 11: extend amount = MaxIterationsPerCheckpoint (default 20),
+	// not n=1 as in Phase 10.1. A single iteration is too small to be
+	// useful for multi-step goals; per-checkpoint budget matches the
+	// budget the runtime grants at Open → Checkpoint transition.
+	if n != ext.MaxIterationsPerCheckpoint() {
+		t.Errorf("expected n=%d (MaxIterationsPerCheckpoint), got %d", ext.MaxIterationsPerCheckpoint(), n)
 	}
 }
 

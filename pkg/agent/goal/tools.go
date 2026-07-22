@@ -22,14 +22,64 @@ import (
 // package can resolve it.
 type extenderKey struct{}
 
+// Phase 11: turnStateKey + TurnStateAccess interface let the goal tools
+// mark the turn as finalized (after complete_goal) so the runtime loop
+// breaks immediately. Defined here (consumer side) to keep the import
+// graph one-way: pkg/agent/goal does NOT import pkg/agent, but it can
+// read back a tiny interface satisfied by the agent's turnState type.
+type turnStateKey struct{}
+
+// TurnStateAccess is the minimal surface goal tools need from a turn.
+// *agent.turnState satisfies this implicitly (Phase 11: no need to add
+// a named type alias — the methods are enough).
+type TurnStateAccess interface {
+	MarkGoalFinalized()
+}
+
+// WithTurnState attaches a TurnStateAccess to ctx. Pipeline execute code
+// calls this once per tool invocation; goal tools (specifically
+// CompleteGoalTool) read it via TurnStateFromContext.
+func WithTurnState(ctx context.Context, ts TurnStateAccess) context.Context {
+	if ts == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, turnStateKey{}, ts)
+}
+
+// TurnStateFromContext retrieves a TurnStateAccess previously attached
+// via WithTurnState. Returns nil if absent (e.g. tool invoked outside
+// the normal turn loop, or in tests that don't wrap ctx).
+func TurnStateFromContext(ctx context.Context) TurnStateAccess {
+	if ctx == nil {
+		return nil
+	}
+	v, _ := ctx.Value(turnStateKey{}).(TurnStateAccess)
+	return v
+}
+
 // IterationExtender is the public interface goal tools use to extend a
 // turn's iteration cap. Phase 10 removed the user-facing extend_turn_iteration
 // tool; this interface is the lightweight replacement so the goal-progress
 // self-extend wire can keep working.
+//
+// Phase 11 addition: MaxIterationsPerCheckpoint() returns the budget the
+// runtime grants per checkpoint phase (e.g. the per-checkpoint
+// "add N iterations" amount). The goal_progress self-extend uses this as
+// its ExtendIterationCap amount (so each checkpoint effectively resets
+// the budget by the same wall-clock amount).
 type IterationExtender interface {
 	RemainingIterations() int
 	CanExtendIterationCap() bool
 	ExtendIterationCap(n int, reason string) (newCap int, delta int)
+	// IterationCap returns the *current* per-turn iteration cap (e.g. 20
+	// initially, then 40 after the first goal_progress self-extend). Used
+	// as a defensive fallback when MaxIterationsPerCheckpoint is zero
+	// (misconfig).
+	IterationCap() int
+	// MaxIterationsPerCheckpoint returns the per-checkpoint iteration
+	// budget (default = agent.MaxIterations, e.g. 20). Used by
+	// goal_progress to pick the ExtendIterationCap amount.
+	MaxIterationsPerCheckpoint() int
 }
 
 // WithIterationExtender attaches an IterationExtender to ctx. Pipeline
@@ -212,20 +262,11 @@ func (t *SetGoalTool) Execute(ctx context.Context, args map[string]any) *toolsha
 			return tr
 		}
 	}
-	// Phase 8.1 — write the initial StatusSnapshot so cross-turn reminders
-	// have something to inject even before goal_progress fires. Snapshot is
-	// rendered from the goal's own state (Objective + first in_scope item);
-	// no LLM call involved. Write failures are non-fatal: the goal file
-	// itself is already persisted, and a missing snapshot just means the
-	// [Task context reminder] slot stays empty until goal_progress runs.
-	snapshot := RenderGoalSnapshot(g, nil)
-	if snapshot != "" {
-		if err := store.UpdateStatusSnapshot(sessionKey, snapshot); err != nil && err != ErrNoActiveGoal {
-			// Log but don't fail the tool — snapshot is best-effort.
-			// (callers may decide to wire a WarnCF here in 8.2 audit.)
-			_ = err
-		}
-	}
+	// Phase 11: StatusSnapshot / cross-turn reminder mechanism removed
+	// (per-turn scope — the goal exists only for this turn, no need to
+	// seed cross-turn context). The prompt-injection slot that used to
+	// read RenderGoalSnapshot now reads the full goal content directly
+	// from the active goal file at turn start.
 
 	action := "created"
 	if replaced {
@@ -461,24 +502,23 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 		}
 	}
 	// Phase 8.1 — refresh StatusSnapshot from the latest entry so the next
-	// turn's [Task context reminder] reflects the LLM's most recent
-	// self-evaluation. This is the replacement for the LLM-driven
-	// extractTaskWithFallback path that previously ran once per turn.
-	snapshot := RenderGoalSnapshot(g, &entry)
-	if snapshot != "" {
-		if err := store.UpdateStatusSnapshot(sessionKey, snapshot); err != nil && err != ErrNoActiveGoal {
-			_ = err // best-effort; see SetGoalTool comment
-		}
-	}
+	// Phase 11: StatusSnapshot refresh removed — per-turn scope means no
+	// cross-turn reminder is needed. The progress entry is persisted
+	// directly in g.Progress and is visible to the LLM in subsequent
+	// iterations via the in-context tool result.
 
 	idx := len(g.Progress)
 	summary := fmt.Sprintf("Logged progress entry #%d for session %s.\n\n%s",
 		idx, shortSessionKey(sessionKey), lastEntryRendered(g.Progress[len(g.Progress)-1]))
 
-	// Phase 10.1: self-extend the turn's iteration cap so the agent can keep
-	// working through remaining_steps across iterations of this turn.
-	// Wire: goal_progress -> ExtendIterationCap(n=1, ...). Each call adds one
-	// more iteration slot, clamped at the agent's MaxIterationsCap ceiling.
+	// Phase 10.1 + 11: self-extend the turn's iteration cap so the agent
+	// can keep working through remaining_steps across iterations of this
+	// turn. Wire: goal_progress -> ExtendIterationCap(n, ...) where n is
+	// sourced from the extender's MaxIterationsPerCheckpoint field. The
+	// amount matches the per-checkpoint budget the runtime grants at
+	// Open → Checkpoint transition (default 20 iterations), so each
+	// checkpoint effectively resets the budget. Without this, the LLM
+	// would burn its last iteration just to discover the cap is hit.
 	// Guard: only extend when there is at least one remaining step AND the
 	// turn still has iteration slots remaining (RemainingIterations > 0) AND
 	// we have not yet hit the absolute ceiling. We can NOT extend after the
@@ -487,7 +527,15 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 	// RemainingIterations==0 would never fire.
 	if ext := IterationExtenderFromContext(ctx); ext != nil {
 		if len(remaining) > 0 && ext.RemainingIterations() > 0 && ext.CanExtendIterationCap() {
-			_, _ = ext.ExtendIterationCap(1, "goal_progress: remaining_steps>0, extending cap for next iteration")
+			amount := ext.MaxIterationsPerCheckpoint()
+			if amount <= 0 {
+				// Defensive: if the agent's MaxIterations was zeroed out
+				// (misconfig), fall back to the live iterationCap so we
+				// still add *something* rather than no-oping (n<=0 = no-op
+				// per turn_state.go:544).
+				amount = ext.IterationCap()
+			}
+			_, _ = ext.ExtendIterationCap(amount, "goal_progress: remaining_steps>0, extending cap for next iteration")
 		}
 	}
 
@@ -520,23 +568,40 @@ func (t *CompleteGoalTool) Description() string {
 - view_goal returns "<no goal set>".
 - A subsequent set_goal call will start a new goal.
 
-If no goal exists, or the goal is already completed, the tool returns an invalid_input error. Use set_goal to start a new one before calling this.`
+If no goal exists, or the goal is already completed, the tool returns an invalid_input error. Use set_goal to start a new one before calling this.
+
+Provide a ` + "`summary`" + ` argument (1-500 chars) — the LLM's final user-facing reply. The tool stores it in the archive file as the goal's ` + "`summary`" + ` field. If the LLM has already output a text reply this iteration (assistantText non-empty), that text is sent to the user instead of the summary. Either way, the LLM's final reply is guaranteed to reach the user before the turn loop breaks.`
 }
 
 func (t *CompleteGoalTool) Parameters() map[string]any {
-	// No required arguments. We deliberately do not ask for a "summary"
-	// here — that would bloat the LLM prompt and the final progress entry
-	// (added via goal_progress immediately before completion) is enough.
 	return map[string]any{
-		"type":       "object",
-		"properties": map[string]any{},
+		"type": "object",
+		"properties": map[string]any{
+			"summary": map[string]any{
+				"type":        "string",
+				"minLength":   1,
+				"maxLength":   500,
+				"description": "Final user-facing reply (1-500 chars). Saved to goal.Summary in the archive. Used as the final reply to the user when the LLM did not output text on this iteration. If you already output a text reply, that takes precedence.",
+			},
+		},
+		"required": []string{"summary"},
 	}
 }
 
-func (t *CompleteGoalTool) Execute(ctx context.Context, _ map[string]any) *toolshared.ToolResult {
+func (t *CompleteGoalTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	sessionKey, _ := sessionKeyFromCtx(ctx)
 	if sessionKey == "" {
 		return invalidInputForLLM("complete_goal: no session key on context")
+	}
+	// Phase 11: summary is required. Empty/missing → invalid_input so the
+	// LLM retries in the same iteration. The runtime cannot fabricate a
+	// final reply on the LLM's behalf — that would defeat the audit trail.
+	summary := strings.TrimSpace(stringArg(args, "summary"))
+	if summary == "" {
+		return invalidInputForLLM("complete_goal: `summary` is required (1-500 chars). Provide your final user-facing reply.")
+	}
+	if len(summary) > 500 {
+		return invalidInputForLLM("complete_goal: `summary` exceeds 500 chars; shorten your final reply.")
 	}
 	store := newStoreFromCtx(ctx, t.workspace)
 	// Use ReadAny so a second call (after Archive moved the active file)
@@ -557,11 +622,7 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, _ map[string]any) *tools
 	completedCount := len(g.Progress)
 	g.Status = StatusCompleted
 	g.UpdatedAt = time.Now().UTC()
-	// Phase 8.1 — clear StatusSnapshot before archiving so the reminder
-	// slot stays empty on the next turn (until a fresh set_goal is issued).
-	// Without this, an archived goal's stale snapshot would still surface in
-	// [Task context reminder] because Store.ReadAny still finds the file.
-	g.StatusSnapshot = ""
+	g.Summary = summary // Phase 11: persist LLM-supplied final reply alongside the archive.
 	if err := store.Write(sessionKey, g); err != nil {
 		if tr := mapStoreError(err); tr != nil {
 			return tr
@@ -571,6 +632,14 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, _ map[string]any) *tools
 		if tr := mapStoreError(err); tr != nil {
 			return tr
 		}
+	}
+
+	// Phase 11: mark the turn as finalized so the iteration loop breaks
+	// immediately after this tool result is processed. Without this, the
+	// runtime would loop back and call the LLM again (with no goal to
+	// reference), wasting iterations and confusing the user.
+	if ts := TurnStateFromContext(ctx); ts != nil {
+		ts.MarkGoalFinalized()
 	}
 
 	return &toolshared.ToolResult{

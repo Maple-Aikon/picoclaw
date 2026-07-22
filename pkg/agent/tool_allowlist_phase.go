@@ -25,16 +25,38 @@ import (
 type GoalPhase string
 
 const (
-	GoalPhaseLock       GoalPhase = "lock"
-	GoalPhaseOpen       GoalPhase = "open"
+	// GoalPhaseSet = iter 1 (turn just started, no goal yet). The LLM may
+	// only call set_goal to seed a per-turn goal before any other tool.
+	// Phase 11 redesign: replaces the old GoalPhaseLock ("lock") semantics.
+	GoalPhaseSet GoalPhase = "set"
+
+	// GoalPhaseOpen = full tool set. LLM is free to use any enabled tool.
+	// Reached after set_goal succeeds and we are inside the budget.
+	GoalPhaseOpen GoalPhase = "open"
+
+	// GoalPhaseCheckpoint = checkpoint phase. The LLM is restricted to
+	// goal_progress + complete_goal so it self-evaluates before extending
+	// the iteration cap. Reached when iter >= iterationCap while iterCap
+	// is still below the absolute ceiling (MaxIterationsCap).
 	GoalPhaseCheckpoint GoalPhase = "checkpoint"
+
+	// GoalPhaseFinal = iterCap reached MaxIterationsCap ceiling OR iter
+	// exceeded MaxIterationsCap. Only [complete_goal] is allowed. No
+	// extension possible — the LLM must finalize the turn.
+	// Phase 11: replaces the old "collapsed to allowlist" trick.
+	GoalPhaseFinal GoalPhase = "final"
+
+	// Phase 11 NOTE: GoalPhaseLock is kept as a synonym of GoalPhaseSet for
+	// backward-compat with older tests/callers. New code should use
+	// GoalPhaseSet directly.
+	GoalPhaseLock GoalPhase = GoalPhaseSet
 )
 
 // defaultGoalPhase is what we return when we cannot read goal state from
 // disk (e.g. Phase 3 ships before the Phase 4 turn_state wiring). It biases
-// toward Liveness: if goal layer is unreachable we still expose the
-// base allowlist, which is the pre-Phase-3 behavior — no surprise deny.
-const defaultGoalPhase = GoalPhaseLock
+// toward Lockdown: if goal layer is unreachable we fail-closed to
+// GoalPhaseSet, which forces set_goal first — safer than open access.
+const defaultGoalPhase = GoalPhaseSet
 
 // GoalToolNamespace is the prefix that disambiguates lifecycle tools from
 // any same-named agent-defined tool. Lifecycle tools are registered under
@@ -83,6 +105,46 @@ func currentGoalPhase(workspace, sessionKey string, iteration, iterationCap int)
 	return GoalPhaseOpen
 }
 
+// Phase 11 redesign: per-turn scope. ResolveGoalPhase now operates on the
+// new 4-phase scheme (set / open / checkpoint / final). The iter==0
+// guard that mapped to GoalPhaseLock in earlier phases is GONE — fresh
+// turns now start at iter==0 with no active goal, which resolves to
+// GoalPhaseSet directly. The old "iterationCapFinalized → Lock" trick
+// is replaced by the explicit GoalPhaseFinal constant.
+//
+// Iteration semantics:
+//
+//	GoalPhaseSet        — !hasActiveGoal OR iter <= 1 OR goalFinalized=false but goal already complete
+//	GoalPhaseOpen       — iter in [2, iterationCap-1] AND goal active AND goalFinalized=false
+//	GoalPhaseCheckpoint — iter >= iterationCap AND iterationCap < maxIterationsCap
+//	                      AND goal active AND goalFinalized=false
+//	GoalPhaseFinal      — iterationCap >= maxIterationsCap (>0)
+//	                      OR iter > maxIterationsCap (>0)
+//	                      OR goalFinalized=true
+func ResolveGoalPhase(
+	hasActiveGoal bool,
+	iter int,
+	iterationCap int,
+	maxIterationsCap int,
+	goalFinalized bool,
+) GoalPhase {
+	if goalFinalized {
+		return GoalPhaseFinal
+	}
+	switch {
+	case !hasActiveGoal || iter <= 1:
+		return GoalPhaseSet
+	case maxIterationsCap > 0 && iterationCap >= maxIterationsCap:
+		return GoalPhaseFinal
+	case maxIterationsCap > 0 && iter > maxIterationsCap:
+		return GoalPhaseFinal
+	case iter >= iterationCap:
+		return GoalPhaseCheckpoint
+	default:
+		return GoalPhaseOpen
+	}
+}
+
 // unionAllowlist returns a deduplicated union of two allowlist slices
 // with stable ascending sort so callers can compare with
 // reflect.DeepEqual in tests without caring about map iteration order.
@@ -107,11 +169,12 @@ func unionAllowlist(a, b []string) []string {
 }
 
 // resolveAgentToolAllowlistWithPhase returns the allowlist appropriate
-// for the given phase. Phase semantics (plan §3.5):
+// for the given phase. Phase semantics (Phase 11 redesign, plan §3.5):
 //
-//   - GoalPhaseLock:       just [set_goal] — bypass base allowlist
+//   - GoalPhaseSet:        just [set_goal] — bypass base allowlist
 //   - GoalPhaseOpen:       base ∪ [view_goal, complete_goal]
 //   - GoalPhaseCheckpoint: base ∪ [goal_progress, complete_goal]
+//   - GoalPhaseFinal:      just [complete_goal] — no escape, must finalize
 //
 // base := FRONTMATTER-declared tools, normalized via ToLower+TrimSpace
 // (same normalization rule as pre-Phase-3 resolveAgentToolAllowlist).
@@ -135,8 +198,8 @@ func resolveAgentToolAllowlistWithPhase(definition AgentContextDefinition, phase
 	}
 
 	switch phase {
-	case GoalPhaseLock:
-		// Lock phase overrides: do NOT expose base tools, only set_goal.
+	case GoalPhaseSet:
+		// Set phase overrides: do NOT expose base tools, only set_goal.
 		// Returning exclusively ["set_goal"] forces the LLM to set a goal
 		// before the runtime will surface anything else.
 		return []string{"set_goal"}
@@ -146,6 +209,10 @@ func resolveAgentToolAllowlistWithPhase(definition AgentContextDefinition, phase
 	case GoalPhaseCheckpoint:
 		result := sortedKeys(base)
 		return unionAllowlist(result, []string{"goal_progress", "complete_goal"})
+	case GoalPhaseFinal:
+		// Final phase: no escape. Only complete_goal allowed. The LLM
+		// must finalize the turn — iterCap has hit MaxIterationsCap ceiling.
+		return []string{"complete_goal"}
 	default:
 		// Unknown phase → degrade to base only (safest default; no
 		// lifecycle tool gets exposed if we cannot classify).

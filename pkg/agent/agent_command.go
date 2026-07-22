@@ -335,10 +335,14 @@ func (al *AgentLoop) buildCommandsRuntime(
 			if opts == nil {
 				return fmt.Errorf("process options not available")
 			}
-			// Clear task summary for the session (Phase 8.3 — single-path goal store,
-			// no legacy map to clear. The goal store's StatusSnapshot is preserved so
-			// /clear doesn't lose cross-turn context for an active goal.)
-			al.deleteTaskSummary(opts.SessionKey)
+			// Phase 11: per-turn goal scope. /clear no longer needs to
+			// touch a cross-turn StatusSnapshot (which was removed).
+			// If a goal is active for this session, archive it so the
+			// next /clear→/new sequence starts fresh. No-op when no
+			// goal exists.
+			if al.goalStore() != nil && opts.SessionKey != "" {
+				_ = al.goalStore().Archive(opts.SessionKey) // best-effort
+			}
 
 			// Clear session continuity events file to prevent cross-session contamination
 			eventsPath := filepath.Join(agent.Workspace, "sessions", "session-continuity-events.jsonl")

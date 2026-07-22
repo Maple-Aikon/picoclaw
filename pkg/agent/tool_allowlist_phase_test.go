@@ -202,14 +202,23 @@ func tempWorkspaceLocal(t *testing.T) string {
 }
 
 // downstream consumers (YAML frontmatter, MCP responses) can rely on it.
+// TestGoalPhase_StringValues verifies the wire-stable string values of
+// each goal phase constant. Downstream consumers (YAML frontmatter, MCP
+// responses, allowlist routers) can rely on the value being stable
+// across versions.
+//
+// Phase 11: GoalPhaseLock is now an alias of GoalPhaseSet (both "set").
+// New constants GoalPhaseSet + GoalPhaseFinal are added.
 func TestGoalPhase_StringValues(t *testing.T) {
 	cases := []struct {
 		p    GoalPhase
 		want string
 	}{
-		{GoalPhaseLock, "lock"},
+		{GoalPhaseSet, "set"},
+		{GoalPhaseLock, "set"}, // alias of GoalPhaseSet
 		{GoalPhaseOpen, "open"},
 		{GoalPhaseCheckpoint, "checkpoint"},
+		{GoalPhaseFinal, "final"},
 	}
 	for _, c := range cases {
 		if string(c.p) != c.want {

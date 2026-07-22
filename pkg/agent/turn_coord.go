@@ -131,6 +131,13 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			turnStatus = TurnEndStatusAborted
 			return al.abortTurn(ts)
 		}
+		// Phase 11: complete_goal sets ts.goalFinalized = true to short-circuit
+		// the per-turn loop. We must check it at the TOP of the loop, not
+		// just at the bottom — the tool may fire on the very last iteration
+		// of a turn that already exhausted its iteration cap.
+		if ts.goalFinalized {
+			break
+		}
 
 		iteration := ts.currentIteration() + 1
 		ts.setIteration(iteration)
@@ -245,31 +252,11 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 					steeringText.WriteString(pm.Content)
 				}
 
-				// Get previous summary for fallback (Phase 7 §3.7: routes
-				// through al.loadTaskSummary — goal store when
-				// Phase 8.2 — task reminder is now sourced directly from the
-				// active goal's StatusSnapshot (no LLM call). If the snapshot
-				// is empty (no goal / cleared), we fall back to a raw-text
-				// concat of the steering message + last assistant tail.
-				newSummary := al.loadTaskSummary(ts.sessionKey)
-				if newSummary == "" {
-					newSummary = buildRawTextReminder(steeringText.String(), lastAssistantContent(exec.messages))
-				}
-
-				if newSummary != "" {
-					exec.injectedTaskSummary = newSummary
-
-					reminderMsg := providers.Message{
-						Role:    "user",
-						Content: fmt.Sprintf("[Task context reminder] Updated task from user steering: %s", newSummary),
-					}
-					messages = append(messages, reminderMsg)
-				} else {
-					select {
-					case <-exec.taskSummaryChan:
-					default:
-					}
-				}
+				// Phase 11: no injectedTaskSummary to refresh. The next
+				// iteration's LLM call will see the steering message in
+				// its history; per-turn goal scope means no cross-turn
+				// reminder slot to update.
+				_ = steeringText
 			}
 		}
 		// Always sync messages into exec.messages so CallLLM sees the updated state
@@ -384,6 +371,17 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	if ts.hardAbortRequested() {
 		turnStatus = TurnEndStatusAborted
 		return al.abortTurn(ts)
+	}
+
+	// Phase 11: complete_goal → MarkGoalFinalized → loop break. If the LLM
+	// did not output a text reply on the final iteration (assistantText
+	// empty), fall back to the persisted goal.Summary so the user still
+	// gets a non-empty final message. assistantText takes precedence
+	// (LLM chose to write a free-form reply + complete_goal).
+	if finalContent == "" && ts.goalFinalized && ts.assistantText == "" {
+		if g, err := al.goalStore().ReadAny(ts.sessionKey); err == nil && g != nil && g.Summary != "" {
+			finalContent = g.Summary
+		}
 	}
 
 	result, err = pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)

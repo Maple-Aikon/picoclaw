@@ -66,35 +66,30 @@ func (ts *turnState) iterationCapFinalized() bool {
 	}
 	return ts.iteration >= ts.iterationCap
 }
-// currentGoalPhase classifies the turn into one of the 3 goal phases.
-// Mirrors the pseudocode from plan §4 and delegates to the package-level
-// classifier (currentGoalPhase in tool_allowlist_phase.go) so the
-// per-turn wiring and the test-only classifier stay in lockstep.
+// currentGoalPhase classifies the turn into one of the 4 goal phases
+// (Phase 11 redesign: set / open / checkpoint / final). Delegates to the
+// package-level ResolveGoalPhase classifier so per-turn wiring and the
+// test-only classifier stay in lockstep.
 //
-// Edge cases (Phase 10 — extend_turn_iteration removed):
-//   - no agent / no workspace / no sessionKey → GoalPhaseLock (fail-closed)
-//   - hasGoal == false → GoalPhaseLock
-//   - hasGoal == true && iterationCapFinalized → GoalPhaseLock
-//     (the LLM is forced to set a fresh goal before the next iteration)
-//   - hasGoal == true && otherwise → GoalPhaseOpen
-//
-// Note: Phase 10 collapsed the previous Tier-2 → Checkpoint path. With
-// extend gone, the only way to reach GoalPhaseCheckpoint is via
-// archiveGoalAfterCompletion / manual phase bumps. Production code paths
-// no longer route through Checkpoint from currentGoalPhase.
+// Edge cases (Phase 11):
+//   - no agent / no workspace / no sessionKey → GoalPhaseSet (fail-closed)
+//   - hasGoal == false → GoalPhaseSet (LLM must seed per-turn goal)
+//   - goalFinalized flag set → GoalPhaseFinal
+//   - iterationCap >= MaxIterationsCap → GoalPhaseFinal
+//   - iter >= iterationCap (but iterCap < ceiling) → GoalPhaseCheckpoint
+//   - otherwise → GoalPhaseOpen
 func (ts *turnState) currentGoalPhase() GoalPhase {
 	if ts == nil || ts.agent == nil {
-		return GoalPhaseLock
+		return GoalPhaseSet
 	}
-	if !ts.hasGoal() {
-		return GoalPhaseLock
-	}
-	if ts.iterationCapFinalized() {
-		// Hit the iteration cap — drop back to Lock so the LLM is
-		// forced to set a fresh goal before the next iteration.
-		return GoalPhaseLock
-	}
-	return GoalPhaseOpen
+	hasGoal := ts.hasGoal()
+	return ResolveGoalPhase(
+		hasGoal,
+		ts.iteration,
+		ts.iterationCap,
+		ts.maxIterationsCap,
+		ts.goalFinalized,
+	)
 }
 
 // applyPhaseAllowlist recomputes the tool allowlist for the given phase

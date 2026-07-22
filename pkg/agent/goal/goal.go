@@ -57,29 +57,21 @@ type Goal struct {
 	CreatedAt   time.Time       `yaml:"created_at"`
 	UpdatedAt   time.Time       `yaml:"updated_at"`
 	Status      Status          `yaml:"status"`
-	// StatusSnapshot is the 1-2 sentence current task summary. It is the
-	// single source of truth for cross-turn task context (Phase 7, plan
-	// §3.7) and replaces the legacy sessionTaskSummary in-memory field.
-	// Empty when no goal is set or the goal is archived/completed.
-	//
-	// Writers (Phase 8.1):
-	//   - SetGoalTool: writes "Goal: <objective>. Next: <first in_scope>."
-	//     after a fresh goal is persisted.
-	//   - GoalProgressTool: refreshes from the just-appended ProgressEntry
-	//     (next_action + first remaining_step, with ⚠ DRIFT: prefix when
-	//     entry.DriftDetected == true).
-	//   - CompleteGoalTool: clears the field to "" so the archived goal
-	//     does not leave stale reminder text behind.
-	// Rendering: pkg/agent/goal/snapshot.go::RenderGoalSnapshot.
-	// Storage: Store.UpdateStatusSnapshot / Store.LoadStatusSnapshot.
-	StatusSnapshot string `yaml:"status_snapshot,omitempty"`
+
+	// Summary is the final user-facing reply set by complete_goal
+	// (Phase 11 redesign). The LLM passes it as the tool's `summary`
+	// arg; the tool stores it here before archive. If assistantText
+	// is non-empty when complete_goal fires, that takes precedence
+	// over Summary. Empty for goals that were force-archived.
+	Summary string `yaml:"summary,omitempty"`
 
 	// AbortedAt is set when Status transitions to StatusAborted (Phase 6
 	// Hook 1 — finalizeGoalOnTurnEnd). Nil when the goal completed normally
 	// or is still active.
 	AbortedAt *time.Time `yaml:"aborted_at,omitempty"`
 	// AbortReason captures the trigger source for an aborted goal — one of:
-	//   "runTurn_panic", "tool_panic", "bexhausted:<loop-name>", "user_abort"
+	//   "runTurn_panic", "tool_panic", "bexhausted:<loop-name>",
+	//   "user_abort", "stale_turn_boundary"
 	// Empty string when status != StatusAborted.
 	AbortReason string `yaml:"abort_reason,omitempty"`
 }

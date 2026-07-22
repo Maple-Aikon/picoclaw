@@ -1,5 +1,23 @@
 package agent
 
+// Phase 11: this file is intentionally thin. The Phase 7-8.3 cross-turn
+// task summary mechanism (StatusSnapshot field, loadTaskSummary /
+// storeTaskSummary / deleteTaskSummary, injectedTaskSummary) has been
+// removed because goal scope is now per-turn:
+//
+//	- A goal is seeded at turn start (set_goal in iter 1) and archived
+//	  at turn end (Hook 1 in turn_state_finalize.go, or complete_goal).
+//	- Cross-turn context does not need a separate mechanism — the next
+//	  turn will see a fresh user message and the LLM will seed its own
+//	  goal based on that.
+//	- The StatusSnapshot / RenderGoalSnapshot / UpdateStatusSnapshot /
+//	  LoadStatusSnapshot plumbing is gone (pkg/agent/goal/snapshot.go
+//	  deleted, methods removed from pkg/agent/goal/store.go).
+//
+// What remains here is the goal workspace helpers (used by the turn
+// setup path to wire the per-turn stale-goal recovery at turn start
+// — see pkg/agent/turn_state_finalize.go::archiveStaleGoalOnTurnStart).
+
 import (
 	"github.com/sipeed/picoclaw/pkg/agent/goal"
 )
@@ -22,57 +40,4 @@ func (al *AgentLoop) goalWorkspace() string {
 		return ""
 	}
 	return al.cfg.WorkspacePath()
-}
-
-// loadTaskSummary returns the cross-turn task context for the given session key.
-// Phase 8.3: single-path implementation — reads from goal.StatusSnapshot only.
-// Legacy in-memory sync.Map fallback was removed (was unreachable in production
-// since Phase 7 flipped useGoalProgress=true; Phase 8.2 confirmed via live tests).
-//
-// Returns "" when no goal is active OR no snapshot has been written yet.
-// Caller is responsible for raw-text fallback synthesis (see pipeline_setup.go).
-func (al *AgentLoop) loadTaskSummary(sessionKey string) string {
-	if sessionKey == "" {
-		return ""
-	}
-	store := al.goalStore()
-	if store == nil {
-		return ""
-	}
-	snapshot, err := store.LoadStatusSnapshot(sessionKey)
-	if err != nil {
-		return ""
-	}
-	return snapshot
-}
-
-// storeTaskSummary persists the rendered cross-turn task context to the active
-// goal's StatusSnapshot. Phase 8.3: direct write via goal.Store.UpdateStatusSnapshot.
-// (Was a 3-call LLM extraction path in v1; Phase 8 collapsed it to a single
-// RenderGoalSnapshot call whose output is committed here.)
-//
-// No-op when sessionKey/summary empty, no workspace, or no active goal.
-func (al *AgentLoop) storeTaskSummary(sessionKey, summary string) {
-	if sessionKey == "" || summary == "" {
-		return
-	}
-	store := al.goalStore()
-	if store == nil {
-		return
-	}
-	_ = store.UpdateStatusSnapshot(sessionKey, summary)
-}
-
-// deleteTaskSummary clears any persisted task summary for a session, used by
-// /clear and /new commands. Phase 8.3: no-op for goal-backed sessions because
-// the goal store is the system-of-record and /clear should not nuke goal state
-// (preserves the historical-record invariant from Phase 7 plan §3.7).
-// Idempotent and safe to call when no summary exists.
-func (al *AgentLoop) deleteTaskSummary(sessionKey string) {
-	if sessionKey == "" {
-		return
-	}
-	// Intentional no-op — see comment above. Retained as a stable API for
-	// /clear and /new command handlers so future phases can decide whether
-	// to also archive the active goal.
 }

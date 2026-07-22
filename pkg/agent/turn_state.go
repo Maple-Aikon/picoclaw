@@ -224,10 +224,12 @@ type turnState struct {
 
 	phase                 TurnPhase
 	iteration             int
+	assistantText         string // Phase 11: LLM text output from most recent iteration; used by complete_goal to decide final reply (assistantText vs summary param).
 	iterationCap          int    // (Phase 10.1 restored: goal_progress can self-extend up to agent.MaxIterationsCap)
 	maxIterationsCap      int    // (Phase 10.1) absolute ceiling for iterationCap; set from agent.MaxIterationsCap at turn start (0 = unbounded)
 	lastExtensionReason   string // Phase 10.1: reason string from the most recent ExtendIterationCap call (for audit/diagnostics)
 	lastExtensionAtIter   int    // Phase 10.1: iteration number when ExtendIterationCap last fired (0 = never extended)
+	goalFinalized         bool   // Phase 11: set true after complete_goal tool call so the loop breaks immediately.
 
 	// Replay counter: bound AfterLLM hook replay attempts within a single iteration.
 	// Replay attempts are recovery retries (e.g. malformed tool-call recovery)
@@ -249,7 +251,6 @@ type turnState struct {
 	// inject the recovery message into the conversation, strip non-goal tools,
 	// or finalize the goal. See plan §5.2 + §8.3.
 	pendingRecoveryMessage  string // message to inject before next LLM call (empty = no injection)
-	forceCompleteNext       bool   // if true, caller strips non-goal tools before next LLM call
 	goalArchiveRequested    bool   // if true, caller must call finalizeGoalOnTurnEnd (Phase 6 hook)
 
 	startedAt             time.Time
@@ -591,6 +592,45 @@ func (ts *turnState) CanExtendIterationCap() bool {
 		return true
 	}
 	return ts.iterationCap < ts.maxIterationsCap
+}
+
+// MarkGoalFinalized is the Phase 11 hook that complete_goal calls to
+// short-circuit the per-turn loop. Once set, currentGoalPhase() returns
+// GoalPhaseFinal and the runtime breaks out of the iteration loop after
+// the tool result is processed. Idempotent — repeated calls are a no-op.
+func (ts *turnState) MarkGoalFinalized() {
+	if ts == nil {
+		return
+	}
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.goalFinalized = true
+}
+
+// IsGoalFinalized reports whether MarkGoalFinalized has been called this
+// turn. Used by the runTurn coordinator's top-of-loop check to break
+// out of the per-turn tool loop after complete_goal fired.
+//
+// Implements goal.GoalTurnState interface (Phase 11). Read-only — only
+// the turn state itself can change the underlying flag.
+func (ts *turnState) IsGoalFinalized() bool {
+	if ts == nil {
+		return false
+	}
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return ts.goalFinalized
+}
+
+// MaxIterationsPerCheckpoint returns the per-checkpoint iteration budget
+// (default = agent.MaxIterations, e.g. 20). Implements the
+// goal.IterationExtender interface so goal_progress can pick the
+// ExtendIterationCap amount without importing pkg/agent.
+func (ts *turnState) MaxIterationsPerCheckpoint() int {
+	if ts == nil || ts.agent == nil {
+		return 0
+	}
+	return ts.agent.MaxIterations
 }
 
 func (ts *turnState) setFinalContent(content string) {
