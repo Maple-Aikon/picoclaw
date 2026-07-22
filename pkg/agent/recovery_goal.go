@@ -79,12 +79,12 @@ const (
 	// retry within an iteration. Asks the LLM to make a decision: complete
 	// the goal, complete + ask user, or continue with a tool call. Single
 	// line; Vietnamese; soft tone.
-	TextOnlySoftRetryMessage = "Bạn vừa trả lời text-only không gọi tool. Bạn đã hoàn thành goal chưa? Nếu xong rồi, hãy gọi `complete_goal`. Nếu có vấn đề quan trọng cần user phê duyệt, hãy gọi `complete_goal` kèm câu hỏi cho user. Nếu có thể tự quyết định, hãy tiếp tục làm việc với tool phù hợp."
+	TextOnlySoftRetryMessage = "Your last response was text-only with no tool call. Has the goal been completed? If yes, call `complete_goal`. If a critical decision needs user approval, call `complete_goal` with a question for the user. Otherwise, continue working with an appropriate tool."
 
 	// TextOnlyHardRetryMessage (Phase 12) — fires on the second text-only
 	// retry within an iteration. Firm tone: LLM MUST pick one of three
 	// paths or the turn will be archived.
-	TextOnlyHardRetryMessage = "⚠️ Lần thứ 2 liên tiếp text-only không gọi tool. Bạn PHẢI đưa ra quyết định ngay trong response tới: (1) gọi `complete_goal` nếu goal đã hoàn thành; (2) gọi `complete_goal` + câu hỏi user nếu cần user phê duyệt quyết định quan trọng; (3) gọi tool để tiếp tục thực hiện. Nếu response tới vẫn text-only, turn sẽ bị archive."
+	TextOnlyHardRetryMessage = "⚠️ Second consecutive text-only response with no tool call. You MUST decide in your next response: (1) call `complete_goal` if the goal is finished; (2) call `complete_goal` + a question for the user if a critical decision needs user approval; (3) call a tool to continue working. If your next response is still text-only, this turn will be archived."
 
 	// ToolExecErrorRetryMessage tells the LLM that a tool execution failed
 	// and asks it to retry the call (possibly with different args). Phase 12
