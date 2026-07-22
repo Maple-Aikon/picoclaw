@@ -84,3 +84,62 @@ func mustContain(t *testing.T, haystack, needle, rationale string) {
 		t.Errorf("expected haystack to contain %q (%s), got:\n%s", needle, rationale, haystack)
 	}
 }
+
+// TestGoalPhaseSetHint_Integration_BuildSystemPromptParts verifies the hint
+// is injected into the actual prompt parts emitted by the context builder when
+// GoalPhase=Set. Phase 12.3 wiring: promptBuildRequestForTurn populates
+// req.GoalPhase from ts.currentGoalPhase(); BuildMessagesFromPrompt passes
+// it through to systemPromptBuildOptions.GoalPhase; buildSystemPromptParts
+// fires goalPhaseSetHintContributor when GoalPhase==Set.
+func TestGoalPhaseSetHint_Integration_BuildSystemPromptParts(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
+		IncludeToolUseRule: true,
+		GoalPhase:           string(GoalPhaseSet),
+	})
+	// Hunt for our hint part by ID (stable identifier, no race on text edits).
+	found := false
+	for _, p := range parts {
+		if p.Source.ID == PromptSourceGoalPhaseSetHint {
+			found = true
+			if !strings.Contains(p.Content, "set_goal") {
+				t.Errorf("GoalPhaseSet hint part missing set_goal reference; got:\n%s", p.Content)
+			}
+			if !strings.Contains(p.Content, "respond directly") {
+				t.Errorf("GoalPhaseSet hint part missing no-tool reply path; got:\n%s", p.Content)
+			}
+			break
+		}
+	}
+	if !found {
+		// Print part IDs to aid debugging if the wiring breaks.
+		ids := make([]string, 0, len(parts))
+		for _, p := range parts {
+			ids = append(ids, string(p.Source.ID))
+		}
+		t.Fatalf("expected hint part %q in prompt parts; got parts: %v", PromptSourceGoalPhaseSetHint, ids)
+	}
+}
+
+// TestGoalPhaseSetHint_Integration_OpenPhase_NotInjected confirms the hint is
+// gated to Set phase only and does NOT bleed into Open/Checkpoint/Final turns.
+func TestGoalPhaseSetHint_Integration_OpenPhase_NotInjected(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	for _, phase := range []string{
+		string(GoalPhaseOpen),
+		string(GoalPhaseCheckpoint),
+		string(GoalPhaseFinal),
+	} {
+		parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
+			IncludeToolUseRule: true,
+			GoalPhase:           phase,
+		})
+		for _, p := range parts {
+			if p.Source.ID == PromptSourceGoalPhaseSetHint {
+				t.Errorf("GoalPhaseSet hint should NOT appear in phase %q; got part: %q", phase, p.ID)
+			}
+		}
+	}
+}
