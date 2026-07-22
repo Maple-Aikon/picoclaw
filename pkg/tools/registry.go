@@ -938,6 +938,17 @@ func (r *ToolRegistry) ToProviderDefs() []providers.ToolDefinition {
 	sorted := r.sortedToolNames()
 	definitions := make([]providers.ToolDefinition, 0, len(sorted))
 	for _, name := range sorted {
+		// Phase 11 fix: honour the runtime allowlist when projecting tool
+		// definitions to the provider. Previously SetAllowlist only filtered
+		// future Register() calls; this method skipped the check, so the
+		// 4-phase goal allowlist (GoalPhaseSet/Open/Checkpoint/Final) was
+		// a writer-without-reader bug — LLM saw full tool list at every iter,
+		// defeating the `set_goal`-only forced-funnel at iter 1. See plan
+		// ~/.picoclaw/workspace/memory/plan/picoclaw-phase12.2-fix-to-provider-defs-allowlist-filter.md
+		if !r.toolAllowedLocked(name) {
+			continue
+		}
+
 		entry := r.tools[name]
 
 		if !entry.IsCore && entry.TTL <= 0 {

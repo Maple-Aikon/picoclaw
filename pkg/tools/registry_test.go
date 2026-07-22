@@ -1121,3 +1121,72 @@ func TestToolRegistry_OpenTools_IgnoresUnnamedBreakers(t *testing.T) {
 		t.Fatalf("OpenTools()[0].Name = %q, want %q", got[0].Name, "web_search")
 	}
 }
+
+// TestToolRegistry_SetAllowlistFiltersToProviderDefs covers the Phase 11 writer-
+// without-reader bug fix: ToProviderDefs must honour the runtime allowlist the
+// same way Register-time filtering does. Previously the allowlist was stored
+// (SetAllowlist) but ignored at projection time, so iter-1 forced-funnel
+// ([set_goal] only) leaked the full tool list to the LLM. Regression-guard for
+// the 2026-07-23 incident where a Telegram turn with no active goal saw 85
+// tools at iter 1 instead of 1.
+func TestToolRegistry_SetAllowlistFiltersToProviderDefs(t *testing.T) {
+	r := NewToolRegistry()
+	r.SetAllowlist([]string{"set_goal"})
+
+	r.Register(newMockTool("set_goal", "set the active goal"))
+	r.Register(newMockTool("read_file", "read a file"))
+	r.Register(newMockTool("mcp_signet_memory_search", "memory search"))
+
+	defs := r.ToProviderDefs()
+	got := make([]string, 0, len(defs))
+	for _, d := range defs {
+		got = append(got, d.Function.Name)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("ToProviderDefs() returned %d tool(s), want 1; got=%v", len(got), got)
+	}
+	if got[0] != "set_goal" {
+		t.Fatalf("ToProviderDefs()[0].Function.Name = %q, want %q", got[0], "set_goal")
+	}
+
+	// Empty allowlist = no filter (Phase 11 fail-open semantics).
+	r.SetAllowlist(nil)
+	r2 := NewToolRegistry()
+	r2.Register(newMockTool("set_goal", "set the active goal"))
+	r2.Register(newMockTool("read_file", "read a file"))
+
+	if got := r2.ToProviderDefs(); len(got) != 2 {
+		t.Fatalf("ToProviderDefs() with nil allowlist returned %d, want 2", len(got))
+	}
+}
+
+// TestToolRegistry_SetAllowlistFiltersToProviderDefs_DiscoveryBypass verifies
+// that the discovery tools (BM25SearchToolName, RegexSearchToolName) still
+// bypass the allowlist even after the fix, matching the Register-time
+// semantics in TestToolRegistry_AllowlistStillAllowsDiscoveryTools.
+func TestToolRegistry_SetAllowlistFiltersToProviderDefs_DiscoveryBypass(t *testing.T) {
+	r := NewToolRegistry()
+	r.SetAllowlist([]string{"some_real_tool"})
+
+	r.Register(newMockTool(BM25SearchToolName, "discover hidden tools"))
+	r.Register(newMockTool(RegexSearchToolName, "discover hidden tools via regex"))
+	r.Register(newMockTool("some_real_tool", "real"))
+
+	defs := r.ToProviderDefs()
+	got := make([]string, 0, len(defs))
+	for _, d := range defs {
+		got = append(got, d.Function.Name)
+	}
+
+	// Expect 3: 2 discovery tools (bypass) + 1 allowed real tool.
+	want := map[string]bool{BM25SearchToolName: true, RegexSearchToolName: true, "some_real_tool": true}
+	if len(got) != len(want) {
+		t.Fatalf("ToProviderDefs() = %v (len %d), want exactly %v entries", got, len(got), want)
+	}
+	for _, n := range got {
+		if !want[n] {
+			t.Fatalf("ToProviderDefs() leaked %q; want only the 3 allowlisted/discovery tools", n)
+		}
+	}
+}
