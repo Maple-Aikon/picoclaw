@@ -1037,6 +1037,26 @@ func (ts *turnState) toolLimitHintMessage() providers.Message {
 	}
 }
 
+// recoveryHintMessage returns a provider.Message that injects the
+// pendingRecoveryMessage (if any) into the next LLM call, then clears
+// the field so subsequent calls in the same iteration don't repeat it.
+//
+// This is wired in pipeline_llm.go immediately after the interrupt/tool-limit
+// hint blocks. Without this consumer (Phase 11.1 fix), pendingRecoveryMessage
+// was set by recovery_goal.go (empty response, text-only streak, tool exec
+// error) but never reached the LLM context — counters still bumped, retries
+// still fired, but the LLM saw the same messages without guidance.
+func (ts *turnState) recoveryHintMessage() providers.Message {
+	content := ts.pendingRecoveryMessage
+	ts.pendingRecoveryMessage = ""
+	if strings.TrimSpace(content) == "" {
+		// Return a zero-value message; caller should check Content == ""
+		// before appending to avoid empty user-role messages.
+		return providers.Message{}
+	}
+	return recoveryPromptMessage(content)
+}
+
 // =============================================================================
 // SubTurn-related methods
 // =============================================================================

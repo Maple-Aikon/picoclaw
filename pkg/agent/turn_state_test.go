@@ -281,3 +281,87 @@ func TestTurnState_AsExtender_InterfaceSatisfied(t *testing.T) {
 		t.Error("via extender: CanExtendIterationCap() = false, want true")
 	}
 }
+
+// =============================================================================
+// Phase 11.1: Recovery Hint Message (pendingRecoveryMessage consumer)
+// =============================================================================
+//
+// Background: Phase 5 wired recovery_goal.go to set ts.pendingRecoveryMessage
+// on empty response / text-only streak / tool exec error and return
+// ControlContinue. But no consumer ever appended the message into the next
+// LLM call — the field was set, never read. Phase 11.1 adds a consumer:
+// ts.recoveryHintMessage() returns + clears the field on demand.
+//
+// These tests cover the (a) consumption semantics (clear after read) and
+// (b) PromptSlot/Source metadata, which differ from interrupt/toollimit hints
+// because the recovery hint represents runtime-guidance feedback to the
+// model about its previous output, not a system directive.
+
+func TestRecoveryHintMessage_ConsumesAndClearsPendingRecoveryMessage(t *testing.T) {
+	_, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	agent.MaxIterations = 20
+
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	// 1. Empty pending → empty message (caller skips append)
+	ts.pendingRecoveryMessage = ""
+	if got := ts.recoveryHintMessage(); got.Content != "" {
+		t.Errorf("empty pending → empty message, got %q", got.Content)
+	}
+	if ts.pendingRecoveryMessage != "" {
+		t.Errorf("field must remain empty after empty read, got %q", ts.pendingRecoveryMessage)
+	}
+
+	// 2. Set pending → first read returns message, field clears
+	const want = "Your previous response was empty. Please provide a response with text or tool calls to make progress."
+	ts.pendingRecoveryMessage = want
+	got := ts.recoveryHintMessage()
+	if got.Content != want {
+		t.Errorf("first read: Content = %q, want %q", got.Content, want)
+	}
+	if ts.pendingRecoveryMessage != "" {
+		t.Errorf("field must be cleared after read, got %q", ts.pendingRecoveryMessage)
+	}
+
+	// 3. Second read (no further set) → empty message, idempotent
+	if got2 := ts.recoveryHintMessage(); got2.Content != "" {
+		t.Errorf("second read after clear: Content = %q, want empty", got2.Content)
+	}
+
+	// 4. Whitespace-only pending is treated as empty
+	ts.pendingRecoveryMessage = "   \t\n"
+	if got3 := ts.recoveryHintMessage(); got3.Content != "" {
+		t.Errorf("whitespace pending → empty message, got %q", got3.Content)
+	}
+}
+
+func TestRecoveryHintMessage_CarriesPromptSlotRecoveryMetadata(t *testing.T) {
+	_, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
+	defer cleanup()
+	agent.MaxIterations = 20
+
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+
+	ts.pendingRecoveryMessage = "Tool call failed: missing arg"
+	got := ts.recoveryHintMessage()
+
+	if got.Role != "user" {
+		t.Errorf("Role = %q, want user", got.Role)
+	}
+	if got.PromptLayer != string(PromptLayerTurn) {
+		t.Errorf("PromptLayer = %q, want %q", got.PromptLayer, PromptLayerTurn)
+	}
+	if got.PromptSlot != string(PromptSlotRecovery) {
+		t.Errorf("PromptSlot = %q, want %q (recovery hint slot)", got.PromptSlot, PromptSlotRecovery)
+	}
+	if got.PromptSource != string(PromptSourceRecovery) {
+		t.Errorf("PromptSource = %q, want %q (recovery hint source)", got.PromptSource, PromptSourceRecovery)
+	}
+}

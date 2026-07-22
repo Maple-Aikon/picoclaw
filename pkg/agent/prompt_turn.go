@@ -238,3 +238,12 @@ func interruptPromptMessage(content string) providers.Message {
 		PromptSourceInterrupt,
 	)
 }
+
+func recoveryPromptMessage(content string) providers.Message {
+	return promptMessageWithMetadata(
+		providers.Message{Role: "user", Content: content},
+		PromptLayerTurn,
+		PromptSlotRecovery,
+		PromptSourceRecovery,
+	)
+}

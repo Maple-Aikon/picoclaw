@@ -96,6 +96,17 @@ func (p *Pipeline) CallLLM(
 	// start, and the user-facing reply is emitted via complete_goal's
 	// `summary` arg (or assistantText) at the end of the turn. There is
 	// no longer a [Task context reminder] slot.
+	//
+	// Recovery hint injection (Phase 11.1): per-iteration recovery messages
+	// (empty response, text-only streak, tool exec error) are stashed in
+	// ts.pendingRecoveryMessage by recovery_goal.go before ControlContinue
+	// re-enters this loop. We consume them here exactly once — next
+	// iteration's LLM call sees the hint, then the field clears so the
+	// hint does not repeat. Without this consumer (the Phase 5 → 11 gap),
+	// the message was set but never reached the LLM context.
+	if recoveryMsg := ts.recoveryHintMessage(); recoveryMsg.Content != "" {
+		exec.callMessages = append(append([]providers.Message(nil), exec.callMessages...), recoveryMsg)
+	}
 	if err := p.routeMediaTurn(ts, exec); err != nil {
 		return ControlBreak, err
 	}

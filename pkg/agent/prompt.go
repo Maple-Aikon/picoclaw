@@ -40,6 +40,7 @@ const (
 	PromptSlotToolResult   PromptSlot = "tool_result"
 	PromptSlotInterrupt    PromptSlot = "interrupt"
 	PromptSlotOutput       PromptSlot = "output"
+	PromptSlotRecovery     PromptSlot = "recovery"
 )
 
 type PromptSourceID string
@@ -63,6 +64,7 @@ const (
 	PromptSourceSubTurnResult  PromptSourceID = "turn:subturn_result"
 	PromptSourceToolResult     PromptSourceID = "turn:tool_result"
 	PromptSourceInterrupt      PromptSourceID = "turn:interrupt"
+	PromptSourceRecovery        PromptSourceID = "turn:recovery"
 )
 
 type PromptCachePolicy string
