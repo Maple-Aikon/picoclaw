@@ -4,9 +4,12 @@
 package agent
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 func newPhase5TurnState() *turnState {
@@ -57,30 +60,43 @@ func TestEvaluateRecovery_EmptyText_PhaseLock_NoTrigger(t *testing.T) {
 func TestEvaluateRecovery_TextOnly2x_PhaseOpen_ForceComplete(t *testing.T) {
 	ts := newPhase5TurnState()
 	ctx := RecoveryContext{Phase: "Open", TextEmpty: false, HasToolCalls: false}
-	// First text-only: streak becomes 1, no trigger yet
-	action1, _ := evaluateRecovery(ts, ctx)
-	if action1 != RecoveryNone {
-		t.Fatalf("first text-only should not force-complete, got %v", action1)
+	// First text-only: streak becomes 1, soft prompt fires (Phase 12)
+	action1, msg1 := evaluateRecovery(ts, ctx)
+	if action1 != RecoveryRetrySameIteration {
+		t.Fatalf("first text-only should soft retry, got %v", action1)
+	}
+	if msg1 != TextOnlySoftRetryMessage {
+		t.Fatalf("expected soft prompt message, got %q", msg1)
 	}
 	if ts.textOnlyStreak != 1 {
 		t.Fatalf("expected streak=1 after first text-only, got %d", ts.textOnlyStreak)
 	}
-	// Second text-only: streak becomes 2, force-complete fires
-	action2, msg := evaluateRecovery(ts, ctx)
-	if action2 != RecoveryForceComplete {
-		t.Fatalf("second text-only should force-complete, got %v", action2)
+	if ts.textOnlySoftRetriesDone != 1 {
+		t.Fatalf("expected soft_retries=1, got %d", ts.textOnlySoftRetriesDone)
 	}
-	if msg != TextOnlyForceCompleteMessage {
-		t.Fatalf("expected force-complete message, got %q", msg)
+	// Second text-only (same iter, immediately after): hard prompt fires
+	action2, msg2 := evaluateRecovery(ts, ctx)
+	if action2 != RecoveryRetrySameIteration {
+		t.Fatalf("second text-only should hard retry, got %v", action2)
+	}
+	if msg2 != TextOnlyHardRetryMessage {
+		t.Fatalf("expected hard prompt message, got %q", msg2)
+	}
+	if ts.textOnlyStreak != 2 {
+		t.Fatalf("expected streak=2, got %d", ts.textOnlyStreak)
+	}
+	if ts.textOnlyHardRetriesDone != 1 {
+		t.Fatalf("expected hard_retries=1, got %d", ts.textOnlyHardRetriesDone)
 	}
 }
 
 func TestEvaluateRecovery_TextOnly3x_ArchiveGoal(t *testing.T) {
 	ts := newPhase5TurnState()
 	ctx := RecoveryContext{Phase: "Open", TextEmpty: false, HasToolCalls: false}
-	evaluateRecovery(ts, ctx)
-	evaluateRecovery(ts, ctx)
-	// 3rd text-only exceeds force-complete cap
+	// Phase 12: soft + hard both fire within iteration; 3rd text-only
+	// exceeds the (1 soft + 1 hard = 2 retry) cap, archive fires.
+	_, _ = evaluateRecovery(ts, ctx) // soft
+	_, _ = evaluateRecovery(ts, ctx) // hard
 	action3, _ := evaluateRecovery(ts, ctx)
 	if action3 != RecoveryArchiveGoal {
 		t.Fatalf("3rd text-only should archive goal, got %v", action3)
@@ -241,5 +257,50 @@ func TestCheckToolExecErrorRecovery_NonToolRole(t *testing.T) {
 	}
 	if tool, _ := checkToolExecErrorRecovery(ts, exec); tool != "" {
 		t.Fatalf("expected no trigger on assistant message, got %q", tool)
+	}
+}
+
+func TestBuildToolExecErrorRetryMessage_NoRegistry_BaseOnly(t *testing.T) {
+	got := buildToolExecErrorRetryMessage("web_search", "connection refused", nil)
+	want := fmt.Sprintf(ToolExecErrorRetryMessage, "connection refused")
+	if got != want {
+		t.Fatalf("nil registry should return base message\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestBuildToolExecErrorRetryMessage_RegistryNoKnowledge_BaseOnly(t *testing.T) {
+	r := tools.NewToolRegistry()
+	// No lesson recorded for "web_search" — LoadForEscalation returns "".
+	got := buildToolExecErrorRetryMessage("web_search", "connection refused", r)
+	want := fmt.Sprintf(ToolExecErrorRetryMessage, "connection refused")
+	if got != want {
+		t.Fatalf("registry without knowledge should return base message\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestBuildToolExecErrorRetryMessage_WithKnowledge_Appends(t *testing.T) {
+	ws := t.TempDir()
+	store, err := tools.NewToolKnowledgeStore(ws, "")
+	if err != nil {
+		t.Fatalf("NewToolKnowledgeStore: %v", err)
+	}
+	body := "Always include retry_count argument; default 0 makes call infinite-loop."
+	if _, _, err := store.Save("web_search", body); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Stand up a minimal registry that exposes this store. The ToolRegistry
+	// constructor wires an empty store by default; we replace it for the
+	// test scope.
+	r := tools.NewToolRegistry()
+	r.SetToolKnowledgeStore(store)
+
+	got := buildToolExecErrorRetryMessage("web_search", "connection refused", r)
+	want := fmt.Sprintf(ToolExecErrorRetryMessage, "connection refused")
+	if got == want {
+		t.Fatalf("registry with knowledge should append, got base message only")
+	}
+	if !strings.Contains(got, body) {
+		t.Fatalf("expected knowledge body in message, got %q", got)
 	}
 }

@@ -1213,14 +1213,14 @@ func TestTurnCoord_RecoveryTrigger_ApplyActionState(t *testing.T) {
 		t.Fatalf("retry action should not set goalArchiveRequested")
 	}
 
-	// RecoveryForceComplete: phase 11 removed forceCompleteNext flag —
-	// complete_goal now sets ts.goalFinalized directly and the loop
-	// breaks at the next turn_coord.go check. Recovery just records
-	// the message and lets the LLM run another iteration.
+	// Phase 12 redesign: text-only recovery now uses RetrySameIteration
+	// for both soft and hard prompts (no more RecoveryForceComplete
+	// action). The retry just records the message and lets the LLM run
+	// another iteration in the SAME iteration slot.
 	ts2 := &turnState{toolExecRecoveryAttempts: make(map[string]int)}
-	ts2.pendingRecoveryMessage = TextOnlyForceCompleteMessage
+	ts2.pendingRecoveryMessage = TextOnlyHardRetryMessage
 	if ts2.pendingRecoveryMessage == "" {
-		t.Fatalf("expected pendingRecoveryMessage set after force-complete")
+		t.Fatalf("expected pendingRecoveryMessage set after hard text-only")
 	}
 
 	// RecoveryArchiveGoal sets goalArchiveRequested only.
@@ -1366,5 +1366,43 @@ func TestHook2_ThreeConcurrentPanics_AllArchiveGoal(t *testing.T) {
 	g, _ := store.Read(sessionKey)
 	if g.Status != goal.StatusAborted {
 		t.Fatalf("status = %q, want aborted", g.Status)
+	}
+}
+// Phase 12 live-verify: text-only 2x retry/iter with escalation.
+// Unit-level test against evaluateRecovery (no full runTurn needed,
+// which would require seeding a goal first). Verifies: text-only x1
+// → soft prompt; text-only x2 → hard prompt; text-only x3 → archive.
+// Counters reset when LLM produces tool calls.
+func TestRunTurn_Phase12_TextOnly2x_ThenArchive(t *testing.T) {
+	ts := newPhase5TurnState()
+	ctx := RecoveryContext{Phase: "Open", HasToolCalls: false, TextEmpty: false}
+
+	act1, msg1 := evaluateRecovery(ts, ctx)
+	if act1 != RecoveryRetrySameIteration || msg1 != TextOnlySoftRetryMessage {
+		t.Fatalf("1st text-only: action=%v msg=%q (want RetrySameIteration + soft)", act1, msg1)
+	}
+	if ts.textOnlySoftRetriesDone != 1 {
+		t.Fatalf("after soft: soft_done=%d (want 1)", ts.textOnlySoftRetriesDone)
+	}
+
+	act2, msg2 := evaluateRecovery(ts, ctx)
+	if act2 != RecoveryRetrySameIteration || msg2 != TextOnlyHardRetryMessage {
+		t.Fatalf("2nd text-only: action=%v msg=%q (want RetrySameIteration + hard)", act2, msg2)
+	}
+	if ts.textOnlyHardRetriesDone != 1 {
+		t.Fatalf("after hard: hard_done=%d (want 1)", ts.textOnlyHardRetriesDone)
+	}
+
+	act3, _ := evaluateRecovery(ts, ctx)
+	if act3 != RecoveryArchiveGoal {
+		t.Fatalf("3rd text-only: action=%v (want ArchiveGoal)", act3)
+	}
+
+	// Tool-call response resets counters (defensive).
+	ctx2 := RecoveryContext{Phase: "Open", HasToolCalls: true, TextEmpty: false}
+	_, _ = evaluateRecovery(ts, ctx2)
+	if ts.textOnlySoftRetriesDone != 0 || ts.textOnlyHardRetriesDone != 0 || ts.textOnlyStreak != 0 {
+		t.Fatalf("counters should reset on tool call: soft=%d hard=%d streak=%d",
+			ts.textOnlySoftRetriesDone, ts.textOnlyHardRetriesDone, ts.textOnlyStreak)
 	}
 }

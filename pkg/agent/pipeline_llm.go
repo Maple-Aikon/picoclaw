@@ -717,10 +717,12 @@ func (p *Pipeline) proceedPastLLM(
 		// re-invoke LLM in the same iteration, force-complete, or archive.
 		if ts.hasGoal() && !exec.gracefulTerminal {
 			if action, msg := evaluateRecovery(ts, RecoveryContext{
-				Phase:        string(ts.currentGoalPhase()),
-				Iteration:    iteration,
-				TextEmpty:    exec.response.Content == "",
-				HasToolCalls: false,
+				Phase:                 string(ts.currentGoalPhase()),
+				Iteration:             iteration,
+				TextEmpty:             exec.response.Content == "",
+				HasToolCalls:          false,
+				MaxIterations:         ts.iterationCap,
+				ToolKnowledgeRegistry: ts.agent.Tools,
 			}); action != RecoveryNone {
 				return p.applyRecoveryAction(ctx, turnCtx, ts, exec, iteration, action, msg)
 			}

@@ -246,6 +246,15 @@ type turnState struct {
 	emptyResponseRecoverySent bool    // once per iteration: have we injected EMPTY_FINAL_RESPONSE_MESSAGE yet?
 	toolExecRecoveryAttempts map[string]int // per-tool execution error retry count (not signature). Same iteration.
 
+	// Phase 12: per-iteration escalation counters for text-only recovery.
+	// Soft retry fires first (gentle prompt), hard retry fires second (firm
+	// prompt); if LLM still produces text-only after hard, archive the goal.
+	// Both reset at iteration boundary (when ts.iteration bumps). Streak
+	// is left intact across same-iteration retries because textOnlyStreak
+	// tracks cross-iteration cadence — these counters track within-iteration.
+	textOnlySoftRetriesDone int // how many soft prompts fired in current iteration
+	textOnlyHardRetriesDone int // how many hard prompts fired in current iteration
+
 	// Goal-lifecycle recovery side-effects (Phase 5): set by applyRecoveryAction.
 	// Consumed at the start of the next iteration (ControlContinue path) to
 	// inject the recovery message into the conversation, strip non-goal tools,
