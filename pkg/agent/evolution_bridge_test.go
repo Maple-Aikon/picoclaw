@@ -1332,7 +1332,7 @@ func (p *lateSkillOnRetryProvider) Chat(
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
 	// Guard against the background task-extraction call from
-	// pipeline_setup.go SetupTurn (extractTaskWithFallback). Without this
+	// pipeline_setup.go SetupTurn (legacy extraction removed in Phase 9). Without this
 	// guard, the first Chat() hit writes the late-skill file to disk and
 	// triggers the recovery path before the main turn's first call.
 	if isTaskExtractionCall(messages, tools, opts) {

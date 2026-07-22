@@ -32,7 +32,7 @@ import (
 )
 
 // taskExtractionResponse returns a valid task-summary echo for background
-// extraction calls from pipeline_setup.go extractTaskWithFallback.
+// extraction calls from legacy extraction removed in Phase 9.
 //
 // DEPRECATED as of Phase 8.2 (2026-07-21): see isTaskExtractionCall above.
 // Returns the trimmed <user_message> contents (capped at 200 chars) as a
@@ -55,18 +55,17 @@ func taskExtractionResponse(messages []providers.Message) string {
 	return "task summary"
 }
 
-// isTaskExtractionCall detects the background task-extraction LLM call from
-// pipeline_setup.go SetupTurn (extractTaskWithFallback).
+// isTaskExtractionCall detected the background task-extraction LLM call from
+// pipeline_setup.go SetupTurn (legacy extraction removed in Phase 9).
 // Signature: 1 user message with <user_message> tag, 0 tools, max_tokens=256.
 //
-// DEPRECATED as of Phase 8.2 (2026-07-21): extractTaskWithFallback is now
-// a no-op stub (returns "" without making any LLM call), so this detector
-// will no longer match any real call. Test fixtures still keep the branch
-// for defensive reasons — if someone reintroduces a task-extraction path
-// before Phase 9 removes the deprecated fns entirely, the fixture will
-// resume returning canned responses. Removal target: Phase 9.
-// See plan picoclaw-phase8-replace-task-summary-with-goal-checkpoint-20260721.md
-// §6 Q2.
+// Removed in Phase 9 (2026-07-22): extractTaskWithFallback was a no-op
+// stub since Phase 8.2 (2026-07-21) and Phase 9 deleted it entirely. The
+// function and its detector are kept here as a no-op for tests that still
+// reference the symbol; the fixture path remains only for
+// history-of-architecture reasons; do not reintroduce the extraction
+// mechanism — reminder is now sourced from goal.StatusSnapshot via
+// al.loadTaskSummary (replaced by goal.Summary in Phase 11).
 func isTaskExtractionCall(messages []providers.Message, tools []providers.ToolDefinition, opts map[string]any) bool {
 	if len(messages) != 1 || len(tools) != 0 {
 		return false
@@ -196,7 +195,7 @@ func (p *panicAfterStartProvider) Chat(
 	options map[string]any,
 ) (*providers.LLMResponse, error) {
 	// Guard against the background task-extraction call from
-	// pipeline_setup.go SetupTurn (extractTaskWithFallback) — it shares this
+	// pipeline_setup.go SetupTurn (legacy extraction removed in Phase 9) — it shares this
 	// provider instance with the main turn, so without a guard the first call
 	// here is consumed by task extraction (and would panic mid-write, leaving
 	// the workspace directory non-empty and breaking t.TempDir cleanup).
@@ -7743,7 +7742,7 @@ func (p *concurrentMockProvider) Chat(
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
 	// Guard against the background task-extraction call from
-	// pipeline_setup.go SetupTurn (extractTaskWithFallback). Without this
+	// pipeline_setup.go SetupTurn (legacy extraction removed in Phase 9). Without this
 	// guard, every turn's background goroutine fires responseFunc and the
 	// test's WaitGroup is reused before its Wait() returns (background calls
 	// also call wg.Done, exceeding the Add(3) budget).
