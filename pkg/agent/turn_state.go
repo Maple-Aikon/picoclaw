@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/agent/goal"
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -223,7 +224,10 @@ type turnState struct {
 
 	phase                 TurnPhase
 	iteration             int
-	iterationCap          int    // (Phase 10 removed extend_turn_iteration tool, so this is now effectively constant per turn)
+	iterationCap          int    // (Phase 10.1 restored: goal_progress can self-extend up to agent.MaxIterationsCap)
+	maxIterationsCap      int    // (Phase 10.1) absolute ceiling for iterationCap; set from agent.MaxIterationsCap at turn start (0 = unbounded)
+	lastExtensionReason   string // Phase 10.1: reason string from the most recent ExtendIterationCap call (for audit/diagnostics)
+	lastExtensionAtIter   int    // Phase 10.1: iteration number when ExtendIterationCap last fired (0 = never extended)
 
 	// Replay counter: bound AfterLLM hook replay attempts within a single iteration.
 	// Replay attempts are recovery retries (e.g. malformed tool-call recovery)
@@ -316,10 +320,13 @@ func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScop
 		startedAt:    time.Now(),
 	}
 
-	// Initialize iterationCap to the agent's MaxIterations. The cap is now
-	// effectively constant for the duration of the turn (Phase 10 removed
-	// extend_turn_iteration tool, so no in-turn extension is possible).
+	// Initialize iterationCap to the agent's MaxIterations. Phase 10.1
+	// restored the ExtendIterationCap mechanism so goal_progress (and any
+	// future internal recovery code) can self-extend iterationCap up to
+	// agent.MaxIterationsCap. The user-facing /extend command was removed
+	// in Phase 10; only programmatic internal callers may extend.
 	ts.iterationCap = agent.MaxIterations
+	ts.maxIterationsCap = agent.MaxIterationsCap
 
 	// Initialize replayCap to agent.MaxReplayAttempts (defaultRetryMaxAttempts
 	// when unset). The cap bounds how many same-iteration LLM replays a hook
@@ -499,12 +506,91 @@ func (ts *turnState) CurrentIteration() int {
 }
 
 // IterationCap returns the turn's iteration cap. The cap is set at turn start
-// from agent.MaxIterations and remains constant for the turn's lifetime
-// (Phase 10 removed the extend_turn_iteration tool).
+// from agent.MaxIterations and may be extended during the turn by
+// ExtendIterationCap (Phase 10.1 restored for goal_progress self-extend).
 func (ts *turnState) IterationCap() int {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 	return ts.iterationCap
+}
+
+// MaxIterationsCap returns the absolute ceiling for iterationCap (set from
+// agent.MaxIterationsCap at turn start). ExtendIterationCap refuses any
+// extension that would push iterationCap past this value.
+func (ts *turnState) MaxIterationsCap() int {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return ts.maxIterationsCap
+}
+
+// ExtendIterationCap programmatically raises iterationCap by n additional
+// iterations, clamped to the absolute ceiling agent.MaxIterationsCap. Returns
+// the new iterationCap value and the delta actually applied (0 if n == 0,
+// negative if the cap was already at the ceiling and could not be extended
+// further).
+//
+// Phase 10.1: restored from Phase 10 removal. The only caller is the
+// goal_progress tool handler, which uses this to keep the iterationCap above
+// the current iteration when remaining_steps > 0, so the agent can keep
+// making progress within a single turn. Other internal recovery logic may
+// also call it in future phases.
+//
+// Replaces the user-facing extend_turn_iteration tool that Phase 10 removed.
+// Tool integration via WithIterationExtender is no longer required; this
+// method is now called directly from goal_progress via the turnState passed
+// through the tool's exec context.
+func (ts *turnState) ExtendIterationCap(n int, reason string) (newCap int, delta int) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	if n == 0 {
+		return ts.iterationCap, 0
+	}
+	if n < 0 {
+		return ts.iterationCap, 0
+	}
+	if ts.maxIterationsCap <= 0 {
+		// No ceiling configured: unbounded but conservative fallback (cap = +n).
+		ts.iterationCap += n
+		ts.lastExtensionReason = reason
+		ts.lastExtensionAtIter = ts.iteration
+		return ts.iterationCap, n
+	}
+	ceiling := ts.maxIterationsCap
+	proposed := ts.iterationCap + n
+	if proposed > ceiling {
+		// Clamp to ceiling; delta reflects what was actually granted.
+		delta = ceiling - ts.iterationCap
+		ts.iterationCap = ceiling
+	} else {
+		delta = n
+		ts.iterationCap = proposed
+	}
+	ts.lastExtensionReason = reason
+	ts.lastExtensionAtIter = ts.iteration
+	return ts.iterationCap, delta
+}
+
+// LastExtensionInfo returns the reason and iteration number from the most
+// recent ExtendIterationCap call. Both zero values mean no extension has
+// happened this turn (used for diagnostics + @debugcf logging).
+func (ts *turnState) LastExtensionInfo() (reason string, atIter int) {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.lastExtensionReason, ts.lastExtensionAtIter
+}
+
+// CanExtendIterationCap reports whether iterationCap is below the absolute
+// ceiling agent.MaxIterationsCap (i.e. there is room for at least one more
+// extension). Callers should check this before calling ExtendIterationCap to
+// avoid redundant extension events in @debugcf logs.
+func (ts *turnState) CanExtendIterationCap() bool {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	if ts.maxIterationsCap <= 0 {
+		return true
+	}
+	return ts.iterationCap < ts.maxIterationsCap
 }
 
 func (ts *turnState) setFinalContent(content string) {
@@ -1024,4 +1110,12 @@ func turnStateFromContext(ctx context.Context) *turnState {
 // TurnStateFromContext retrieves turnState from context (exported for tools)
 func TurnStateFromContext(ctx context.Context) *turnState {
 	return turnStateFromContext(ctx)
+}
+
+// AsExtender returns the turnState wrapped as goal.IterationExtender so
+// packages that cannot import the private turnState type (e.g. pkg/agent/goal)
+// can still call the extension methods. The returned interface is declared
+// in pkg/agent/goal (the sole consumer) to avoid an import cycle.
+func (ts *turnState) AsExtender() goal.IterationExtender {
+	return ts
 }

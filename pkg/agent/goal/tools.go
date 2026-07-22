@@ -16,6 +16,43 @@ import (
 	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
 
+// Phase 10.1: extenderKey is the context key used by pipeline_execute.go
+// to surface a turn's iteration extender (an opaque interface) to goal
+// tools. Goal is the only consumer; the key is unexported so no other
+// package can resolve it.
+type extenderKey struct{}
+
+// IterationExtender is the public interface goal tools use to extend a
+// turn's iteration cap. Phase 10 removed the user-facing extend_turn_iteration
+// tool; this interface is the lightweight replacement so the goal-progress
+// self-extend wire can keep working.
+type IterationExtender interface {
+	RemainingIterations() int
+	CanExtendIterationCap() bool
+	ExtendIterationCap(n int, reason string) (newCap int, delta int)
+}
+
+// WithIterationExtender attaches an IterationExtender to ctx. Pipeline
+// execute code calls this once per tool invocation; goal tools read it via
+// IterationExtenderFromContext.
+func WithIterationExtender(ctx context.Context, ext IterationExtender) context.Context {
+	if ext == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, extenderKey{}, ext)
+}
+
+// IterationExtenderFromContext retrieves an IterationExtender previously
+// attached via WithIterationExtender. Returns nil if absent (e.g. tool
+// invoked outside the normal turn loop, or in tests that don't wrap ctx).
+func IterationExtenderFromContext(ctx context.Context) IterationExtender {
+	if ctx == nil {
+		return nil
+	}
+	v, _ := ctx.Value(extenderKey{}).(IterationExtender)
+	return v
+}
+
 // goalNameRe enforces the schema-declared ASCII / hyphen / underscore charset.
 // The pattern also caps length to 64 chars to keep archive filenames predictable.
 var goalNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -437,6 +474,19 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 	idx := len(g.Progress)
 	summary := fmt.Sprintf("Logged progress entry #%d for session %s.\n\n%s",
 		idx, shortSessionKey(sessionKey), lastEntryRendered(g.Progress[len(g.Progress)-1]))
+
+	// Phase 10.1: self-extend the turn's iteration cap so the agent can keep
+	// working through remaining_steps in subsequent iterations of this turn.
+	// Wire: goal_progress -> ExtendIterationCap(N=agent.MaxIterations, ...).
+	// Guard: only extend when there is at least one remaining step AND the
+	// current iteration has hit the cap (RemainingIterations==0), otherwise
+	// we'd log a redundant extension event on every checkpoint.
+	if ext := IterationExtenderFromContext(ctx); ext != nil {
+		if len(remaining) > 0 && ext.RemainingIterations() == 0 && ext.CanExtendIterationCap() {
+			_, _ = ext.ExtendIterationCap(0, "goal_progress: remaining_steps>0, hit cap, self-extending")
+		}
+	}
+
 	return &toolshared.ToolResult{ForLLM: summary}
 }
 

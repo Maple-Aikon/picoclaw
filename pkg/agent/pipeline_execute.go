@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	goalpkg "github.com/sipeed/picoclaw/pkg/agent/goal"
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/constants"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
@@ -575,6 +576,12 @@ toolLoop:
 			ts.sessionKey,
 			ts.opts.Dispatch.SessionScope,
 		)
+		// Phase 10.1: surface an iteration extender to tools so goal_progress
+		// can self-extend iterationCap via goal.IterationExtenderFromContext.
+		// We don't expose turnState itself (would create an import cycle),
+		// only the narrow IterationExtender interface that pkg/agent/goal
+		// declares and depends on.
+		execCtx = goalpkg.WithIterationExtender(execCtx, ts.AsExtender())
 		toolResult := ts.agent.Tools.ExecuteWithContext(
 			execCtx,
 			toolName,

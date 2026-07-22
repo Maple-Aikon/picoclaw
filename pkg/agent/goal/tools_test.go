@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
@@ -595,5 +596,167 @@ func TestCompleteGoalTool_ClearsSnapshot(t *testing.T) {
 	}
 	if g.StatusSnapshot != "" {
 		t.Errorf("complete_goal should clear snapshot before archive, got %q", g.StatusSnapshot)
+	}
+}
+
+// --- Phase 10.1: goal_progress → ExtendIterationCap wire tests ---
+
+// fakeExtender is a minimal IterationExtender used to verify the
+// goal_progress → ExtendIterationCap wire contract without needing a real
+// turnState. Tracks call count and last reason.
+type fakeExtender struct {
+	mu             sync.Mutex
+	remaining      int
+	canExtend      bool
+	extendCalls    int
+	lastReason     string
+	lastN          int
+}
+
+func (f *fakeExtender) RemainingIterations() int { return f.remaining }
+func (f *fakeExtender) CanExtendIterationCap() bool { return f.canExtend }
+func (f *fakeExtender) ExtendIterationCap(n int, reason string) (int, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.extendCalls++
+	f.lastReason = reason
+	f.lastN = n
+	return f.iterationCap() + n, n
+}
+func (f *fakeExtender) iterationCap() int { return 50 }
+func (f *fakeExtender) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.extendCalls
+}
+func (f *fakeExtender) recorded() (string, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastReason, f.lastN
+}
+
+func TestGoalProgressTool_ExtendsIterationCap_WhenRemainingSteps_AtCap(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-extend", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+
+	ext := &fakeExtender{remaining: 0, canExtend: true} // hit cap
+	ctx = WithIterationExtender(ctx, ext)
+
+	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
+		"completed_steps": []string{"write code"},
+		"remaining_steps": []string{"run tests"},
+		"next_action":     "run tests",
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+	if ext.callCount() != 1 {
+		t.Errorf("expected 1 ExtendIterationCap call, got %d", ext.callCount())
+	}
+	reason, _ := ext.recorded()
+	if !strings.Contains(reason, "goal_progress") {
+		t.Errorf("expected reason to mention goal_progress, got %q", reason)
+	}
+}
+
+func TestGoalProgressTool_NoExtend_WhenRemainingSteps_StillHasSlots(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-noextend", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+
+	ext := &fakeExtender{remaining: 5, canExtend: true} // NOT at cap
+	ctx = WithIterationExtender(ctx, ext)
+
+	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
+		"completed_steps": []string{"write code"},
+		"remaining_steps": []string{"run tests"},
+		"next_action":     "run tests",
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+	if ext.callCount() != 0 {
+		t.Errorf("expected 0 ExtendIterationCap calls when remaining>0, got %d", ext.callCount())
+	}
+}
+
+func TestGoalProgressTool_NoExtend_WhenAtCeiling(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-ceiling", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+
+	ext := &fakeExtender{remaining: 0, canExtend: false} // at ceiling
+	ctx = WithIterationExtender(ctx, ext)
+
+	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
+		"completed_steps": []string{"write code"},
+		"remaining_steps": []string{"run tests"},
+		"next_action":     "run tests",
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+	if ext.callCount() != 0 {
+		t.Errorf("expected 0 ExtendIterationCap calls when at ceiling, got %d", ext.callCount())
+	}
+}
+
+func TestGoalProgressTool_NoExtend_WhenNoRemainingSteps(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-noremaining", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+
+	ext := &fakeExtender{remaining: 0, canExtend: true}
+	ctx = WithIterationExtender(ctx, ext)
+
+	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
+		"completed_steps": []string{"write code", "run tests"},
+		"next_action":     "done",
+		// no remaining_steps → goal effectively complete, should NOT extend.
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+	if ext.callCount() != 0 {
+		t.Errorf("expected 0 ExtendIterationCap calls when remaining_steps empty, got %d", ext.callCount())
+	}
+}
+
+func TestGoalProgressTool_NoExtend_WhenExtenderAbsent(t *testing.T) {
+	// Tools invoked outside normal pipeline (e.g. CLI direct) must not panic
+	// when no extender is on ctx. Verify graceful no-op.
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-noextender", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+	// ctx has no extender attached
+
+	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
+		"completed_steps": []string{"write code"},
+		"remaining_steps": []string{"run tests"},
+		"next_action":     "run tests",
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %v", res.Err)
 	}
 }
