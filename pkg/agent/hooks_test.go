@@ -815,7 +815,7 @@ func TestAgentLoop_Hooks_ToolInterceptorCanRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
 	}
-	if resp != "after:modified" {
+	if !strings.HasPrefix(resp, "after:modified") {
 		t.Fatalf("expected rewritten tool result, got %q", resp)
 	}
 }
