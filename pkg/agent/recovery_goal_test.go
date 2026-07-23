@@ -292,18 +292,25 @@ func TestCheckToolExecErrorRecovery_NonToolRole(t *testing.T) {
 }
 
 func TestBuildToolExecErrorRetryMessage_NoRegistry_BaseOnly(t *testing.T) {
-	got := buildToolExecErrorRetryMessage("web_search", "connection refused", nil)
-	want := fmt.Sprintf(ToolExecErrorRetryMessage, "connection refused")
+	// Phase 12.6.1: signature gained `isTransient bool` arg between
+	// ToolExecErrorError and registry. nil registry + isTransient=false →
+	// base message only, no transient hint appended.
+	got := buildToolExecErrorRetryMessage("web_search", "connection refused", false, nil)
+	want := fmt.Sprintf(ToolExecErrorRetryMessage, "web_search", "connection refused")
 	if got != want {
 		t.Fatalf("nil registry should return base message\n got: %q\nwant: %q", got, want)
+	}
+	// Tool name MUST appear in the body (Phase 12.6.1 wire-up).
+	if !strings.Contains(got, `"web_search"`) {
+		t.Fatalf("Phase 12.6.1: tool name missing from retry message: %q", got)
 	}
 }
 
 func TestBuildToolExecErrorRetryMessage_RegistryNoKnowledge_BaseOnly(t *testing.T) {
 	r := tools.NewToolRegistry()
 	// No lesson recorded for "web_search" — LoadForEscalation returns "".
-	got := buildToolExecErrorRetryMessage("web_search", "connection refused", r)
-	want := fmt.Sprintf(ToolExecErrorRetryMessage, "connection refused")
+	got := buildToolExecErrorRetryMessage("web_search", "connection refused", false, r)
+	want := fmt.Sprintf(ToolExecErrorRetryMessage, "web_search", "connection refused")
 	if got != want {
 		t.Fatalf("registry without knowledge should return base message\n got: %q\nwant: %q", got, want)
 	}
@@ -326,13 +333,102 @@ func TestBuildToolExecErrorRetryMessage_WithKnowledge_Appends(t *testing.T) {
 	r := tools.NewToolRegistry()
 	r.SetToolKnowledgeStore(store)
 
-	got := buildToolExecErrorRetryMessage("web_search", "connection refused", r)
-	want := fmt.Sprintf(ToolExecErrorRetryMessage, "connection refused")
+	got := buildToolExecErrorRetryMessage("web_search", "connection refused", false, r)
+	want := fmt.Sprintf(ToolExecErrorRetryMessage, "web_search", "connection refused")
 	if got == want {
 		t.Fatalf("registry with knowledge should append, got base message only")
 	}
 	if !strings.Contains(got, body) {
 		t.Fatalf("expected knowledge body in message, got %q", got)
+	}
+	// Phase 12.6.1: knowledge-prefixed message must include the tool name
+	// AND the original error msg, since the LLM is told WHICH tool returned
+	// this error context.
+	if !strings.Contains(got, `"web_search"`) {
+		t.Fatalf("Phase 12.6.1: tool name missing from retry+knowledge message: %q", got)
+	}
+	if !strings.Contains(got, "connection refused") {
+		t.Fatalf("error message missing from retry+knowledge message: %q", got)
+	}
+}
+
+// TestBuildToolExecErrorRetryMessage_TransientFlag (Phase 12.6.1)
+// guards the IsTransient → TransientHint wire-up. Two cases:
+//
+//   - isTransient=false: base message only, no transient hint.
+//   - isTransient=true:  base message + ToolExecErrorTransientHint suffix.
+//
+// Regression proof: setting isTransient=true does NOT duplicate the base
+// message; setting false does NOT include the hint.
+func TestBuildToolExecErrorRetryMessage_TransientFlag(t *testing.T) {
+	baseNonTransient := buildToolExecErrorRetryMessage("web_search", "timeout", false, nil)
+	baseTransient := buildToolExecErrorRetryMessage("web_search", "timeout", true, nil)
+
+	// Both messages must include the tool name (Phase 12.6.1 wire-up
+	// independent of the transient flag).
+	if !strings.Contains(baseNonTransient, `"web_search"`) {
+		t.Fatalf("non-transient: tool name missing: %q", baseNonTransient)
+	}
+	if !strings.Contains(baseTransient, `"web_search"`) {
+		t.Fatalf("transient: tool name missing: %q", baseTransient)
+	}
+
+	// Non-transient must NOT include the transient-hint suffix.
+	if strings.Contains(baseNonTransient, "transient") || strings.Contains(baseNonTransient, "rate-limit") {
+		t.Fatalf("non-transient message contains transient hint: %q", baseNonTransient)
+	}
+
+	// Transient message MUST include the hint suffix.
+	if !strings.Contains(baseTransient, ToolExecErrorTransientHint) {
+		t.Fatalf("transient message missing hint suffix\n got: %q\nwant suffix: %q", baseTransient, ToolExecErrorTransientHint)
+	}
+
+	// Base body MUST be present in both (only the hint differs).
+	wantBase := fmt.Sprintf(ToolExecErrorRetryMessage, "web_search", "timeout")
+	if !strings.Contains(baseNonTransient, wantBase) {
+		t.Fatalf("non-transient missing base message body: %q", baseNonTransient)
+	}
+	if !strings.Contains(baseTransient, wantBase) {
+		t.Fatalf("transient missing base message body: %q", baseTransient)
+	}
+}
+
+// TestIsTransientErrorText (Phase 12.6.1) classifies error text into
+// transient vs permanent based on substring markers. False negative (says
+// permanent when transient) → LLM gets the standard retry prompt instead
+// of the wait-then-retry hint. False positive (says transient when
+// permanent) → LLM retries without arg changes, may waste a turn. Both
+// are recoverable; the heuristic just prefers FNs over FPs (conservative).
+func TestIsTransientErrorText(t *testing.T) {
+	transientCases := []string{
+		"Tool execution failed: connection refused",
+		"Tool execution failed: connection reset by peer",
+		"Tool execution failed: i/o timeout",
+		"Tool execution failed: HTTP 429 rate limit exceeded",
+		"Tool execution failed: HTTP 503 service unavailable",
+		"Tool execution failed: HTTP 504 gateway timeout",
+		"Tool execution failed: HTTP 502 bad gateway",
+		"Tool execution failed: no such host",
+		"Tool execution failed: TLS handshake timeout",
+	}
+	for _, c := range transientCases {
+		if !isTransientErrorText(c) {
+			t.Errorf("expected transient for %q, got false", c)
+		}
+	}
+
+	permanentCases := []string{
+		"Tool execution failed: file not found",
+		"Tool execution failed: permission denied",
+		"Tool execution failed: invalid argument",
+		"Tool execution failed: JSON parse error",
+		"Tool execution failed: schema validation failed",
+		"Tool execution failed: missing required field",
+	}
+	for _, c := range permanentCases {
+		if isTransientErrorText(c) {
+			t.Errorf("expected permanent for %q, got true", c)
+		}
 	}
 }
 

@@ -22,6 +22,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -57,6 +58,15 @@ type RecoveryContext struct {
 	ToolName      string // for ToolExecError trigger: which tool failed
 	ToolExecError string // for ToolExecError trigger: the error message from the tool executor
 	ProviderError bool   // for ProviderTransient trigger: was this a provider-side transient error
+
+	// IsTransient (Phase 12.6.1): for ToolExecError trigger only — was the
+	// failure classified as transient (timeout / rate-limit / network)?
+	// When true, the retry prompt appends ToolExecErrorTransientHint to
+	// suggest wait-then-retry without arg changes. Distinct from
+	// ProviderError (which gates whether recovery fires); IsTransient
+	// changes the SUGGESTED action, not whether recovery fires.
+	IsTransient bool
+
 	MaxIterations int
 
 	// ToolKnowledgeRegistry (Phase 12) — when set and a tool execution
@@ -90,7 +100,18 @@ const (
 	// and asks it to retry the call (possibly with different args). Phase 12
 	// rewrites this as a builder function (buildToolExecErrorRetryMessage)
 	// so it can include the relevant tool_knowledge section when available.
-	ToolExecErrorRetryMessage = "A tool execution failed: %s. You may retry the same call with adjusted arguments, invoke a different tool, or call complete_goal if the goal is unreachable."
+	//
+	// Phase 12.6.1: %s placeholder is TWO-shot — first %s is the tool name,
+	// second %s is the error message. The builder inserts BOTH so the LLM
+	// knows which tool failed (was just `errMsg` before, which was unhelpful
+	// when the LLM had multiple tool calls in flight).
+	ToolExecErrorRetryMessage = "Tool %q failed: %s. You may retry the same call with adjusted arguments, invoke a different tool, or call complete_goal if the goal is unreachable."
+
+	// ToolExecErrorTransientHint is appended to the retry message when the
+	// tool failure is classified as transient (timeout / 5xx / 429 / connection
+	// refused / etc.). Tells the LLM that a brief retry is likely to succeed
+	// without changing arguments. English per USER.md preference.
+	ToolExecErrorTransientHint = " The error looks transient (timeout, rate-limit, or network). Wait briefly and retry the SAME call — argument changes are unlikely to help."
 )
 
 // Caps for each trigger. Per §5.2 + §5.3 — these are sub-attempt counts
@@ -142,7 +163,11 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 		}
 		if ts.toolExecRecoveryAttempts[ctx.ToolName] < ToolExecErrorRetryCap {
 			ts.toolExecRecoveryAttempts[ctx.ToolName]++
-			msg := buildToolExecErrorRetryMessage(ctx.ToolName, ctx.ToolExecError, ctx.ToolKnowledgeRegistry)
+			// Phase 12.6.1: thread `IsTransient` so the prompt can suggest
+			// wait-then-retry (transient) vs diagnose-or-recomplete (permanent).
+			// Caller (checkToolExecErrorRecovery / pipeline) sets this from
+			// the tool result's error text + circuit-breaker state.
+			msg := buildToolExecErrorRetryMessage(ctx.ToolName, ctx.ToolExecError, ctx.IsTransient, ctx.ToolKnowledgeRegistry)
 			return RecoveryRetrySameIteration, msg
 		}
 		return RecoveryArchiveGoal, "Tool execution error retry exhausted for " + ctx.ToolName + "."
@@ -285,6 +310,11 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 		HasToolCalls:  true,
 		ToolName:      toolName,
 		ToolExecError: last.Content,
+		// Phase 12.6.1: classify transient vs permanent by scanning error
+		// text for known transient markers. Heuristic only — a false
+		// transient classification just appends the transient-hint
+		// suffix; LLM still gets the standard retry prompt either way.
+		IsTransient:   isTransientErrorText(last.Content),
 		MaxIterations: ts.iterationCap,
 	})
 	if action == RecoveryArchiveGoal {
@@ -300,17 +330,32 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 // prior calls (avoid the same mistake / pick the right argument shape /
 // surface a known workaround).
 //
-// Format:
+// Phase 12.6.1: now takes `isTransient` flag — when true, appends the
+// transient-hint suffix (suggests wait-then-retry without arg changes).
+// When false, the base message asks for diagnose-or-recomplete logic.
 //
-//	"A tool execution failed: <errMsg>. You may retry the same call with
+// Format (non-transient):
+//
+//	"Tool "view_goal" failed: <errMsg>. You may retry the same call with
 //	 adjusted arguments, invoke a different tool, or call complete_goal
 //	 if the goal is unreachable.\n\n<Tool knowledge for <toolName>>:\n
 //	 <body>"
 //
+// Format (transient) — appends ToolExecErrorTransientHint:
+//
+//	"Tool "view_goal" failed: <errMsg>. You may retry the same call with
+//	 adjusted arguments, invoke a different tool, or call complete_goal
+//	 if the goal is unreachable. The error looks transient (timeout,
+//	 rate-limit, or network). Wait briefly and retry the SAME call —
+//	 argument changes are unlikely to help.\n\n<Tool knowledge>:\n<body>"
+//
 // Returns just the standard message when registry is nil or no knowledge
 // exists for the tool. Never returns an empty string.
-func buildToolExecErrorRetryMessage(toolName, errMsg string, registry *tools.ToolRegistry) string {
-	base := fmt.Sprintf(ToolExecErrorRetryMessage, errMsg)
+func buildToolExecErrorRetryMessage(toolName, errMsg string, isTransient bool, registry *tools.ToolRegistry) string {
+	base := fmt.Sprintf(ToolExecErrorRetryMessage, toolName, errMsg)
+	if isTransient {
+		base += ToolExecErrorTransientHint
+	}
 	if registry == nil {
 		return base
 	}
@@ -323,4 +368,46 @@ func buildToolExecErrorRetryMessage(toolName, errMsg string, registry *tools.Too
 		return base
 	}
 	return base + "\n\n" + tools.AppendKnowledgeSection(knowledge)
+}
+
+// isTransientErrorText classifies a tool-execution error message as
+// transient or permanent based on substring markers. Phase 12.6.1 — when
+// true, the retry prompt appends ToolExecErrorTransientHint suggesting
+// wait-then-retry without arg changes.
+//
+// Markers (intentionally substring matches — error wording varies across
+// tools):
+//
+//   - "connection"      (refused / reset / closed) — network failures
+//   - "timeout"         (i/o / handshake) — network failures
+//   - "rate limit"      — provider-side throttle (HTTP 429)
+//   - "429" / "502" / "503" / "504" — HTTP transient codes
+//   - "no such host"    — DNS failures
+//
+// Heuristic — false positives and false negatives are both acceptable.
+// Conservative bias: prefer false-negative (say permanent when actually
+// transient) so the LLM gets the standard retry prompt instead of the
+// wait-then-retry hint. The standard prompt still allows the LLM to retry
+// the same call.
+func isTransientErrorText(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	transientMarkers := []string{
+		"connection refused",
+		"connection reset",
+		"connection closed",
+		"timeout",
+		"rate limit",
+		"http 429",
+		"http 502",
+		"http 503",
+		"http 504",
+		"no such host",
+		"tls handshake",
+	}
+	for _, m := range transientMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
 }
