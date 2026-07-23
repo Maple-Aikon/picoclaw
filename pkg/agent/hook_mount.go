@@ -322,6 +322,8 @@ func validHookEventKinds() map[string]string {
 	kinds["llm_delta"] = runtimeevents.KindAgentLLMDelta.String()
 	kinds["llm_response"] = runtimeevents.KindAgentLLMResponse.String()
 	kinds["llm_retry"] = runtimeevents.KindAgentLLMRetry.String()
+	kinds["llm_replay_attempt"] = runtimeevents.KindAgentLLMReplayAttempt.String()
+	kinds["llm_replay_exhausted"] = runtimeevents.KindAgentLLMReplayExhausted.String()
 	kinds["context_compress"] = runtimeevents.KindAgentContextCompress.String()
 	kinds["session_summarize"] = runtimeevents.KindAgentSessionSummarize.String()
 	kinds["tool_exec_start"] = runtimeevents.KindAgentToolExecStart.String()

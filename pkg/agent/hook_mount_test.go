@@ -189,6 +189,28 @@ func TestProcessHookObserveKindsFromConfigAcceptsRuntimeNames(t *testing.T) {
 	}
 }
 
+// TestProcessHookObserveKindsFromConfigAcceptsReplayKinds covers the Phase 12.4
+// writer-without-reader fix: KindAgentLLMReplayAttempt + KindAgentLLMReplayExhausted
+// were emitted by pipeline_llm.go but never registered in validHookEventKinds,
+// so hook configs that wanted to observe replay events silently dropped them.
+func TestProcessHookObserveKindsFromConfigAcceptsReplayKinds(t *testing.T) {
+	kinds, enabled, err := processHookObserveKindsFromConfig([]string{
+		"llm_replay_attempt",
+		"llm_replay_exhausted",
+	})
+	if err != nil {
+		t.Fatalf("processHookObserveKindsFromConfig failed: %v", err)
+	}
+	if !enabled {
+		t.Fatal("expected observe to be enabled")
+	}
+
+	want := []string{"agent.llm.replay.attempt", "agent.llm.replay.exhausted"}
+	if !slices.Equal(kinds, want) {
+		t.Fatalf("observe kinds = %v, want %v", kinds, want)
+	}
+}
+
 func TestAgentLoop_ProcessDirectWithChannel_InvalidConfiguredHookFails(t *testing.T) {
 	provider := &llmHookTestProvider{}
 	al := newConfiguredHookLoop(t, provider, config.HooksConfig{
