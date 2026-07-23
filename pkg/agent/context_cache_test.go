@@ -797,6 +797,55 @@ func TestBuildMessages_IncludesMediaOnlyCurrentMessage(t *testing.T) {
 		t.Fatalf("userMsg.Media = %#v, want image payload", userMsg.Media)
 	}
 }
+// TestCache_EstimateSystemTokensDoesNotCorruptCache verifies that
+// EstimateSystemTokens (called from computeContextUsage at turn finalization)
+// does NOT write through the cache. Previously called
+// BuildSystemPromptWithCache("") which silently overwrote a real "set"-phase
+// cached prompt with the empty-phase version (no hint). Regression for the
+// bug caught on Telegram main session 2026-07-23 18:43 ICT.
+//
+// Detection strategy: after EstimateSystemTokens on a "set"-built cache,
+// `cachedSystemPromptGoalPhase` MUST still equal "set" — if it became "",
+// a follow-up Open-phase build would MISS the cache and rebuild an Open-
+// version, missing the Set hint entirely. (Re-running with "set" still
+// returns hint because both inputs rebuild the same way, which is why
+// the original test was a false-pass.)
+func TestCache_EstimateSystemTokensDoesNotCorruptCache(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "picoclaw-12.5.1-*")
+	defer os.RemoveAll(tmpDir)
+	os.MkdirAll(filepath.Join(tmpDir, "memory"), 0o755)
+	os.MkdirAll(filepath.Join(tmpDir, "skills"), 0o755)
+	for _, name := range []string{"AGENT.md", "SOUL.md"} {
+		os.WriteFile(filepath.Join(tmpDir, name), []byte(strings.Repeat("Content.\n", 10)), 0o644)
+	}
+	cb := NewContextBuilder(tmpDir)
+
+	// Warm cache with a "set"-phase build
+	withHint := cb.BuildSystemPromptWithCache("set")
+	if !strings.Contains(withHint, "Goal phase: SET") {
+		t.Fatal("setup: hint should be present after BuildSystemPromptWithCache(set)")
+	}
+	if cb.cachedSystemPromptGoalPhase != "set" {
+		t.Fatalf("setup: cache phase = %q, want \"set\"", cb.cachedSystemPromptGoalPhase)
+	}
+
+	// EstimateSystemTokens called at turn finalization
+	cb.EstimateSystemTokens("summary text", []string{"plan"})
+
+	// Cached goal phase MUST still be "set"; if it's now "", cache was corrupted
+	if cb.cachedSystemPromptGoalPhase != "set" {
+		t.Fatalf("EstimateSystemTokens corrupted cache phase: now %q, want \"set\" (the GoalPhaseSet hint was overwritten by an empty-phase rebuild)",
+			cb.cachedSystemPromptGoalPhase)
+	}
+
+	// Subsequent build must hit cache (no double-build), AND must still contain hint
+	cb.systemPromptMutex.RLock()
+	cached := cb.cachedSystemPrompt
+	cb.systemPromptMutex.RUnlock()
+	if !strings.Contains(cached, "Goal phase: SET") {
+		t.Fatal("cached prompt lost Goal phase: SET hint after EstimateSystemTokens")
+	}
+}
 
 // BenchmarkBuildMessagesWithCache measures caching performance.
 func BenchmarkBuildMessagesWithCache(b *testing.B) {

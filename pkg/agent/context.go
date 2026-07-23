@@ -522,13 +522,16 @@ func xmlEscapeForPrompt(s string) string {
 // wrapping prefixes and separators. This avoids needing all per-request parameters
 // that BuildMessages requires (media, channel, chatID, sender, etc.).
 //
-// Phase 12.5: goalPhase="" because this is a token-estimate helper used for
-// pre-flight budget checks; passing a real phase here would force the cache
-// to rebuild every time EstimateSystemTokens is called with a different
-// phase than the last BuildMessages call. The estimate is approximate, so
-// a representative cached prompt is acceptable.
+// Phase 12.5.1: route through the NO-CACHE path. Previously called
+// BuildSystemPromptWithCache("") which silently OVERWROTE the real
+// phase's cached prompt (e.g. the GoalPhaseSet hint that was built for
+// phase="set") with the empty-phase version (no hint). This corrupted
+// the cache whenever computeContextUsage ran AFTER a real phase build
+// but BEFORE the next turn's real build — the next LLM request would
+// then read the empty-phase cache and miss the hint. The empty-phase
+// estimate is approximate anyway; never let it write through the cache.
 func (cb *ContextBuilder) EstimateSystemTokens(summary string, activeSkills []string) int {
-	staticPrompt := cb.BuildSystemPromptWithCache("")
+	staticPrompt := cb.BuildSystemPrompt("")
 
 	// Dynamic context is small and varies per request; use a representative estimate.
 	// Actual buildDynamicContext produces ~200-400 chars of time/runtime/session info.
