@@ -187,7 +187,30 @@ func resolveAgentToolAllowlistWithPhase(definition AgentContextDefinition, phase
 	if frontmatterParseFailed(definition) {
 		return []string{}
 	}
+
+	// Phase override shortcuts that DO NOT depend on base allowlist.
+	// GoalPhaseSet and GoalPhaseFinal are absolute — they pin tool
+	// visibility to lifecycle tools regardless of what the agent's
+	// frontmatter declares. This matters for agents whose frontmatter
+	// omits the `tools:` field (which is the default for most agents
+	// — tools are then sourced entirely from MCP/built-in registries).
+	// Pre-fix, returning nil here meant SetAllowlist(nil) cleared the
+	// registry's allowlist entirely, exposing ALL 84 registered tools
+	// to the LLM at iter 1 (Phase 12.3 wire bug observed live).
+	switch phase {
+	case GoalPhaseSet:
+		return []string{"set_goal"}
+	case GoalPhaseFinal:
+		return []string{"complete_goal"}
+	}
+
 	if definition.Agent == nil || !frontmatterDeclaresField(definition, "tools") {
+		// Open/Checkpoint depend on base tools from frontmatter. If no
+		// base is declared, the agent has implicitly opted-in to ALL
+		// registered tools (nil allowlist = no filter on the registry).
+		// Returning nil here preserves backward compat for agents whose
+		// frontmatter omits `tools:` entirely — those rely on built-in
+		// + MCP tool registries, not on frontmatter whitelists.
 		return nil
 	}
 
@@ -201,21 +224,12 @@ func resolveAgentToolAllowlistWithPhase(definition AgentContextDefinition, phase
 	}
 
 	switch phase {
-	case GoalPhaseSet:
-		// Set phase overrides: do NOT expose base tools, only set_goal.
-		// Returning exclusively ["set_goal"] forces the LLM to set a goal
-		// before the runtime will surface anything else.
-		return []string{"set_goal"}
 	case GoalPhaseOpen:
 		result := sortedKeys(base)
 		return unionAllowlist(result, []string{"view_goal", "complete_goal"})
 	case GoalPhaseCheckpoint:
 		result := sortedKeys(base)
 		return unionAllowlist(result, []string{"goal_progress", "complete_goal"})
-	case GoalPhaseFinal:
-		// Final phase: no escape. Only complete_goal allowed. The LLM
-		// must finalize the turn — iterCap has hit MaxIterationsCap ceiling.
-		return []string{"complete_goal"}
 	default:
 		// Unknown phase → degrade to base only (safest default; no
 		// lifecycle tool gets exposed if we cannot classify).

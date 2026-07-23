@@ -226,3 +226,62 @@ func TestGoalPhase_StringValues(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveAgentToolAllowlistWithPhase_NoToolsField_PreservesLifecycleOverride
+// is a Phase 12.3 regression test.
+//
+// Bug: when an agent's frontmatter omits the `tools:` field entirely
+// (the default for most agents — tool lists come from MCP/built-in
+// registries), `resolveAgentToolAllowlistWithPhase(def, GoalPhaseSet)`
+// returned nil. That nil was passed to SetAllowlist, which cleared the
+// registry's allowlist, exposing ALL 84 registered tools to the LLM
+// at iter 1 — defeating the Phase 11 "iter 1 = set_goal only" contract.
+//
+// Fix: phase override cases (Set, Final) now short-circuit BEFORE the
+// "missing tools:" base check, so lifecycle tools always surface
+// regardless of base frontmatter. Open/Checkpoint still return nil
+// for missing `tools:` (matching the no-phase resolver's behavior:
+// "all tools available" rather than "zero tools").
+func TestResolveAgentToolAllowlistWithPhase_NoToolsField_PreservesLifecycleOverride(t *testing.T) {
+	// Agent with no `tools:` field declared — typical MCP-only agent.
+	def := AgentContextDefinition{
+		Agent: &AgentPromptDefinition{
+			Frontmatter: AgentFrontmatter{
+				Fields: map[string]any{}, // no `tools:` key
+				Tools:  nil,
+			},
+		},
+	}
+
+	t.Run("set phase must surface set_goal even without base", func(t *testing.T) {
+		got := resolveAgentToolAllowlistWithPhase(def, GoalPhaseSet)
+		want := []string{"set_goal"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("GoalPhaseSet: got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("final phase must surface complete_goal even without base", func(t *testing.T) {
+		got := resolveAgentToolAllowlistWithPhase(def, GoalPhaseFinal)
+		want := []string{"complete_goal"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("GoalPhaseFinal: got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("open phase returns nil for no-tools (matches base resolver)", func(t *testing.T) {
+		// Backward-compat: agents without `tools:` declared have all
+		// tools available during Open (nil allowlist = no filter).
+		got := resolveAgentToolAllowlistWithPhase(def, GoalPhaseOpen)
+		if got != nil {
+			t.Errorf("GoalPhaseOpen: got %v, want nil (allow-all)", got)
+		}
+	})
+
+	t.Run("checkpoint phase returns nil for no-tools (matches base resolver)", func(t *testing.T) {
+		got := resolveAgentToolAllowlistWithPhase(def, GoalPhaseCheckpoint)
+		if got != nil {
+			t.Errorf("GoalPhaseCheckpoint: got %v, want nil (allow-all)", got)
+		}
+	})
+}
