@@ -31,10 +31,13 @@ type ContextBuilder struct {
 
 	// Cache for system prompt to avoid rebuilding on every call.
 	// This fixes issue #607: repeated reprocessing of the entire context.
-	// The cache auto-invalidates when workspace source files change (mtime check).
-	systemPromptMutex  sync.RWMutex
-	cachedSystemPrompt string
-	cachedAt           time.Time // max observed mtime across tracked paths at cache build time
+	// The cache auto-invalidates when workspace source files change (mtime check)
+	// or when the goal phase changes (Phase 12.5: GoalPhaseSet ↔ Open transitions
+	// must invalidate because the prompt contains phase-specific contributors).
+	systemPromptMutex          sync.RWMutex
+	cachedSystemPrompt         string
+	cachedSystemPromptGoalPhase string // GoalPhase value cached alongside the prompt; empty when no phase set
+	cachedAt                   time.Time // max observed mtime across tracked paths at cache build time
 
 	// existedAtCache tracks which source file paths existed the last time the
 	// cache was built. This lets sourceFilesChanged detect files that are newly
@@ -216,14 +219,21 @@ func formatToolDiscoveryRule(useBM25, useRegex bool) string {
 	)
 }
 
-func (cb *ContextBuilder) BuildSystemPrompt() string {
-	return renderPromptPartsLegacy(cb.BuildSystemPromptParts())
+// BuildSystemPrompt returns the full system prompt as a string. The
+// goalPhase argument carries the per-turn GoalPhase so phase-specific
+// contributors (e.g. GoalPhaseSet hint at iter 1 with no active goal)
+// fire correctly. Phase 12.5: the default cache path was previously
+// hard-coded to opts.GoalPhase="", so the hint never fired in
+// production — call sites now pass goalPhase explicitly.
+func (cb *ContextBuilder) BuildSystemPrompt(goalPhase string) string {
+	return renderPromptPartsLegacy(cb.BuildSystemPromptParts(goalPhase))
 }
 
-func (cb *ContextBuilder) BuildSystemPromptParts() []PromptPart {
+func (cb *ContextBuilder) BuildSystemPromptParts(goalPhase string) []PromptPart {
 	return cb.buildSystemPromptParts(systemPromptBuildOptions{
 		IncludeSkillCatalog: true,
 		IncludeToolUseRule:  true,
+		GoalPhase:           goalPhase,
 	})
 }
 
@@ -355,13 +365,18 @@ Each part separated by the marker will be sent as an independent message.`,
 	return stack.Parts()
 }
 
-// BuildSystemPromptWithCache returns the cached system prompt if available
-// and source files haven't changed, otherwise builds and caches it.
-// Source file changes are detected via mtime checks (cheap stat calls).
-func (cb *ContextBuilder) BuildSystemPromptWithCache() string {
+// BuildSystemPromptWithCache returns the cached system prompt if available,
+// the cached phase still matches goalPhase, and source files haven't
+// changed; otherwise rebuilds and caches. Source file changes are detected
+// via mtime checks (cheap stat calls). Phase 12.5: cache key now includes
+// the goal phase so cache misses when the turn transitions GoalPhaseSet ↔
+// Open (previously the cache was keyed only on source file mtime, which
+// meant GoalPhaseSet hint text built on a prior turn stayed in the prompt
+// on subsequent GoalPhase=Open turns and vice versa).
+func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string) string {
 	// Try read lock first — fast path when cache is valid
 	cb.systemPromptMutex.RLock()
-	if cb.cachedSystemPrompt != "" && !cb.sourceFilesChangedLocked() {
+	if cb.cachedSystemPrompt != "" && cb.cachedSystemPromptGoalPhase == goalPhase && !cb.sourceFilesChangedLocked() {
 		result := cb.cachedSystemPrompt
 		cb.systemPromptMutex.RUnlock()
 		return result
@@ -373,7 +388,7 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache() string {
 	defer cb.systemPromptMutex.Unlock()
 
 	// Double-check: another goroutine may have rebuilt while we waited
-	if cb.cachedSystemPrompt != "" && !cb.sourceFilesChangedLocked() {
+	if cb.cachedSystemPrompt != "" && cb.cachedSystemPromptGoalPhase == goalPhase && !cb.sourceFilesChangedLocked() {
 		return cb.cachedSystemPrompt
 	}
 
@@ -383,17 +398,29 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache() string {
 	// so the next sourceFilesChangedLocked check will correctly trigger a
 	// rebuild. The alternative (baseline after build) risks caching stale
 	// content with a too-new baseline, making the staleness invisible.
+	previousPhase := cb.cachedSystemPromptGoalPhase
 	baseline := cb.buildCacheBaseline()
-	prompt := cb.BuildSystemPrompt()
+	prompt := cb.BuildSystemPrompt(goalPhase)
 	cb.cachedSystemPrompt = prompt
+	cb.cachedSystemPromptGoalPhase = goalPhase
 	cb.cachedAt = baseline.maxMtime
 	cb.existedAtCache = baseline.existed
 	cb.skillFilesAtCache = baseline.skillFiles
 
-	logger.DebugCF("agent", "System prompt cached",
-		map[string]any{
-			"length": len(prompt),
-		})
+	if previousPhase != "" && previousPhase != goalPhase {
+		logger.DebugCF("agent", "System prompt cache invalidated by goal phase change",
+			map[string]any{
+				"previous_phase": previousPhase,
+				"new_phase":      goalPhase,
+				"length":         len(prompt),
+			})
+	} else {
+		logger.DebugCF("agent", "System prompt cached",
+			map[string]any{
+				"goal_phase": goalPhase,
+				"length":     len(prompt),
+			})
+	}
 
 	return prompt
 }
@@ -410,7 +437,7 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 		len(req.AllowedSkills) == 0 &&
 		len(req.AllowedTools) == 0
 	if useDefaultCache {
-		staticPrompt := cb.BuildSystemPromptWithCache()
+		staticPrompt := cb.BuildSystemPromptWithCache(req.GoalPhase)
 		return staticPrompt, []providers.ContentBlock{
 			promptContentBlock(PromptPart{
 				ID:      "kernel.static",
@@ -494,8 +521,14 @@ func xmlEscapeForPrompt(s string) string {
 // It includes: static prompt, dynamic context, active skills, and summary with
 // wrapping prefixes and separators. This avoids needing all per-request parameters
 // that BuildMessages requires (media, channel, chatID, sender, etc.).
+//
+// Phase 12.5: goalPhase="" because this is a token-estimate helper used for
+// pre-flight budget checks; passing a real phase here would force the cache
+// to rebuild every time EstimateSystemTokens is called with a different
+// phase than the last BuildMessages call. The estimate is approximate, so
+// a representative cached prompt is acceptable.
 func (cb *ContextBuilder) EstimateSystemTokens(summary string, activeSkills []string) int {
-	staticPrompt := cb.BuildSystemPromptWithCache()
+	staticPrompt := cb.BuildSystemPromptWithCache("")
 
 	// Dynamic context is small and varies per request; use a representative estimate.
 	// Actual buildDynamicContext produces ~200-400 chars of time/runtime/session info.
@@ -540,6 +573,7 @@ func (cb *ContextBuilder) InvalidateCache() {
 	defer cb.systemPromptMutex.Unlock()
 
 	cb.cachedSystemPrompt = ""
+	cb.cachedSystemPromptGoalPhase = ""
 	cb.cachedAt = time.Time{}
 	cb.existedAtCache = nil
 	cb.skillFilesAtCache = nil

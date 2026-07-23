@@ -32,6 +32,7 @@ type ToolRegistry struct {
 	version        atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
 	mediaStore      media.MediaStore
 	allowlist       map[string]struct{}
+	phase           string // active goal phase for per-phase allowlist semantics (Phase 12.5); "" = no phase info
 	cfg             *config.ToolsConfig // optional; nil → fallback DefaultToolTimeoutSeconds
 	timeoutStats    *ToolTimeoutStats   // Q3 metric; nil-safe via lazy init
 	eventPublisher  ToolEventPublisher  // optional bridge to runtime event bus (pkg/agent); nil = silent
@@ -147,12 +148,15 @@ func (r *ToolRegistry) TimeoutStats() *ToolTimeoutStats {
 
 // SetAllowlist restricts registrations to the provided runtime tool names.
 // A nil slice means "allow all". An empty-but-non-nil slice means "allow none".
+// Phase 12.5: also clears any previously-set active goal phase (call SetPhase
+// separately to re-enable per-phase discovery exemption behavior).
 func (r *ToolRegistry) SetAllowlist(names []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if names == nil {
 		r.allowlist = nil
+		r.phase = ""
 		return
 	}
 
@@ -165,6 +169,20 @@ func (r *ToolRegistry) SetAllowlist(names []string) {
 		allowlist[trimmed] = struct{}{}
 	}
 	r.allowlist = allowlist
+	r.phase = ""
+}
+
+// SetPhase records the active goal phase ("set" / "open" / "checkpoint" /
+// "final" / "") so per-phase allowlist rules can take effect inside
+// toolAllowedLocked. Pass "" to clear. Phase 12.5: in "set" or "final"
+// phases the unconditional discovery-tool exemption is suppressed, so
+// tool_search_tool_bm25 / tool_search_tool_regex must appear in the
+// allowlist to be visible. Other phases ("open", "checkpoint", "") keep
+// the legacy behavior of letting discovery tools bypass.
+func (r *ToolRegistry) SetPhase(phase string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.phase = strings.ToLower(strings.TrimSpace(phase))
 }
 
 func (r *ToolRegistry) Register(tool Tool) {
@@ -310,7 +328,19 @@ func (r *ToolRegistry) toolAllowedLocked(name string) bool {
 		// available whenever configured so deferred MCP tools can still be
 		// unlocked. Per-agent allowlists still apply to the hidden MCP tools
 		// themselves during RegisterHidden.
-		return true
+		//
+		// Phase 12.5 exception: at strict lifecycle phases (GoalPhaseSet /
+		// GoalPhaseFinal) the allowlist is intentionally reduced to a single
+		// tool (set_goal or complete_goal) so the LLM commits to a single
+		// forward path. Letting the LLM BM25-search for hidden MCP tools at
+		// GoalPhaseSet defeats the gate entirely — the user reported on
+		// 2026-07-23 16:18 ICT that iter 1 returned [set_goal,
+		// tool_search_tool_bm25] instead of just [set_goal]. Suppress the
+		// discovery exemption in those phases so the LLM sees exactly the
+		// tools in the allowlist and nothing else.
+		if r.phase != "set" && r.phase != "final" {
+			return true
+		}
 	}
 	_, ok := r.allowlist[strings.ToLower(strings.TrimSpace(name))]
 	return ok

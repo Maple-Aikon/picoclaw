@@ -107,4 +107,12 @@ func (ts *turnState) applyPhaseAllowlist(phase GoalPhase) {
 	}
 	allowlist := resolveAgentToolAllowlistWithPhase(ts.agent.Definition, phase)
 	ts.agent.Tools.SetAllowlist(allowlist)
+	// Phase 12.5: tell the registry which goal phase is active so per-phase
+	// rules inside toolAllowedLocked (e.g. suppress discovery-tool exemption
+	// at GoalPhaseSet / GoalPhaseFinal) take effect. Without this, the
+	// strict-single-tool allowlist at iter 1 would still show
+	// tool_search_tool_bm25 because the unconditional discovery bypass rule
+	// would override it. Threading phase here is the only call site that
+	// knows the active GoalPhase at allowlist time.
+	ts.agent.Tools.SetPhase(string(phase))
 }

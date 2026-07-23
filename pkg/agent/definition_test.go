@@ -230,7 +230,7 @@ func TestStructuredAgentIgnoresIdentityChanges(t *testing.T) {
 
 	cb := NewContextBuilder(tmpDir)
 
-	promptV1 := cb.BuildSystemPromptWithCache()
+	promptV1 := cb.BuildSystemPromptWithCache("")
 	if strings.Contains(promptV1, "Legacy identity") {
 		t.Fatalf("structured prompt should not include IDENTITY.md, got %q", promptV1)
 	}
@@ -251,7 +251,7 @@ func TestStructuredAgentIgnoresIdentityChanges(t *testing.T) {
 		t.Fatal("IDENTITY.md should not invalidate cache for structured agent definitions")
 	}
 
-	promptV2 := cb.BuildSystemPromptWithCache()
+	promptV2 := cb.BuildSystemPromptWithCache("")
 	if promptV1 != promptV2 {
 		t.Fatal("structured prompt should remain stable after IDENTITY.md changes")
 	}
@@ -267,7 +267,7 @@ func TestStructuredAgentUserChangesInvalidateCache(t *testing.T) {
 
 	cb := NewContextBuilder(tmpDir)
 
-	promptV1 := cb.BuildSystemPromptWithCache()
+	promptV1 := cb.BuildSystemPromptWithCache("")
 	if !strings.Contains(promptV1, "Initial workspace preferences") {
 		t.Fatalf("expected workspace USER.md in prompt, got %q", promptV1)
 	}
@@ -288,7 +288,7 @@ func TestStructuredAgentUserChangesInvalidateCache(t *testing.T) {
 		t.Fatal("workspace USER.md changes should invalidate cache")
 	}
 
-	promptV2 := cb.BuildSystemPromptWithCache()
+	promptV2 := cb.BuildSystemPromptWithCache("")
 	if !strings.Contains(promptV2, "Updated workspace preferences") {
 		t.Fatalf("expected updated workspace USER.md in prompt, got %q", promptV2)
 	}

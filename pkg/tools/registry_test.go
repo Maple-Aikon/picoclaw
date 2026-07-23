@@ -238,6 +238,70 @@ func TestToolRegistry_ExecuteWithContext_DiscoveryToolBypassesAllowlist(t *testi
 	}
 }
 
+// Phase 12.5: at GoalPhaseSet the registry must suppress the discovery-tool
+// exemption so iter 1 of a fresh Telegram session shows [set_goal] only —
+// not [set_goal, tool_search_tool_bm25]. The user reported this regression
+// on 2026-07-23 16:18 ICT.
+func TestToolRegistry_SetPhaseBlocksDiscoveryToolInSetPhase(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(newMockTool(BM25SearchToolName, "discover hidden tools"))
+	r.SetAllowlist([]string{"set_goal"})
+	r.SetPhase("set")
+
+	result := r.ExecuteWithContext(context.Background(), BM25SearchToolName, nil, "telegram", "chat-1", nil)
+	if !result.IsError {
+		t.Errorf("expected discovery tool to be blocked at GoalPhaseSet, got success: %s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "is not available in the current phase") {
+		t.Errorf("expected phase-block message in ForLLM, got %q", result.ForLLM)
+	}
+}
+
+// Phase 12.5: at GoalPhaseFinal the registry must also suppress the
+// discovery-tool exemption so the LLM commits to complete_goal only.
+func TestToolRegistry_SetPhaseBlocksDiscoveryToolInFinalPhase(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(newMockTool(BM25SearchToolName, "discover hidden tools"))
+	r.SetAllowlist([]string{"complete_goal"})
+	r.SetPhase("final")
+
+	result := r.ExecuteWithContext(context.Background(), BM25SearchToolName, nil, "telegram", "chat-1", nil)
+	if !result.IsError {
+		t.Errorf("expected discovery tool to be blocked at GoalPhaseFinal, got success: %s", result.ForLLM)
+	}
+}
+
+// Phase 12.5: Open phase keeps the legacy behavior — discovery tools can
+// still bypass even when allowlist is small.
+func TestToolRegistry_SetPhaseAllowsDiscoveryToolInOpenPhase(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(newMockTool(BM25SearchToolName, "discover hidden tools"))
+	r.SetAllowlist([]string{"set_goal"})
+	r.SetPhase("open")
+
+	result := r.ExecuteWithContext(context.Background(), BM25SearchToolName, nil, "telegram", "chat-1", nil)
+	if result.IsError {
+		t.Errorf("expected discovery tool to bypass at GoalPhaseOpen, got error: %s", result.ForLLM)
+	}
+}
+
+// Phase 12.5: SetAllowlist clears any previously-set phase (legacy callers
+// that don't use SetPhase get the old unconditional-discovery behavior).
+func TestToolRegistry_SetAllowlistClearsPhase(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(newMockTool(BM25SearchToolName, "discover hidden tools"))
+	r.SetAllowlist([]string{"set_goal"})
+	r.SetPhase("set")
+	// Now a legacy caller re-sets allowlist without phase — phase should reset
+	// and discovery bypass should resume.
+	r.SetAllowlist([]string{"set_goal"})
+
+	result := r.ExecuteWithContext(context.Background(), BM25SearchToolName, nil, "telegram", "chat-1", nil)
+	if result.IsError {
+		t.Errorf("expected discovery tool to bypass after SetAllowlist clears phase, got error: %s", result.ForLLM)
+	}
+}
+
 func TestToolRegistry_HasRegisteredIncludesHiddenTools(t *testing.T) {
 	r := NewToolRegistry()
 	r.SetAllowlist([]string{"visible", "hidden"})

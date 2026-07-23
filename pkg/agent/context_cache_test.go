@@ -223,7 +223,7 @@ func TestMtimeAutoInvalidation(t *testing.T) {
 
 			cb := NewContextBuilder(tmpDir)
 
-			sp1 := cb.BuildSystemPromptWithCache()
+			sp1 := cb.BuildSystemPromptWithCache("")
 
 			// Overwrite file and set future mtime to ensure detection.
 			// Use 2s offset for filesystem mtime resolution safety (some FS
@@ -242,7 +242,7 @@ func TestMtimeAutoInvalidation(t *testing.T) {
 			}
 
 			// Should auto-rebuild without explicit InvalidateCache()
-			sp2 := cb.BuildSystemPromptWithCache()
+			sp2 := cb.BuildSystemPromptWithCache("")
 			if sp1 == sp2 {
 				t.Errorf("cache not rebuilt after %s change", tt.file)
 			}
@@ -258,7 +258,7 @@ func TestMtimeAutoInvalidation(t *testing.T) {
 		defer os.RemoveAll(tmpDir)
 
 		cb := NewContextBuilder(tmpDir)
-		_ = cb.BuildSystemPromptWithCache() // populate cache
+		_ = cb.BuildSystemPromptWithCache("") // populate cache
 
 		// Touch skills directory (simulate new skill installed)
 		skillsDir := filepath.Join(tmpDir, "skills")
@@ -286,9 +286,9 @@ func TestExplicitInvalidateCache(t *testing.T) {
 
 	cb := NewContextBuilder(tmpDir)
 
-	sp1 := cb.BuildSystemPromptWithCache()
+	sp1 := cb.BuildSystemPromptWithCache("")
 	cb.InvalidateCache()
-	sp2 := cb.BuildSystemPromptWithCache()
+	sp2 := cb.BuildSystemPromptWithCache("")
 
 	if sp1 != sp2 {
 		t.Error("prompt should be identical after invalidate+rebuild when files unchanged")
@@ -316,7 +316,7 @@ func TestCacheStability(t *testing.T) {
 
 	results := make([]string, 5)
 	for i := range results {
-		results[i] = cb.BuildSystemPromptWithCache()
+		results[i] = cb.BuildSystemPromptWithCache("")
 	}
 	for i := 1; i < len(results); i++ {
 		if results[i] != results[0] {
@@ -327,6 +327,61 @@ func TestCacheStability(t *testing.T) {
 	// Static prompt must NOT contain per-request data
 	if strings.Contains(results[0], "Current Time") {
 		t.Error("static cached prompt should not contain time (added dynamically)")
+	}
+}
+
+// TestCacheInvalidationOnGoalPhaseChange verifies that BuildSystemPromptWithCache
+// rebuilds when goalPhase changes (Phase 12.5). Previously the cache was keyed
+// only on source file mtime, so a prompt built for GoalPhase=Open stayed in the
+// cache when the next turn asked for GoalPhase=Set, missing the GoalPhaseSet
+// hint. Test asserts:
+//  1. First build with goalPhase="open" caches that prompt.
+//  2. Second call with goalPhase="open" is a cache hit (same string).
+//  3. Third call with goalPhase="set" is a cache miss (different string), and
+//     the new prompt contains the GoalPhaseSet hint text.
+func TestCacheInvalidationOnGoalPhaseChange(t *testing.T) {
+	tmpDir := setupWorkspace(t, map[string]string{
+		"AGENT.md": "# Agent\nContent",
+		"SOUL.md":  "# Soul\nContent",
+	})
+	defer os.RemoveAll(tmpDir)
+
+	cb := NewContextBuilder(tmpDir)
+
+	promptOpen := cb.BuildSystemPromptWithCache("open")
+	// Same phase → cache hit, identical string.
+	promptOpenCached := cb.BuildSystemPromptWithCache("open")
+	if promptOpen != promptOpenCached {
+		t.Errorf("cache miss for same goalPhase: builds produced different strings")
+	}
+
+	// Different phase → cache miss, new prompt. The GoalPhaseSet hint
+	// contributor fires only when goalPhase="set".
+	promptSet := cb.BuildSystemPromptWithCache("set")
+	if promptSet == promptOpen {
+		t.Errorf("cache hit across goalPhase transition — GoalPhaseSet hint would never fire")
+	}
+	if !strings.Contains(promptSet, "set_goal") || !strings.Contains(promptSet, "locked") {
+		t.Errorf("GoalPhaseSet prompt missing expected hint text (no 'set_goal' / 'locked' keyword)")
+	}
+}
+
+// TestCacheHitOnSameGoalPhase verifies that BuildSystemPromptWithCache
+// reuses the same prompt for the same goalPhase even after an unrelated
+// SetPhase call to the registry (which shouldn't affect the prompt cache).
+func TestCacheHitOnSameGoalPhase(t *testing.T) {
+	tmpDir := setupWorkspace(t, map[string]string{
+		"AGENT.md": "# Agent\nContent",
+		"SOUL.md":  "# Soul\nContent",
+	})
+	defer os.RemoveAll(tmpDir)
+
+	cb := NewContextBuilder(tmpDir)
+
+	p1 := cb.BuildSystemPromptWithCache("set")
+	p2 := cb.BuildSystemPromptWithCache("set")
+	if p1 != p2 {
+		t.Errorf("cache miss on identical goalPhase=\"set\"")
 	}
 }
 
@@ -364,7 +419,7 @@ func TestNewFileCreationInvalidatesCache(t *testing.T) {
 			cb := NewContextBuilder(tmpDir)
 
 			// Populate cache — file does not exist yet
-			sp1 := cb.BuildSystemPromptWithCache()
+			sp1 := cb.BuildSystemPromptWithCache("")
 			if strings.Contains(sp1, tt.checkField) {
 				t.Fatalf("prompt should not contain %q before file is created", tt.checkField)
 			}
@@ -380,7 +435,7 @@ func TestNewFileCreationInvalidatesCache(t *testing.T) {
 			os.Chtimes(fullPath, future, future)
 
 			// Cache should auto-invalidate because file went from absent -> present
-			sp2 := cb.BuildSystemPromptWithCache()
+			sp2 := cb.BuildSystemPromptWithCache("")
 			if !strings.Contains(sp2, tt.checkField) {
 				t.Errorf("cache not invalidated on new file creation: expected %q in prompt", tt.checkField)
 			}
@@ -409,7 +464,7 @@ Original content.`
 	cb := NewContextBuilder(tmpDir)
 
 	// Populate cache
-	sp1 := cb.BuildSystemPromptWithCache()
+	sp1 := cb.BuildSystemPromptWithCache("")
 	_ = sp1 // cache is warm
 
 	// Modify the skill file content (without touching the skills/ directory)
@@ -437,7 +492,7 @@ Updated content.`
 	}
 
 	// Verify cache is actually rebuilt with new content
-	sp2 := cb.BuildSystemPromptWithCache()
+	sp2 := cb.BuildSystemPromptWithCache("")
 	if sp1 == sp2 && strings.Contains(sp1, "test-skill") {
 		// If the skill appeared in the prompt and the prompt didn't change,
 		// the cache was not invalidated.
@@ -472,7 +527,7 @@ description: global-v1
 	}
 
 	cb := NewContextBuilder(tmpDir)
-	sp1 := cb.BuildSystemPromptWithCache()
+	sp1 := cb.BuildSystemPromptWithCache("")
 	if !strings.Contains(sp1, "global-v1") {
 		t.Fatal("expected initial prompt to contain global skill description")
 	}
@@ -497,7 +552,7 @@ description: global-v2
 		t.Fatal("sourceFilesChangedLocked() should detect global skill file content change")
 	}
 
-	sp2 := cb.BuildSystemPromptWithCache()
+	sp2 := cb.BuildSystemPromptWithCache("")
 	if !strings.Contains(sp2, "global-v2") {
 		t.Error("rebuilt prompt should contain updated global skill description")
 	}
@@ -532,7 +587,7 @@ description: builtin-v1
 	}
 
 	cb := NewContextBuilder(tmpDir)
-	sp1 := cb.BuildSystemPromptWithCache()
+	sp1 := cb.BuildSystemPromptWithCache("")
 	if !strings.Contains(sp1, "builtin-v1") {
 		t.Fatal("expected initial prompt to contain builtin skill description")
 	}
@@ -557,7 +612,7 @@ description: builtin-v2
 		t.Fatal("sourceFilesChangedLocked() should detect builtin skill file content change")
 	}
 
-	sp2 := cb.BuildSystemPromptWithCache()
+	sp2 := cb.BuildSystemPromptWithCache("")
 	if !strings.Contains(sp2, "builtin-v2") {
 		t.Error("rebuilt prompt should contain updated builtin skill description")
 	}
@@ -579,7 +634,7 @@ description: delete-me-v1
 	defer os.RemoveAll(tmpDir)
 
 	cb := NewContextBuilder(tmpDir)
-	sp1 := cb.BuildSystemPromptWithCache()
+	sp1 := cb.BuildSystemPromptWithCache("")
 	if !strings.Contains(sp1, "delete-me-v1") {
 		t.Fatal("expected initial prompt to contain skill description")
 	}
@@ -596,7 +651,7 @@ description: delete-me-v1
 		t.Fatal("sourceFilesChangedLocked() should detect deleted skill file")
 	}
 
-	sp2 := cb.BuildSystemPromptWithCache()
+	sp2 := cb.BuildSystemPromptWithCache("")
 	if strings.Contains(sp2, "delete-me-v1") {
 		t.Error("rebuilt prompt should not contain deleted skill description")
 	}
@@ -631,7 +686,7 @@ func TestConcurrentBuildSystemPromptWithCache(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for i := range iterations {
-				result := cb.BuildSystemPromptWithCache()
+				result := cb.BuildSystemPromptWithCache("")
 				if result == "" {
 					errs <- "empty prompt returned"
 					return
@@ -684,7 +739,7 @@ func TestEmptyWorkspaceBaselineDetectsNewFiles(t *testing.T) {
 	cb := NewContextBuilder(tmpDir)
 
 	// Build cache — all tracked files are absent, maxMtime falls back to epoch.
-	sp1 := cb.BuildSystemPromptWithCache()
+	sp1 := cb.BuildSystemPromptWithCache("")
 
 	// Create a bootstrap file with natural mtime (no Chtimes manipulation).
 	// The file's mtime should be the current wall-clock time, which is
@@ -702,7 +757,7 @@ func TestEmptyWorkspaceBaselineDetectsNewFiles(t *testing.T) {
 		t.Fatal("sourceFilesChangedLocked should detect newly created file on empty workspace")
 	}
 
-	sp2 := cb.BuildSystemPromptWithCache()
+	sp2 := cb.BuildSystemPromptWithCache("")
 	if !strings.Contains(sp2, "Newly created") {
 		t.Error("rebuilt prompt should contain new file content")
 	}
