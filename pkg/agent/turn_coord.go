@@ -294,9 +294,10 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				turnStatus = TurnEndStatusError
 				return turnResult{}, fmt.Errorf("hook requested turn abort")
 			}
-			// Ensure empty response falls back to DefaultResponse
+			// Phase 12.6.0: empty response → prefer goal.Summary over DefaultResponse
+			// (ordering fix; see applyFallbackForEmptyResponse for the full fallback chain).
 			if finalContent == "" {
-				finalContent = ts.opts.DefaultResponse
+				finalContent = al.applyFallbackForEmptyResponse(ts)
 			}
 			result, finalizeErr := pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
 			if finalizeErr != nil {
@@ -360,11 +361,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	}
 
 	if finalContent == "" {
-		if ts.currentIteration() >= ts.iterationCap {
-			finalContent = toolLimitResponse
-		} else {
-			finalContent = ts.opts.DefaultResponse
-		}
+		finalContent = al.applyFallbackForEmptyResponse(ts)
 	}
 
 	// Check hard abort before finalizing (may have been set during tool execution)
@@ -373,15 +370,14 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		return al.abortTurn(ts)
 	}
 
-	// Phase 11: complete_goal → MarkGoalFinalized → loop break. If the LLM
-	// did not output a text reply on the final iteration (assistantText
-	// empty), fall back to the persisted goal.Summary so the user still
-	// gets a non-empty final message. assistantText takes precedence
-	// (LLM chose to write a free-form reply + complete_goal).
-	if finalContent == "" && ts.goalFinalized && ts.assistantText == "" {
-		if g, err := al.goalStore().ReadAny(ts.sessionKey); err == nil && g != nil && g.Summary != "" {
-			finalContent = g.Summary
-		}
+	// Phase 12.6.0 ordering fix: previously the post-loop block (line 362-368)
+	// set finalContent = opts.DefaultResponse BEFORE the Phase 11 goal.Summary
+	// fallback could run, so users saw "The model returned an empty response"
+	// instead of the success summary. Now we route the empty case through
+	// applyFallbackForEmptyResponse (preference order: goal.Summary →
+	// toolLimitResponse → opts.DefaultResponse).
+	if finalContent == "" {
+		finalContent = al.applyFallbackForEmptyResponse(ts)
 	}
 
 	result, err = pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
@@ -389,6 +385,37 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		turnStatus = TurnEndStatusError
 	}
 	return result, err
+}
+
+// applyFallbackForEmptyResponse returns the user-facing message to use when
+// turnCoord exits with no assistant prose. Caller must only invoke this when
+// finalContent == "" so we can pick the highest-priority fallback.
+//
+// Preference order (Phase 12.6.0 ordering fix):
+//
+//  1. goal.Summary — if the most recent iteration completed a goal and the LLM
+//     did not emit a free-form prose reply, prefer the persisted goal summary
+//     so the user actually sees the success message they were promised by
+//     complete_goal.
+//  2. toolLimitResponse — if we hit the iteration cap with no prose, explain
+//     the limit was reached (better than the generic "empty response").
+//  3. opts.DefaultResponse — last resort; matches the pre-Phase 11 behavior
+//     when LLM hits an empty response with no goal context.
+func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
+	// Phase 12.6.0 ordering fix: prefer goal.Summary over DefaultResponse
+	// when goal was finalized without prose. See helper doc above for
+	// full rationale + preference order.
+	if ts.goalFinalized && ts.assistantText == "" {
+		if st := al.goalStore(); st != nil {
+			if g, err := st.ReadAny(ts.sessionKey); err == nil && g != nil && g.Summary != "" {
+				return g.Summary
+			}
+		}
+	}
+	if ts.currentIteration() >= ts.iterationCap {
+		return toolLimitResponse
+	}
+	return ts.opts.DefaultResponse
 }
 
 func (al *AgentLoop) abortTurn(ts *turnState) (turnResult, error) {
