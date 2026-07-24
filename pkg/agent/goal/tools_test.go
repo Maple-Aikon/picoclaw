@@ -627,8 +627,8 @@ func (f *fakeExtender) recorded() (string, int) {
 }
 
 func TestGoalProgressTool_ExtendsIterationCap_WhenRemainingSteps_HasRoom(t *testing.T) {
-	// Phase 10.1: Tier 3 force-wrap-up (pipeline_llm.go:84) strips all tools
-	// when RemainingIterations()==0, so the LLM cannot call goal_progress
+	// Phase 10.1: pre-Phase 12.8, Tier 3 force-wrap-up stripped all tools
+	// when RemainingIterations()==0, so the LLM could not call goal_progress
 	// AT cap. Wire instead fires when still has iteration slots, proactively
 	// adding room for the next iteration.
 	ws := tempWorkspace(t)
@@ -693,8 +693,10 @@ func TestGoalProgressTool_NoExtend_WhenNoCanExtend(t *testing.T) {
 }
 
 func TestGoalProgressTool_NoExtend_WhenAtCeiling(t *testing.T) {
-	// Both remaining==0 (Tier 3 will force wrap-up next iter, so no LLM
-	// can fire this anyway) AND CanExtend==false — wire must not fire.
+	// Both remaining==0 (no iteration slot in hand; Phase 12.8 removed
+	// Tier 3 force-wrap so goal_progress IS callable at cap, but our guard
+	// still requires RemainingIterations > 0 to avoid ordering edge cases
+	// with the loop-cap check) AND CanExtend==false — wire must not fire.
 	ws := tempWorkspace(t)
 	ctx := ctxWithSession("sess-ceiling", "agent")
 	NewSetGoalTool(ws).Execute(ctx, map[string]any{

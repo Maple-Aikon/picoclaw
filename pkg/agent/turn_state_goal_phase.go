@@ -56,10 +56,15 @@ func (ts *turnState) hasGoal() bool {
 // iterationCapFinalized returns true when this turn has hit the iteration
 // cap. Phase 10 collapsed the previous Tier 2 / Tier 3 distinction — since
 // extend_turn_iteration was removed, the iteration cap is effectively
-// constant per turn (equal to agent.MaxIterations). Once iteration >=
-// iterationCap, no more tools can be called and the goal phase classifier
-// drops back to GoalPhaseLock so the LLM is forced to set a fresh goal
-// before the next turn.
+// constant per turn (equal to agent.MaxIterations) unless goal_progress
+// self-extends (Phase 10.1). Once iteration >= iterationCap, the goal
+// phase classifier narrows to GoalPhaseCheckpoint, which surfaces only
+// the goal lifecycle tools (goal_progress + complete_goal). The LLM can
+// either self-extend the cap via goal_progress or finalize the goal via
+// complete_goal (which triggers Phase 12.7 final-report iter). Phase 12.8
+// removed the legacy Tier 3 force-wrap (toolLimitHintMessage + tool
+// stripping); if the LLM is text-only at GoalPhaseCheckpoint, Phase 12
+// text-only recovery fires (soft → hard → archive).
 func (ts *turnState) iterationCapFinalized() bool {
 	if ts == nil {
 		return false

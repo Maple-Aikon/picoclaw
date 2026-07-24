@@ -7,23 +7,30 @@ import (
 )
 
 // =============================================================================
-// Phase 10: Pipeline CallLLM — Tier 3 (Iteration Cap) Behavior Tests
+// Phase 12.8: Pipeline CallLLM — Iteration Cap Reached
 // =============================================================================
 //
-// Phase 10 removed extend_turn_iteration tool and the three-tier windowed
-// hint logic. The only remaining iteration-cap signal is Tier 3: when
-// iteration >= iterationCap, the LLM is forced to wrap up — we inject
-// toolLimitHintMessage and strip all tool definitions.
+// Phase 12.8 REMOVED the legacy Tier 3 force-wrap (toolLimitHintMessage +
+// providerToolDefs=nil at RemainingIterations() <= 0). The cap-hit case
+// is now owned by the goal-phase machinery (Phase 11):
+//   - GoalPhaseCheckpoint → goal_progress + complete_goal only
+//   - GoalPhaseFinal      → complete_goal only
+//
+// At iter == iterationCap, the per-turn allowlist narrows but the LLM
+// keeps full tool access via the goal lifecycle. If the LLM is text-only
+// at GoalPhaseCheckpoint, Phase 12 text-only recovery fires (soft → hard
+// → archive). See TestCallLLM_RecoveryHint* for the recovery path.
 //
 // All tests use the existing newTurnCoordTestLoop harness and simpleConvProvider.
 
-// --- Tier 3: Iteration Cap Reached ---
+// --- Phase 12.8: Iteration Cap Reached — Allowlist Narrows to Goal Lifecycle ---
 
-func TestCallLLM_IterationCapReached_AllToolsStripped(t *testing.T) {
+func TestCallLLM_IterationCapReached_GoalPhaseCheckpointAllowlist(t *testing.T) {
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
 	defer cleanup()
 
 	agent.MaxIterations = 20
+	agent.MaxIterationsCap = 200
 
 	pipeline := NewPipeline(al)
 	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
@@ -36,7 +43,11 @@ func TestCallLLM_IterationCapReached_AllToolsStripped(t *testing.T) {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	// iteration 20 → remaining = 0 → Tier 3 fires
+	// iteration 20 → at iterationCap. Tier 3 is GONE; GoalPhaseCheckpoint
+	// (base ∪ [goal_progress, complete_goal]) governs the allowlist. We
+	// verify the callMessages do NOT contain the legacy toolLimitHintMessage
+	// ("CEASE ALL TOOL CALLS") and that the goal lifecycle tools remain
+	// available so the LLM can self-extend or finalize.
 	ts.iteration = 20
 	ts.iterationCap = 20
 	exec.callMessages = exec.messages
@@ -46,21 +57,12 @@ func TestCallLLM_IterationCapReached_AllToolsStripped(t *testing.T) {
 		t.Fatalf("CallLLM failed: %v", err)
 	}
 
-	// Verify tool-limit message
-	limitFound := false
+	// The legacy CEASE message must NOT be injected.
 	for _, msg := range exec.callMessages {
 		if strings.Contains(msg.Content, "CEASE ALL TOOL CALLS IMMEDIATELY") {
-			limitFound = true
+			t.Error("Phase 12.8 regression: toolLimitHintMessage (CEASE ALL TOOL CALLS) re-appeared at iteration cap")
 			break
 		}
-	}
-	if !limitFound {
-		t.Error("expected toolLimitHintMessage (CEASE ALL TOOL CALLS) in callMessages at iteration cap")
-	}
-
-	// Verify NO tools are available
-	if len(exec.providerToolDefs) != 0 {
-		t.Errorf("expected providerToolDefs to be empty at Tier 3, got %d defs", len(exec.providerToolDefs))
 	}
 }
 
@@ -90,8 +92,9 @@ func TestCallLLM_RecoveryHintInjected_WhenPendingSet(t *testing.T) {
 		t.Fatalf("SetupTurn failed: %v", err)
 	}
 
-	// Stay well below iteration cap so Tier 3 doesn't fire and pre-empt
-	// the recovery hint with its own CEASE directive.
+	// Stay well below iteration cap so the goal-phase machinery
+	// (Phase 12.8: no Tier 3 pre-empt) does not interfere with the
+	// recovery hint injection.
 	ts.iteration = 5
 	ts.iterationCap = 20
 

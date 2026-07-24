@@ -75,17 +75,18 @@ func (p *Pipeline) CallLLM(
 		exec.callMessages = append(append([]providers.Message(nil), exec.messages...), ts.interruptHintMessage())
 		exec.providerToolDefs = nil
 		ts.markGracefulTerminalUsed()
-	} else {
-		// Phase 10: extend_turn_iteration tool was removed. Only Tier 3 remains —
-		// the absolute iteration ceiling from agent.MaxIterations. When remaining
-		// iterations hit 0, inject the legacy toolLimitHintMessage and strip all
-		// tools so the LLM must produce a final summary.
-		remaining := ts.RemainingIterations()
-		if remaining <= 0 {
-			exec.callMessages = append(append([]providers.Message(nil), exec.messages...), ts.toolLimitHintMessage())
-			exec.providerToolDefs = nil
-		}
 	}
+	// Phase 12.8: removed the legacy Tier 3 force-wrap (toolLimitHintMessage +
+	// providerToolDefs=nil) that fired on RemainingIterations() <= 0. The
+	// cap-hit case is now owned by the goal-phase machinery (Phase 11):
+	//   - iter == iterationCap  → GoalPhaseCheckpoint allowlist (goal_progress
+	//     + complete_goal only) lets the LLM either self-extend the cap
+	//     (goal_progress → ExtendIterationCap) or finalize the goal
+	//     (complete_goal → Phase 12.7 final-report iter).
+	//   - iter >= maxIterationsCap → GoalPhaseFinal allowlist
+	//     ([complete_goal] only).
+	// If the LLM is text-only at GoalPhaseCheckpoint, Phase 12 text-only
+	// recovery fires (soft → hard → archive) and breaks the turn.
 
 	// Task summary injection: REMOVED in Phase 11.
 	//

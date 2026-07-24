@@ -1058,14 +1058,14 @@ func (ts *turnState) interruptHintMessage() providers.Message {
 	return interruptPromptMessage(content)
 }
 
-func (ts *turnState) toolLimitHintMessage() providers.Message {
-	content := "SYSTEM DIRECTIVE: Tool call limit reached. CEASE ALL TOOL CALLS IMMEDIATELY. " +
-		"YOU MUST NOW PROVIDE A FINAL STATUS REPORT ON THE ASSIGNED MISSION, SUMMARIZING COMPLETED ACTIONS AND OUTLINING THE REMAINING STEPS TO COMPLETION."
-	return providers.Message{
-		Role:    "user",
-		Content: content,
-	}
-}
+// toolLimitHintMessage removed in Phase 12.8 — the cap-hit case is now
+// owned by the goal-phase machinery (Phase 11) and the Phase 12 text-only
+// recovery chain. Keeping the constant string here for the historical
+// record / grep trail:
+//   "SYSTEM DIRECTIVE: Tool call limit reached. CEASE ALL TOOL CALLS
+//    IMMEDIATELY. YOU MUST NOW PROVIDE A FINAL STATUS REPORT ON THE
+//    ASSIGNED MISSION, SUMMARIZING COMPLETED ACTIONS AND OUTLINING THE
+//    REMAINING STEPS TO COMPLETION."
 
 // recoveryHintMessage returns a provider.Message that injects the
 // pendingRecoveryMessage (if any) into the next LLM call, then clears
