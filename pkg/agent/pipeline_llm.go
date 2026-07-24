@@ -1083,14 +1083,17 @@ func (p *Pipeline) handleHookReplay(
 }
 
 // applyRecoveryAction handles the post-recovery-control flow for Phase 5
-// goal-lifecycle triggers. Per plan §5.3 + §8.3, recovery retries must NOT
-// bump the iteration counter — they reuse the same iteration slot. Caller
-// (CallLLM outer loop) is responsible for re-invoking the LLM without
-// incrementing iteration.
+// goal-lifecycle triggers.
 //
-// For RecoveryRetrySameIteration and RecoveryForceComplete: we log the
-// recovery, then return ControlContinue so the coordinator re-enters
-// CallLLM with the same iteration value.
+// As of Phase 12.10, recovery retries DO bump the iteration counter — the
+// caller (turn_coord.go:163-164) re-enters the loop top, which calls
+// setIteration(+1), so the recovery prompt is delivered to the LLM in the
+// NEXT iteration, not the same one. The previous "no iter bump" intent
+// was contradicted by the loop's continue/loop-top pattern.
+//
+// For RecoveryRetryNextIteration and RecoveryForceComplete: we log the
+// recovery, set pendingRecoveryMessage, then return ControlContinue so the
+// coordinator re-enters CallLLM with the next iteration value.
 //
 // For RecoveryArchiveGoal: we invoke finalizeGoalOnTurnEnd (Phase 6 hook;
 // stub for now → logs the archive signal and ends the turn). Caller stops.
@@ -1115,8 +1118,8 @@ func (p *Pipeline) applyRecoveryAction(
 	logger.InfoCF("agent", "Goal-lifecycle recovery action", fields)
 
 	switch action {
-	case RecoveryRetrySameIteration:
-		// Caller (CallLLM outer loop) sees ControlContinue + non-bumped iteration.
+	case RecoveryRetryNextIteration:
+		// Caller (CallLLM outer loop) sees ControlContinue + bumped iteration.
 		// The recovery message will be appended to messages via pendingRecoveryMessage
 		// and consumed at the start of the next iteration entry.
 		if msg != "" {
@@ -1154,8 +1157,8 @@ func actionName(a RecoveryAction) string {
 	switch a {
 	case RecoveryNone:
 		return "none"
-	case RecoveryRetrySameIteration:
-		return "retry_same_iteration"
+	case RecoveryRetryNextIteration:
+		return "retry_next_iteration"
 	case RecoveryForceComplete:
 		return "force_complete"
 	case RecoveryArchiveGoal:

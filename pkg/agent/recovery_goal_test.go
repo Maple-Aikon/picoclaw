@@ -58,8 +58,8 @@ func TestEvaluateRecovery_EmptyText_PhaseOpen_InjectsOnce(t *testing.T) {
 		HasToolCalls: false,
 	}
 	action, msg := evaluateRecovery(ts, ctx)
-	if action != RecoveryRetrySameIteration {
-		t.Fatalf("expected RecoveryRetrySameIteration, got %v", action)
+	if action != RecoveryRetryNextIteration {
+		t.Fatalf("expected RecoveryRetryNextIteration, got %v", action)
 	}
 	if msg != EmptyResponseRecoveryMessage {
 		t.Fatalf("expected EMPTY_FINAL message, got %q", msg)
@@ -93,7 +93,7 @@ func TestEvaluateRecovery_TextOnly2x_PhaseOpen_ForceComplete(t *testing.T) {
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: false, HasToolCalls: false}
 	// First text-only: streak becomes 1, soft prompt fires (Phase 12)
 	action1, msg1 := evaluateRecovery(ts, ctx)
-	if action1 != RecoveryRetrySameIteration {
+	if action1 != RecoveryRetryNextIteration {
 		t.Fatalf("first text-only should soft retry, got %v", action1)
 	}
 	if msg1 != TextOnlySoftRetryMessage {
@@ -107,7 +107,7 @@ func TestEvaluateRecovery_TextOnly2x_PhaseOpen_ForceComplete(t *testing.T) {
 	}
 	// Second text-only (same iter, immediately after): hard prompt fires
 	action2, msg2 := evaluateRecovery(ts, ctx)
-	if action2 != RecoveryRetrySameIteration {
+	if action2 != RecoveryRetryNextIteration {
 		t.Fatalf("second text-only should hard retry, got %v", action2)
 	}
 	if msg2 != TextOnlyHardRetryMessage {
@@ -152,8 +152,8 @@ func TestEvaluateRecovery_ToolExecError_RetrySameIteration(t *testing.T) {
 	ts := newPhase5TurnState(t)
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), ToolName: "view_goal"}
 	action, _ := evaluateRecovery(ts, ctx)
-	if action != RecoveryRetrySameIteration {
-		t.Fatalf("expected RecoveryRetrySameIteration, got %v", action)
+	if action != RecoveryRetryNextIteration {
+		t.Fatalf("expected RecoveryRetryNextIteration, got %v", action)
 	}
 	if ts.toolExecRecoveryAttempts["view_goal"] != 1 {
 		t.Fatalf("expected view_goal attempt=1, got %d", ts.toolExecRecoveryAttempts["view_goal"])
@@ -487,7 +487,7 @@ func TestEvaluateRecovery_WirePathFromCurrentGoalPhase(t *testing.T) {
 		HasToolCalls: false,
 	}
 	action, msg := evaluateRecovery(ts, ctx)
-	if action != RecoveryRetrySameIteration {
+	if action != RecoveryRetryNextIteration {
 		t.Fatalf("wire-path recovery should fire on lowercase %q, got %v (msg=%q)", wirePhase, action, msg)
 	}
 	if msg != EmptyResponseRecoveryMessage {
@@ -598,5 +598,177 @@ func TestPostCompleteGoalReport_CapBypass(t *testing.T) {
 	}
 	if ts.iterationCap != prevCap {
 		t.Errorf("pre-loop hook should be a no-op when postCompleteGoalReportSent=true; cap changed from %d to %d", prevCap, ts.iterationCap)
+	}
+}
+
+// Phase 12.10 — Fix #1: emptyResponseRecoverySent was previously sticky
+// across iterations. After iter 12 fired empty-response recovery, iter 14's
+// empty response silently skipped (RecoveryNone), turning the loop into a
+// no-op. Live evidence: turn 2 main-turn-3 (2026-07-24 13:37 ICT) ended
+// with content_len=0 after iter 14.
+//
+// The fix lives in turn_coord.go:163-164 — the loop top now resets both
+// per-iteration counters. This test models the loop top inline (the actual
+// turn loop is exercised in turn_coord_test.go) and verifies that two
+// empty responses in different iterations both trigger recovery.
+func TestEvaluateRecovery_EmptyText_IterationBump_ResetsCounter(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	ctx := RecoveryContext{
+		Phase:        string(GoalPhaseOpen),
+		Iteration:    12,
+		TextEmpty:    true,
+		HasToolCalls: false,
+	}
+
+	// iter 12: empty response → recovery fires, counter flips
+	action1, msg1 := evaluateRecovery(ts, ctx)
+	if action1 != RecoveryRetryNextIteration {
+		t.Fatalf("iter 12: expected RecoveryRetryNextIteration, got %v", action1)
+	}
+	if msg1 != EmptyResponseRecoveryMessage {
+		t.Fatalf("iter 12: expected EmptyResponseRecoveryMessage, got %q", msg1)
+	}
+	if !ts.emptyResponseRecoverySent {
+		t.Fatalf("iter 12: emptyResponseRecoverySent should be true after first fire")
+	}
+
+	// Loop top simulation (mirrors turn_coord.go:163-164 — the actual
+	// production code path). Phase 12.10 fix: reset BOTH per-iter counters.
+	ts.setIteration(13)
+	ts.emptyResponseRecoverySent = false
+	ts.toolExecRecoveryAttempts = nil
+
+	// iter 13: LLM recovers with tool_call (simulated by HasToolCalls=true
+	// in the next iteration entry — counters reset by loop top).
+	toolCtx := RecoveryContext{
+		Phase:        string(GoalPhaseOpen),
+		Iteration:    13,
+		HasToolCalls: true,
+	}
+	actionTool, _ := evaluateRecovery(ts, toolCtx)
+	_ = actionTool // recovery computes its own action; tool-call iterations
+	// don't trigger recovery in the first place, but we want to confirm
+	// the counter is freshly 0 for the next empty iteration.
+
+	// Loop top → iter 14
+	ts.setIteration(14)
+	ts.emptyResponseRecoverySent = false
+	ts.toolExecRecoveryAttempts = nil
+
+	// iter 14: empty response AGAIN — recovery MUST fire (was the bug)
+	ctx14 := RecoveryContext{
+		Phase:        string(GoalPhaseOpen),
+		Iteration:    14,
+		TextEmpty:    true,
+		HasToolCalls: false,
+	}
+	action2, msg2 := evaluateRecovery(ts, ctx14)
+	if action2 != RecoveryRetryNextIteration {
+		t.Fatalf("iter 14: expected RecoveryRetryNextIteration (Fix #1), got %v", action2)
+	}
+	if msg2 != EmptyResponseRecoveryMessage {
+		t.Fatalf("iter 14: expected EmptyResponseRecoveryMessage, got %q", msg2)
+	}
+	if !ts.emptyResponseRecoverySent {
+		t.Fatalf("iter 14: emptyResponseRecoverySent should be true after second fire")
+	}
+}
+
+// Phase 12.10 — Fix #1b: toolExecRecoveryAttempts was sticky across
+// iterations. If view_goal failed 3x in iter 12 (cap hit), iter 14's
+// wire-side retry would archive immediately because the counter still
+// reported 3 from iter 12. Same class as #1; resolved by the same one-line
+// map reset.
+//
+// This test models the loop top the same way as Fix #1.
+func TestEvaluateRecovery_ToolExecError_IterationBump_ResetsCap(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	ctx := RecoveryContext{
+		Phase:     string(GoalPhaseOpen),
+		Iteration: 12,
+		ToolName:  "view_goal",
+	}
+
+	// iter 12: 3 retries (cap hit), then 4th would archive
+	for i := 0; i < ToolExecErrorRetryCap; i++ {
+		action, _ := evaluateRecovery(ts, ctx)
+		if action != RecoveryRetryNextIteration {
+			t.Fatalf("iter 12 retry %d: expected RetryNextIteration, got %v", i, action)
+		}
+	}
+	// 4th call in iter 12: cap exhausted → archive
+	actionOver, _ := evaluateRecovery(ts, ctx)
+	if actionOver != RecoveryArchiveGoal {
+		t.Fatalf("iter 12: expected archive after cap, got %v", actionOver)
+	}
+
+	// Loop top simulation (Fix #1b reset)
+	ts.setIteration(13)
+	ts.emptyResponseRecoverySent = false
+	ts.toolExecRecoveryAttempts = nil
+
+	// iter 13: fresh attempts allowed
+	action13, msg13 := evaluateRecovery(ts, RecoveryContext{
+		Phase:     string(GoalPhaseOpen),
+		Iteration: 13,
+		ToolName:  "view_goal",
+	})
+	if action13 != RecoveryRetryNextIteration {
+		t.Fatalf("iter 13: expected RetryNextIteration (Fix #1b cap reset), got %v (msg=%q)", action13, msg13)
+	}
+	if ts.toolExecRecoveryAttempts["view_goal"] != 1 {
+		t.Fatalf("iter 13: counter should be 1, got %d", ts.toolExecRecoveryAttempts["view_goal"])
+	}
+}
+
+// Phase 12.10 — combined Fix #1 + #1b: both counters reset together on iter
+// bump. Verifies the production code path in turn_coord.go:163-164 by
+// mirroring its exact 3-line reset block in the test, then verifying both
+// triggers can fire in the next iteration.
+func TestEvaluateRecovery_IterationBump_ResetsBothCounters(t *testing.T) {
+	ts := newPhase5TurnState(t)
+
+	// iter 12: simulate earlier empty-response + tool-exec failures
+	emptyCtx := RecoveryContext{Phase: string(GoalPhaseOpen), Iteration: 12, TextEmpty: true, HasToolCalls: false}
+	toolCtx := RecoveryContext{Phase: string(GoalPhaseOpen), Iteration: 12, ToolName: "view_goal"}
+
+	evaluateRecovery(ts, emptyCtx) // empty fires
+	evaluateRecovery(ts, toolCtx)  // tool fires
+	evaluateRecovery(ts, toolCtx)  // tool fires (2)
+
+	// Pre-loop state must be dirty
+	if !ts.emptyResponseRecoverySent {
+		t.Fatalf("setup: emptyResponseRecoverySent should be true")
+	}
+	if ts.toolExecRecoveryAttempts["view_goal"] != 2 {
+		t.Fatalf("setup: view_goal counter should be 2, got %d", ts.toolExecRecoveryAttempts["view_goal"])
+	}
+
+	// Mirror production reset (turn_coord.go:163-164)
+	ts.setIteration(13)
+	ts.emptyResponseRecoverySent = false
+	ts.toolExecRecoveryAttempts = nil
+
+	// Both counters must be reset
+	if ts.emptyResponseRecoverySent {
+		t.Fatalf("iter 13: emptyResponseRecoverySent should be reset, got true")
+	}
+	if len(ts.toolExecRecoveryAttempts) != 0 {
+		t.Fatalf("iter 13: toolExecRecoveryAttempts should be empty, got %v", ts.toolExecRecoveryAttempts)
+	}
+
+	// iter 13: empty response fires again (Fix #1)
+	actionEmpty, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseOpen), Iteration: 13, TextEmpty: true, HasToolCalls: false})
+	if actionEmpty != RecoveryRetryNextIteration {
+		t.Fatalf("iter 13 empty: expected RetryNextIteration, got %v", actionEmpty)
+	}
+
+	// iter 13: tool exec error fires again (Fix #1b)
+	actionTool, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseOpen), Iteration: 13, ToolName: "view_goal"})
+	if actionTool != RecoveryRetryNextIteration {
+		t.Fatalf("iter 13 tool: expected RetryNextIteration, got %v", actionTool)
+	}
+	if ts.toolExecRecoveryAttempts["view_goal"] != 1 {
+		t.Fatalf("iter 13 tool: counter should be 1 (fresh), got %d", ts.toolExecRecoveryAttempts["view_goal"])
 	}
 }

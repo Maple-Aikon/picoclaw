@@ -1200,7 +1200,7 @@ func TestTurnCoord_RecoveryTrigger_ApplyActionState(t *testing.T) {
 		toolExecRecoveryAttempts: make(map[string]int),
 	}
 
-	// RecoveryRetrySameIteration sets pendingRecoveryMessage only.
+	// RecoveryRetryNextIteration sets pendingRecoveryMessage only.
 	ts.pendingRecoveryMessage = EmptyResponseRecoveryMessage
 	if ts.pendingRecoveryMessage == "" {
 		t.Fatalf("expected pendingRecoveryMessage set after retry action")
@@ -1209,10 +1209,10 @@ func TestTurnCoord_RecoveryTrigger_ApplyActionState(t *testing.T) {
 		t.Fatalf("retry action should not set goalArchiveRequested")
 	}
 
-	// Phase 12 redesign: text-only recovery now uses RetrySameIteration
+	// Phase 12 redesign: text-only recovery now uses RetryNextIteration
 	// for both soft and hard prompts (no more RecoveryForceComplete
 	// action). The retry just records the message and lets the LLM run
-	// another iteration in the SAME iteration slot.
+	// again in the next iteration slot.
 	ts2 := &turnState{toolExecRecoveryAttempts: make(map[string]int)}
 	ts2.pendingRecoveryMessage = TextOnlyHardRetryMessage
 	if ts2.pendingRecoveryMessage == "" {
@@ -1374,16 +1374,16 @@ func TestRunTurn_Phase12_TextOnly2x_ThenArchive(t *testing.T) {
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), HasToolCalls: false, TextEmpty: false}
 
 	act1, msg1 := evaluateRecovery(ts, ctx)
-	if act1 != RecoveryRetrySameIteration || msg1 != TextOnlySoftRetryMessage {
-		t.Fatalf("1st text-only: action=%v msg=%q (want RetrySameIteration + soft)", act1, msg1)
+	if act1 != RecoveryRetryNextIteration || msg1 != TextOnlySoftRetryMessage {
+		t.Fatalf("1st text-only: action=%v msg=%q (want RetryNextIteration + soft)", act1, msg1)
 	}
 	if ts.textOnlySoftRetriesDone != 1 {
 		t.Fatalf("after soft: soft_done=%d (want 1)", ts.textOnlySoftRetriesDone)
 	}
 
 	act2, msg2 := evaluateRecovery(ts, ctx)
-	if act2 != RecoveryRetrySameIteration || msg2 != TextOnlyHardRetryMessage {
-		t.Fatalf("2nd text-only: action=%v msg=%q (want RetrySameIteration + hard)", act2, msg2)
+	if act2 != RecoveryRetryNextIteration || msg2 != TextOnlyHardRetryMessage {
+		t.Fatalf("2nd text-only: action=%v msg=%q (want RetryNextIteration + hard)", act2, msg2)
 	}
 	if ts.textOnlyHardRetriesDone != 1 {
 		t.Fatalf("after hard: hard_done=%d (want 1)", ts.textOnlyHardRetriesDone)

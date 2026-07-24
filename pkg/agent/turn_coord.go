@@ -163,6 +163,13 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		iteration := ts.currentIteration() + 1
 		ts.setIteration(iteration)
 		ts.resetReplayCount()
+		// Phase 12.10: reset per-iteration recovery counters. Recovery
+		// retries bump ts.iteration (ControlContinue → continue → loop top
+		// → setIteration(+1)), so each new iteration gets a fresh slate.
+		// Previously these counters were sticky across iterations, causing
+		// recovery to silently skip after the first fire in a turn.
+		ts.emptyResponseRecoverySent = false
+		ts.toolExecRecoveryAttempts = nil
 		// Phase 2: reset SignatureFailureTracker counters at turn boundary so
 		// a new turn starts with a fresh escalation slate. Mirrors the
 		// nanobot "per-run scope" pattern (Decision 4) and matches the
