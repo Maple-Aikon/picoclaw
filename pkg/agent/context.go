@@ -37,6 +37,8 @@ type ContextBuilder struct {
 	systemPromptMutex          sync.RWMutex
 	cachedSystemPrompt         string
 	cachedSystemPromptGoalPhase string // GoalPhase value cached alongside the prompt; empty when no phase set
+	cachedSystemPromptPostCompleteGoalReport bool // Phase 12.7: cache key dimension for GoalCompleteReport hint
+	wasLastPostCompleteGoalReport bool // Phase 12.7: previous postCompleteGoalReport state for debug log
 	cachedAt                   time.Time // max observed mtime across tracked paths at cache build time
 
 	// existedAtCache tracks which source file paths existed the last time the
@@ -225,15 +227,21 @@ func formatToolDiscoveryRule(useBM25, useRegex bool) string {
 // fire correctly. Phase 12.5: the default cache path was previously
 // hard-coded to opts.GoalPhase="", so the hint never fired in
 // production — call sites now pass goalPhase explicitly.
-func (cb *ContextBuilder) BuildSystemPrompt(goalPhase string) string {
-	return renderPromptPartsLegacy(cb.BuildSystemPromptParts(goalPhase))
+//
+// postCompleteGoalReport (Phase 12.7): when true, fires the
+// goalCompleteReportHintContributor so the post-complete_goal final-
+// report iter informs the LLM this is its LAST CHANCE to provide a
+// user-facing final report.
+func (cb *ContextBuilder) BuildSystemPrompt(goalPhase string, postCompleteGoalReport bool) string {
+	return renderPromptPartsLegacy(cb.BuildSystemPromptParts(goalPhase, postCompleteGoalReport))
 }
 
-func (cb *ContextBuilder) BuildSystemPromptParts(goalPhase string) []PromptPart {
+func (cb *ContextBuilder) BuildSystemPromptParts(goalPhase string, postCompleteGoalReport bool) []PromptPart {
 	return cb.buildSystemPromptParts(systemPromptBuildOptions{
-		IncludeSkillCatalog: true,
-		IncludeToolUseRule:  true,
-		GoalPhase:           goalPhase,
+		IncludeSkillCatalog:      true,
+		IncludeToolUseRule:       true,
+		GoalPhase:                goalPhase,
+		PostCompleteGoalReport:   postCompleteGoalReport,
 	})
 }
 
@@ -246,6 +254,12 @@ type systemPromptBuildOptions struct {
 	// / Checkpoint / Final)). Phase 12.3 contributors inject phase-specific
 	// hints into the Capability / Tooling layer based on this value.
 	GoalPhase string
+
+	// PostCompleteGoalReport is true for the post-complete_goal final-report
+	// iter (Phase 12.7): one extra iter after complete_goal, phase=Final,
+	// tool allowlist=[]. Fires the goalCompleteReportHintContributor so LLM
+	// gets one last chance to provide a user-facing final report.
+	PostCompleteGoalReport bool
 }
 
 func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) []PromptPart {
@@ -361,6 +375,16 @@ Each part separated by the marker will be sent as an independent message.`,
 		add(*hintPart)
 	}
 
+	// Phase 12.7 — Post-complete_goal final-report hint. Fires when the
+	// post-complete_goal final-report iter is active (one extra iter after
+	// complete_goal with phase=GoalPhaseFinal, tool allowlist=[]). Tells LLM
+	// this is its LAST CHANCE to provide a final user-facing report for this
+	// goal. See plan file
+	// ~/.picoclaw/workspace/memory/plan/picoclaw-phase12.7-post-complete-goal-final-report-iter-20260724.md §3.2.
+	if hintPart := goalCompleteReportHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase, PostCompleteGoalReport: opts.PostCompleteGoalReport}); hintPart != nil {
+		add(*hintPart)
+	}
+
 	stack.Seal()
 	return stack.Parts()
 }
@@ -373,10 +397,14 @@ Each part separated by the marker will be sent as an independent message.`,
 // Open (previously the cache was keyed only on source file mtime, which
 // meant GoalPhaseSet hint text built on a prior turn stayed in the prompt
 // on subsequent GoalPhase=Open turns and vice versa).
-func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string) string {
+//
+// Phase 12.7: postCompleteGoalReport is a SECOND cache key dimension.
+// GoalCompleteReport hint fires only when this flag is true. Cache must
+// invalidate when postCompleteGoalReport flag toggles.
+func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompleteGoalReport bool) string {
 	// Try read lock first — fast path when cache is valid
 	cb.systemPromptMutex.RLock()
-	if cb.cachedSystemPrompt != "" && cb.cachedSystemPromptGoalPhase == goalPhase && !cb.sourceFilesChangedLocked() {
+	if cb.cachedSystemPrompt != "" && cb.cachedSystemPromptGoalPhase == goalPhase && cb.cachedSystemPromptPostCompleteGoalReport == postCompleteGoalReport && !cb.sourceFilesChangedLocked() {
 		result := cb.cachedSystemPrompt
 		cb.systemPromptMutex.RUnlock()
 		return result
@@ -400,9 +428,10 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string) string {
 	// content with a too-new baseline, making the staleness invisible.
 	previousPhase := cb.cachedSystemPromptGoalPhase
 	baseline := cb.buildCacheBaseline()
-	prompt := cb.BuildSystemPrompt(goalPhase)
+	prompt := cb.BuildSystemPrompt(goalPhase, postCompleteGoalReport)
 	cb.cachedSystemPrompt = prompt
 	cb.cachedSystemPromptGoalPhase = goalPhase
+	cb.cachedSystemPromptPostCompleteGoalReport = postCompleteGoalReport
 	cb.cachedAt = baseline.maxMtime
 	cb.existedAtCache = baseline.existed
 	cb.skillFilesAtCache = baseline.skillFiles
@@ -414,6 +443,13 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string) string {
 				"new_phase":      goalPhase,
 				"length":         len(prompt),
 			})
+	} else if postCompleteGoalReport != cb.wasLastPostCompleteGoalReport {
+		logger.DebugCF("agent", "System prompt cache invalidated by post-complete_goal report state change",
+			map[string]any{
+				"goal_phase":                   goalPhase,
+				"post_complete_goal_report":     postCompleteGoalReport,
+				"length":                        len(prompt),
+			})
 	} else {
 		logger.DebugCF("agent", "System prompt cached",
 			map[string]any{
@@ -421,6 +457,7 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string) string {
 				"length":     len(prompt),
 			})
 	}
+	cb.wasLastPostCompleteGoalReport = postCompleteGoalReport
 
 	return prompt
 }
@@ -437,7 +474,7 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 		len(req.AllowedSkills) == 0 &&
 		len(req.AllowedTools) == 0
 	if useDefaultCache {
-		staticPrompt := cb.BuildSystemPromptWithCache(req.GoalPhase)
+		staticPrompt := cb.BuildSystemPromptWithCache(req.GoalPhase, req.PostCompleteGoalReport)
 		return staticPrompt, []providers.ContentBlock{
 			promptContentBlock(PromptPart{
 				ID:      "kernel.static",
@@ -531,7 +568,7 @@ func xmlEscapeForPrompt(s string) string {
 // then read the empty-phase cache and miss the hint. The empty-phase
 // estimate is approximate anyway; never let it write through the cache.
 func (cb *ContextBuilder) EstimateSystemTokens(summary string, activeSkills []string) int {
-	staticPrompt := cb.BuildSystemPrompt("")
+	staticPrompt := cb.BuildSystemPrompt("", false)
 
 	// Dynamic context is small and varies per request; use a representative estimate.
 	// Actual buildDynamicContext produces ~200-400 chars of time/runtime/session info.
@@ -577,6 +614,8 @@ func (cb *ContextBuilder) InvalidateCache() {
 
 	cb.cachedSystemPrompt = ""
 	cb.cachedSystemPromptGoalPhase = ""
+	cb.cachedSystemPromptPostCompleteGoalReport = false
+	cb.wasLastPostCompleteGoalReport = false
 	cb.cachedAt = time.Time{}
 	cb.existedAtCache = nil
 	cb.skillFilesAtCache = nil

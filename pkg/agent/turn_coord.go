@@ -136,6 +136,19 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		// just at the bottom — the tool may fire on the very last iteration
 		// of a turn that already exhausted its iteration cap.
 		if ts.goalFinalized {
+			// Phase 12.7: One last chance for the LLM to provide a final
+			// user-facing report. Re-enter the loop once with phase=Final
+			// (tool allowlist=[]), postCompleteGoalReportSent=true so the
+			// final-report hint fires. Bypass iterationCap check by
+			// extending cap to ts.iteration+1; ts.iteration itself stays
+			// the same.
+			if !ts.postCompleteGoalReportSent {
+				ts.postCompleteGoalReportSent = true
+				if cap := ts.iteration + 1; cap > ts.iterationCap {
+					ts.iterationCap = cap
+				}
+				continue
+			}
 			break
 		}
 

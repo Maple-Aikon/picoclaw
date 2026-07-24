@@ -28,6 +28,9 @@ func promptBuildRequestForTurn(
 		ActiveSkills:      activeSkillNames(ts.agent, ts.opts),
 		Overlays:          promptOverlaysForOptions(ts.opts),
 		GoalPhase:         string(ts.currentGoalPhase()),
+		// Phase 12.7: emit post-complete_goal final-report hint on the
+		// extra iter after complete_goal (phase=Final, tools stripped).
+		PostCompleteGoalReport: ts.shouldEmitPostCompleteGoalReport(),
 	}
 	hasCallableTools := true
 	if ts.profile.Enabled {

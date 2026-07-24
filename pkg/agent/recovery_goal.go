@@ -139,8 +139,12 @@ const (
 // This function is pure (no side effects, no logger writes) so it can be
 // unit-tested without mocking the full pipeline.
 func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, string) {
-	// Out of goal-phase: no recovery needed. Caller proceeds normally.
-	if ctx.Phase == "" || ctx.Phase == string(GoalPhaseFinal) {
+	// Out of goal-phase or in post-complete_goal final-report iter (Phase 12.7):
+	// no recovery needed. Caller proceeds normally. We skip recovery because:
+	//   - Phase=Final: tool allowlist is empty; nothing to retry.
+	//   - postCompleteGoalReportSent: the LLM has already completed the goal;
+	//     a text-only retry prompt would be redundant and could spam the user.
+	if ctx.Phase == "" || ctx.Phase == string(GoalPhaseFinal) || ts.postCompleteGoalReportSent {
 		return RecoveryNone, ""
 	}
 

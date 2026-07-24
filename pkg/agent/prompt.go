@@ -66,6 +66,7 @@ const (
 	PromptSourceInterrupt      PromptSourceID = "turn:interrupt"
 	PromptSourceRecovery        PromptSourceID = "turn:recovery"
 	PromptSourceGoalPhaseSetHint PromptSourceID = "capability:goal_phase_set_hint"
+	PromptSourceGoalCompleteReportHint PromptSourceID = "capability:goal_complete_report_hint"
 )
 
 type PromptCachePolicy string
@@ -133,6 +134,13 @@ type PromptBuildRequest struct {
 	// Empty means "no phase info available" (e.g. legacy callers / tests).
 	// Phase 12.3 contributors use this to inject phase-specific hints.
 	GoalPhase string
+
+	// PostCompleteGoalReport is true when this prompt is being built for the
+	// post-complete_goal final-report iter (Phase 12.7). One extra iteration
+	// after complete_goal with phase=GoalPhaseFinal + tool allowlist=[],
+	// prompt fires a "LAST CHANCE to provide final report" hint. Always set
+	// when goalFinalized=true and postCompleteGoalReportSent=false.
+	PostCompleteGoalReport bool
 }
 
 type PromptContributor interface {
@@ -260,6 +268,13 @@ func builtinPromptSources() []PromptSourceDescriptor {
 			ID:              PromptSourceGoalPhaseSetHint,
 			Owner:           "agent",
 			Description:     "Goal-phase SET hint: explains iter-1 tool lockdown and 2 forward paths (set_goal OR no-tool reply)",
+			Allowed:         []PromptPlacement{{Layer: PromptLayerCapability, Slot: PromptSlotTooling}},
+			StableByDefault: false,
+		},
+		{
+			ID:              PromptSourceGoalCompleteReportHint,
+			Owner:           "agent",
+			Description:     "Post-complete_goal final-report hint (Phase 12.7): tells LLM this is its LAST CHANCE to provide a final user-facing report for this goal",
 			Allowed:         []PromptPlacement{{Layer: PromptLayerCapability, Slot: PromptSlotTooling}},
 			StableByDefault: false,
 		},

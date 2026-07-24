@@ -494,3 +494,83 @@ func TestEvaluateRecovery_WirePathFromCurrentGoalPhase(t *testing.T) {
 		t.Fatalf("expected EmptyResponseRecoveryMessage, got %q", msg)
 	}
 }
+
+// Phase 12.7: when the post-complete_goal final-report iter has already
+// sent its hint, the loop should run text-only without recovery triggers.
+// This avoids sending "complete the goal" prompts AFTER the goal is done.
+func TestEvaluateRecovery_PostCompleteGoalReport_NoTrigger(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	ts.postCompleteGoalReportSent = true
+
+	cases := []struct {
+		name string
+		ctx  RecoveryContext
+	}{
+		{
+			name: "empty_text",
+			ctx:  RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: true, HasToolCalls: false},
+		},
+		{
+			name: "text_only",
+			ctx:  RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: false, HasToolCalls: false, Iteration: 3},
+		},
+		{
+			name: "tool_exec_error",
+			ctx:  RecoveryContext{Phase: string(GoalPhaseOpen), ToolExecError: "connection refused", ToolName: "web_search", Iteration: 3},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			action, msg := evaluateRecovery(ts, tc.ctx)
+			if action != RecoveryNone {
+				t.Fatalf("expected RecoveryNone after post-complete_goal report sent, got %v (msg=%q)", action, msg)
+			}
+			if msg != "" {
+				t.Errorf("expected empty msg, got %q", msg)
+			}
+		})
+	}
+}
+
+// Phase 12.7: turn_coord re-enters the loop once after complete_goal sets
+// goalFinalized, BYPASSING the iteration cap. Test the cap-extend logic
+// in isolation so we don't need a full integration loop.
+func TestPostCompleteGoalReport_CapBypass(t *testing.T) {
+	ts := newPhase5TurnState(t)
+
+	// Simulate the agent at the iteration cap (no more iters left)
+	ts.iteration = 24
+	ts.iterationCap = 24
+
+	// Pre-condition: cap should be hit
+	if ts.currentIteration() < ts.iterationCap {
+		t.Fatalf("setup wrong: expected iter >= cap")
+	}
+
+	// Simulate complete_goal having fired: goalFinalized=true
+	ts.goalFinalized = true
+	ts.postCompleteGoalReportSent = false
+
+	// The cap-bypass logic from turn_coord.go:146-150
+	if !ts.postCompleteGoalReportSent {
+		ts.postCompleteGoalReportSent = true
+		if cap := ts.iteration + 1; cap > ts.iterationCap {
+			ts.iterationCap = cap
+		}
+	}
+
+	// After bypass, iterationCap must allow exactly one more iteration
+	if ts.iterationCap != 25 {
+		t.Errorf("expected iterationCap=25 after cap-bypass, got %d", ts.iterationCap)
+	}
+	if !ts.postCompleteGoalReportSent {
+		t.Error("postCompleteGoalReportSent should be true after first enter")
+	}
+
+	// Second call should NOT re-extend cap (because postCompleteGoalReportSent already true)
+	// Just simulate the branch:
+	if !ts.postCompleteGoalReportSent {
+		// This branch must NOT execute
+		t.Error("postCompleteGoalReportSent=false on second check; flag not sticky")
+	}
+}

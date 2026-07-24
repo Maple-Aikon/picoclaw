@@ -231,6 +231,8 @@ type turnState struct {
 	lastExtensionAtIter   int    // Phase 10.1: iteration number when ExtendIterationCap last fired (0 = never extended)
 	goalFinalized         bool   // Phase 11: set true after complete_goal tool call so the loop breaks immediately.
 
+	postCompleteGoalReportSent bool // Phase 12.7: emit the final-report hint once after complete_goal; resets to true after the post-final-report iter runs.
+
 	// Replay counter: bound AfterLLM hook replay attempts within a single iteration.
 	// Replay attempts are recovery retries (e.g. malformed tool-call recovery)
 	// that shouldn't consume an iteration slot in iterationCap. See plan
@@ -629,6 +631,25 @@ func (ts *turnState) IsGoalFinalized() bool {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	return ts.goalFinalized
+}
+
+// shouldEmitPostCompleteGoalReport reports whether the post-complete_goal
+// final-report iter should fire (Phase 12.7). True exactly once per turn:
+// when complete_goal just ran and we have not already emitted the final-
+// report hint. The caller (turn_coord.go) sets postCompleteGoalReportSent
+// to true after the iter to suppress further fires.
+//
+// Owner decision (2026-07-24 08:50 ICT, anh Maple): always fire this iter
+// after complete_goal, even if the LLM already emitted text in the same
+// iteration. The LLM may add additional info or simply skip — either is
+// fine. We give the LLM one last chance regardless.
+func (ts *turnState) shouldEmitPostCompleteGoalReport() bool {
+	if ts == nil {
+		return false
+	}
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return ts.goalFinalized && !ts.postCompleteGoalReportSent
 }
 
 // MaxIterationsPerCheckpoint returns the per-checkpoint iteration budget
