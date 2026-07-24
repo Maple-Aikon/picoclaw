@@ -58,8 +58,8 @@ func TestEvaluateRecovery_EmptyText_PhaseOpen_InjectsOnce(t *testing.T) {
 		HasToolCalls: false,
 	}
 	action, msg := evaluateRecovery(ts, ctx)
-	if action != RecoveryRetryNextIteration {
-		t.Fatalf("expected RecoveryRetryNextIteration, got %v", action)
+	if action != RecoveryRetrySameIteration {
+		t.Fatalf("expected RecoveryRetrySameIteration, got %v", action)
 	}
 	if msg != EmptyResponseRecoveryMessage {
 		t.Fatalf("expected EMPTY_FINAL message, got %q", msg)
@@ -93,7 +93,7 @@ func TestEvaluateRecovery_TextOnly2x_PhaseOpen_ForceComplete(t *testing.T) {
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: false, HasToolCalls: false}
 	// First text-only: streak becomes 1, soft prompt fires (Phase 12)
 	action1, msg1 := evaluateRecovery(ts, ctx)
-	if action1 != RecoveryRetryNextIteration {
+	if action1 != RecoveryRetrySameIteration {
 		t.Fatalf("first text-only should soft retry, got %v", action1)
 	}
 	if msg1 != TextOnlySoftRetryMessage {
@@ -107,7 +107,7 @@ func TestEvaluateRecovery_TextOnly2x_PhaseOpen_ForceComplete(t *testing.T) {
 	}
 	// Second text-only (same iter, immediately after): hard prompt fires
 	action2, msg2 := evaluateRecovery(ts, ctx)
-	if action2 != RecoveryRetryNextIteration {
+	if action2 != RecoveryRetrySameIteration {
 		t.Fatalf("second text-only should hard retry, got %v", action2)
 	}
 	if msg2 != TextOnlyHardRetryMessage {
@@ -152,8 +152,8 @@ func TestEvaluateRecovery_ToolExecError_RetrySameIteration(t *testing.T) {
 	ts := newPhase5TurnState(t)
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), ToolName: "view_goal"}
 	action, _ := evaluateRecovery(ts, ctx)
-	if action != RecoveryRetryNextIteration {
-		t.Fatalf("expected RecoveryRetryNextIteration, got %v", action)
+	if action != RecoveryRetrySameIteration {
+		t.Fatalf("expected RecoveryRetrySameIteration, got %v", action)
 	}
 	if ts.toolExecRecoveryAttempts["view_goal"] != 1 {
 		t.Fatalf("expected view_goal attempt=1, got %d", ts.toolExecRecoveryAttempts["view_goal"])
@@ -487,7 +487,7 @@ func TestEvaluateRecovery_WirePathFromCurrentGoalPhase(t *testing.T) {
 		HasToolCalls: false,
 	}
 	action, msg := evaluateRecovery(ts, ctx)
-	if action != RecoveryRetryNextIteration {
+	if action != RecoveryRetrySameIteration {
 		t.Fatalf("wire-path recovery should fire on lowercase %q, got %v (msg=%q)", wirePhase, action, msg)
 	}
 	if msg != EmptyResponseRecoveryMessage {
@@ -622,8 +622,8 @@ func TestEvaluateRecovery_EmptyText_IterationBump_ResetsCounter(t *testing.T) {
 
 	// iter 12: empty response → recovery fires, counter flips
 	action1, msg1 := evaluateRecovery(ts, ctx)
-	if action1 != RecoveryRetryNextIteration {
-		t.Fatalf("iter 12: expected RecoveryRetryNextIteration, got %v", action1)
+	if action1 != RecoveryRetrySameIteration {
+		t.Fatalf("iter 12: expected RecoveryRetrySameIteration, got %v", action1)
 	}
 	if msg1 != EmptyResponseRecoveryMessage {
 		t.Fatalf("iter 12: expected EmptyResponseRecoveryMessage, got %q", msg1)
@@ -663,8 +663,8 @@ func TestEvaluateRecovery_EmptyText_IterationBump_ResetsCounter(t *testing.T) {
 		HasToolCalls: false,
 	}
 	action2, msg2 := evaluateRecovery(ts, ctx14)
-	if action2 != RecoveryRetryNextIteration {
-		t.Fatalf("iter 14: expected RecoveryRetryNextIteration (Fix #1), got %v", action2)
+	if action2 != RecoveryRetrySameIteration {
+		t.Fatalf("iter 14: expected RecoveryRetrySameIteration (Fix #1), got %v", action2)
 	}
 	if msg2 != EmptyResponseRecoveryMessage {
 		t.Fatalf("iter 14: expected EmptyResponseRecoveryMessage, got %q", msg2)
@@ -692,7 +692,7 @@ func TestEvaluateRecovery_ToolExecError_IterationBump_ResetsCap(t *testing.T) {
 	// iter 12: 3 retries (cap hit), then 4th would archive
 	for i := 0; i < ToolExecErrorRetryCap; i++ {
 		action, _ := evaluateRecovery(ts, ctx)
-		if action != RecoveryRetryNextIteration {
+		if action != RecoveryRetrySameIteration {
 			t.Fatalf("iter 12 retry %d: expected RetryNextIteration, got %v", i, action)
 		}
 	}
@@ -713,7 +713,7 @@ func TestEvaluateRecovery_ToolExecError_IterationBump_ResetsCap(t *testing.T) {
 		Iteration: 13,
 		ToolName:  "view_goal",
 	})
-	if action13 != RecoveryRetryNextIteration {
+	if action13 != RecoveryRetrySameIteration {
 		t.Fatalf("iter 13: expected RetryNextIteration (Fix #1b cap reset), got %v (msg=%q)", action13, msg13)
 	}
 	if ts.toolExecRecoveryAttempts["view_goal"] != 1 {
@@ -759,13 +759,13 @@ func TestEvaluateRecovery_IterationBump_ResetsBothCounters(t *testing.T) {
 
 	// iter 13: empty response fires again (Fix #1)
 	actionEmpty, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseOpen), Iteration: 13, TextEmpty: true, HasToolCalls: false})
-	if actionEmpty != RecoveryRetryNextIteration {
+	if actionEmpty != RecoveryRetrySameIteration {
 		t.Fatalf("iter 13 empty: expected RetryNextIteration, got %v", actionEmpty)
 	}
 
 	// iter 13: tool exec error fires again (Fix #1b)
 	actionTool, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseOpen), Iteration: 13, ToolName: "view_goal"})
-	if actionTool != RecoveryRetryNextIteration {
+	if actionTool != RecoveryRetrySameIteration {
 		t.Fatalf("iter 13 tool: expected RetryNextIteration, got %v", actionTool)
 	}
 	if ts.toolExecRecoveryAttempts["view_goal"] != 1 {

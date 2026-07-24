@@ -263,7 +263,11 @@ func newTurnCoordTestLoop(t *testing.T, provider providers.LLMProvider) (*AgentL
 
 func makeTestProcessOpts(sessionKey string) processOptions {
 	return processOptions{
-		SessionKey:      sessionKey,
+		SessionKey: sessionKey,
+		Dispatch: DispatchRequest{
+			SessionKey:  sessionKey,
+			UserMessage: "test message",
+		},
 		Channel:         "cli",
 		ChatID:          "test-chat",
 		UserMessage:     "test message",
@@ -1200,7 +1204,7 @@ func TestTurnCoord_RecoveryTrigger_ApplyActionState(t *testing.T) {
 		toolExecRecoveryAttempts: make(map[string]int),
 	}
 
-	// RecoveryRetryNextIteration sets pendingRecoveryMessage only.
+	// RecoveryRetrySameIteration sets pendingRecoveryMessage only.
 	ts.pendingRecoveryMessage = EmptyResponseRecoveryMessage
 	if ts.pendingRecoveryMessage == "" {
 		t.Fatalf("expected pendingRecoveryMessage set after retry action")
@@ -1374,7 +1378,7 @@ func TestRunTurn_Phase12_TextOnly2x_ThenArchive(t *testing.T) {
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), HasToolCalls: false, TextEmpty: false}
 
 	act1, msg1 := evaluateRecovery(ts, ctx)
-	if act1 != RecoveryRetryNextIteration || msg1 != TextOnlySoftRetryMessage {
+	if act1 != RecoveryRetrySameIteration || msg1 != TextOnlySoftRetryMessage {
 		t.Fatalf("1st text-only: action=%v msg=%q (want RetryNextIteration + soft)", act1, msg1)
 	}
 	if ts.textOnlySoftRetriesDone != 1 {
@@ -1382,7 +1386,7 @@ func TestRunTurn_Phase12_TextOnly2x_ThenArchive(t *testing.T) {
 	}
 
 	act2, msg2 := evaluateRecovery(ts, ctx)
-	if act2 != RecoveryRetryNextIteration || msg2 != TextOnlyHardRetryMessage {
+	if act2 != RecoveryRetrySameIteration || msg2 != TextOnlyHardRetryMessage {
 		t.Fatalf("2nd text-only: action=%v msg=%q (want RetryNextIteration + hard)", act2, msg2)
 	}
 	if ts.textOnlyHardRetriesDone != 1 {

@@ -35,13 +35,20 @@ type RecoveryAction int
 const (
 	// RecoveryNone means no recovery is needed — proceed as normal.
 	RecoveryNone RecoveryAction = iota
-	// RecoveryRetryNextIteration means inject a recovery message and re-run
-	// the agent loop. The caller returns ControlContinue which re-enters
-	// the loop top; setIteration bumps ts.iteration, so the recovery prompt
-	// is delivered to the LLM in the NEXT iteration, not the same one.
-	// (Despite the old name "RecoveryRetrySameIteration", this constant has
-	// always fired in the next iteration due to the loop's iter-bump pattern.)
-	RecoveryRetryNextIteration
+	// RecoveryRetrySameIteration means inject a recovery message and re-run
+	// the LLM call WITHIN THE SAME iteration. The previous name
+	// `RecoveryRetrySameIteration` (Phase 12.10) was a rename of the
+	// original `RecoveryRetrySameIteration` to match the broken iter-bump
+	// pattern. Phase 12.11 restores the original semantics by wrapping the
+	// LLM call in a BoundedRetry loop (see handleGoalRecovery in
+	// pipeline_llm.go) so retries do NOT bump the iteration counter.
+	//
+	// Design intent (Phase 5 plan §5.3): recovery is a sub-attempt within
+	// one iteration, not a new iteration. The iter-bump pattern broke the
+	// boundary case where a tool exec error at iter=iterationCap-1 forced
+	// an early Checkpoint phase transition and stripped the failing tool
+	// from the allowlist.
+	RecoveryRetrySameIteration
 	// RecoveryForceComplete means strip non-goal tools and force the LLM to
 	// emit complete_goal on the next call. Caller must inject force-complete
 	// prompt and re-run the same iteration.
@@ -176,7 +183,7 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 			// Caller (checkToolExecErrorRecovery / pipeline) sets this from
 			// the tool result's error text + circuit-breaker state.
 			msg := buildToolExecErrorRetryMessage(ctx.ToolName, ctx.ToolExecError, ctx.IsTransient, ctx.ToolKnowledgeRegistry)
-			return RecoveryRetryNextIteration, msg
+			return RecoveryRetrySameIteration, msg
 		}
 		return RecoveryArchiveGoal, "Tool execution error retry exhausted for " + ctx.ToolName + "."
 	}
@@ -191,7 +198,7 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 	if ctx.TextEmpty && !ctx.HasToolCalls && !ts.emptyResponseRecoverySent {
 		if countWouldExceed(ts.emptyResponseRecoverySentCount(), EmptyResponseRecoveryCap) {
 			ts.emptyResponseRecoverySent = true
-			return RecoveryRetryNextIteration, EmptyResponseRecoveryMessage
+			return RecoveryRetrySameIteration, EmptyResponseRecoveryMessage
 		}
 	}
 
@@ -215,7 +222,7 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 				"soft_done": ts.textOnlySoftRetriesDone,
 				"hard_done": ts.textOnlyHardRetriesDone,
 			})
-			return RecoveryRetryNextIteration, TextOnlySoftRetryMessage
+			return RecoveryRetrySameIteration, TextOnlySoftRetryMessage
 		}
 		if ts.textOnlyHardRetriesDone < TextOnlyHardRetryCap {
 			ts.textOnlyHardRetriesDone++
@@ -229,7 +236,7 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 				"soft_done": ts.textOnlySoftRetriesDone,
 				"hard_done": ts.textOnlyHardRetriesDone,
 			})
-			return RecoveryRetryNextIteration, TextOnlyHardRetryMessage
+			return RecoveryRetrySameIteration, TextOnlyHardRetryMessage
 		}
 		// Both soft + hard fired this iteration; archive the goal.
 		var agentID string

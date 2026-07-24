@@ -725,7 +725,7 @@ func (p *Pipeline) proceedPastLLM(
 				MaxIterations:         ts.iterationCap,
 				ToolKnowledgeRegistry: ts.agent.Tools,
 			}); action != RecoveryNone {
-				return p.applyRecoveryAction(ctx, turnCtx, ts, exec, iteration, action, msg)
+				return p.handleGoalRecovery(ctx, turnCtx, ts, exec, iteration, action, msg)
 			}
 		}
 
@@ -1082,22 +1082,31 @@ func (p *Pipeline) handleHookReplay(
 	return ControlContinue, nil
 }
 
-// applyRecoveryAction handles the post-recovery-control flow for Phase 5
-// goal-lifecycle triggers.
+// handleGoalRecovery processes a recovery trigger using a same-iteration
+// BoundedRetry loop, restoring the original Phase 5 design intent (plan
+// §5.3, recovery_goal.go:8).
 //
-// As of Phase 12.10, recovery retries DO bump the iteration counter — the
-// caller (turn_coord.go:163-164) re-enters the loop top, which calls
-// setIteration(+1), so the recovery prompt is delivered to the LLM in the
-// NEXT iteration, not the same one. The previous "no iter bump" intent
-// was contradicted by the loop's continue/loop-top pattern.
+// Wire-up replaces applyRecoveryAction (Phase 12.10 iter-bump pattern) with
+// a BoundedRetry loop inside this function. The caller (CallLLM outer loop)
+// receives ControlContinue (retry successful, response populated) or
+// ControlBreak (recovery exhausted → goal archived) without any iteration
+// bump in either case.
 //
-// For RecoveryRetryNextIteration and RecoveryForceComplete: we log the
-// recovery, set pendingRecoveryMessage, then return ControlContinue so the
-// coordinator re-enters CallLLM with the next iteration value.
+// Per-attempt flow:
+//  1. Caller already invoked callLLMCore once; response is in exec.response.
+//  2. Evaluate recovery triggers on that response.
+//  3. If RecoveryNone → return Done (response is good, caller continues).
+//  4. If RecoveryRetrySameIteration / RecoveryForceComplete → set
+//     pendingRecoveryMessage, return Retry.
+//  5. If RecoveryArchiveGoal → archive + return Abort (turn ends).
 //
-// For RecoveryArchiveGoal: we invoke finalizeGoalOnTurnEnd (Phase 6 hook;
-// stub for now → logs the archive signal and ends the turn). Caller stops.
-func (p *Pipeline) applyRecoveryAction(
+// On retry, BoundedRetry invokes the wrapped func again, which:
+//  - Rebuilds callMessages with the pendingRecoveryMessage injected
+//  - Re-runs callLLMCore
+//  - Re-evaluates recovery
+//
+// Exhausted → archive goal + return ControlBreak.
+func (p *Pipeline) handleGoalRecovery(
 	ctx context.Context,
 	turnCtx context.Context,
 	ts *turnState,
@@ -1107,49 +1116,147 @@ func (p *Pipeline) applyRecoveryAction(
 	msg string,
 ) (Control, error) {
 	al := p.al
-	fields := map[string]any{
+	logFields := map[string]any{
 		"agent_id":  ts.agent.ID,
 		"iteration": iteration,
 		"action":    actionName(action),
 	}
 	if msg != "" {
-		fields["message"] = msg
+		logFields["message"] = msg
 	}
-	logger.InfoCF("agent", "Goal-lifecycle recovery action", fields)
+	logger.InfoCF("agent", "Goal-lifecycle recovery action (same-iter BoundedRetry)", logFields)
 
-	switch action {
-	case RecoveryRetryNextIteration:
-		// Caller (CallLLM outer loop) sees ControlContinue + bumped iteration.
-		// The recovery message will be appended to messages via pendingRecoveryMessage
-		// and consumed at the start of the next iteration entry.
-		if msg != "" {
+	// Reset the empty-response counter so the BoundedRetry loop can re-evaluate
+	// each attempt. The initial caller (CallLLM line 713-728) sets the counter
+	// when the first trigger fires; the in-iter retry is the SAME event, so
+	// we reset and let evaluateRecovery decide per-attempt.
+	ts.emptyResponseRecoverySent = false
+
+	decision, err := BoundedRetry(ctx, RetryConfig{
+		Name:        "goal_recovery",
+		MaxAttempts: 3,
+		OnRetry: func(rc RetryContext, _ string) {
+			logger.InfoCF("agent", "Goal recovery retry (same iteration)", map[string]any{
+				"agent_id":  ts.agent.ID,
+				"iteration": iteration,
+				"attempt":   rc.Attempt + 1,
+				"remaining": rc.Remaining,
+			})
+		},
+		OnExhausted: func(rc RetryContext) {
+			logger.WarnCF("agent", "Goal recovery exhausted, archiving goal", map[string]any{
+				"agent_id":  ts.agent.ID,
+				"iteration": iteration,
+				"cap":       rc.MaxAttempts,
+			})
+			if ts.hasGoal() && !ts.goalArchiveRequested {
+				ts.goalArchiveRequested = true
+				if finalizeErr := ts.finalizeGoalOnTurnEnd(GoalAbortReasonBexhausted + ":goal_recovery"); finalizeErr != nil {
+					logger.WarnCF("agent", "Goal recovery: finalizeGoalOnTurnEnd failed",
+						map[string]any{"error": finalizeErr.Error()})
+				}
+			}
+		},
+	}, func(attemptCtx context.Context, rc RetryContext) (RetryDecision, error) {
+		// Evaluate recovery triggers on the (possibly fresh) response.
+		// For attempts > 0, re-invoke callLLMCore with pendingRecoveryMessage
+		// injected into callMessages. Attempt 0 uses the response already
+		// populated by the caller (CallLLM line 162-318).
+		if rc.Attempt > 0 {
+			logger.InfoCF("agent", "handleGoalRecovery attempt>0 enter", map[string]any{
+				"agent_id":          ts.agent.ID,
+				"iteration":         iteration,
+				"attempt":           rc.Attempt,
+				"pendingMsg":        msg,
+				"callMsgsLenBefore": len(exec.callMessages),
+			})
 			ts.pendingRecoveryMessage = msg
-		}
-		return ControlContinue, nil
+			// Rebuild callMessages — mirrors the line 73-109 logic
+			// (interruptHintMessage + pendingRecoveryMessage injection).
+			exec.callMessages = append([]providers.Message{}, exec.messages...)
+			if msg := ts.interruptHintMessage(); msg.Content != "" {
+				exec.callMessages = append(exec.callMessages, msg)
+			}
+			if ts.pendingRecoveryMessage != "" {
+				exec.callMessages = append(exec.callMessages, providers.Message{
+					Role:    "user",
+					Content: ts.pendingRecoveryMessage,
+				})
+			}
+			// Clear pendingRecoveryMessage after consumption so subsequent
+			// attempts within this iteration do not re-inject the same hint.
+			ts.pendingRecoveryMessage = ""
 
-	case RecoveryForceComplete:
-		// Phase 11: force-complete no longer needs a separate flag —
-		// the per-turn loop already exits as soon as the LLM calls
-		// complete_goal (which sets ts.goalFinalized via the goal tool
-		// handler). We just append a recovery message instructing the
-		// LLM to wrap up with a final reply + complete_goal call.
-		if msg != "" {
-			ts.pendingRecoveryMessage = msg
+			resp, callErr := p.callLLMCore(attemptCtx, turnCtx, ts, exec, exec.callMessages, exec.providerToolDefs, iteration)
+			if callErr != nil {
+				return RetryDecisionAbort, callErr
+			}
+			if resp != nil {
+				exec.response = resp
+			}
 		}
-		return ControlContinue, nil
 
-	case RecoveryArchiveGoal:
-		// Phase 6 hook: finalizeGoalOnTurnEnd will archive the goal and set
-		// status=aborted. Phase 5 stub: log + set flag so caller knows.
-		ts.goalArchiveRequested = true
-		_ = al
-		_ = turnCtx
-		_ = ctx
+		// If LLM called a tool, recovery is not needed (tools will be
+		// executed by the caller).
+		if len(exec.response.ToolCalls) > 0 && !exec.gracefulTerminal {
+			return RetryDecisionDone, nil
+		}
+
+		// No active goal or graceful terminal — no recovery.
+		if !ts.hasGoal() || exec.gracefulTerminal {
+			return RetryDecisionDone, nil
+		}
+
+		// Evaluate recovery triggers on the (possibly fresh) response.
+		evalCtx := RecoveryContext{
+			Phase:                 string(ts.currentGoalPhase()),
+			Iteration:             iteration,
+			TextEmpty:             exec.response.Content == "",
+			HasToolCalls:          false,
+			MaxIterations:         ts.iterationCap,
+			ToolKnowledgeRegistry: ts.agent.Tools,
+		}
+		nextAction, nextMsg := evaluateRecovery(ts, evalCtx)
+
+		switch nextAction {
+		case RecoveryNone:
+			// RecoveryNone after we've already fired at least one retry in
+			// this iteration means the cap is reached (e.g. 2 of 2 empty-response
+			// retries used). This is the "exhausted" terminal — archive the
+			// goal and exit the retry loop with RetryDecisionAbort, so the
+			// caller returns ControlBreak and the loop terminates the turn.
+			if ts.emptyResponseRecoverySent || ts.textOnlySoftRetriesDone > 0 || ts.textOnlyHardRetriesDone > 0 || ts.toolExecRecoveryAttempts != nil {
+				logFields["action"] = "exhausted_archive"
+				logger.InfoCF("agent", "Goal recovery exhausted in same iteration", logFields)
+				ts.goalArchiveRequested = true
+				return RetryDecisionAbort, nil
+			}
+			return RetryDecisionDone, nil
+		case RecoveryRetrySameIteration, RecoveryForceComplete:
+			// Update msg for next attempt's callMessages injection.
+			msg = nextMsg
+			return RetryDecisionRetry, nil
+		case RecoveryArchiveGoal:
+			if !ts.goalArchiveRequested {
+				ts.goalArchiveRequested = true
+				if finalizeErr := ts.finalizeGoalOnTurnEnd(GoalAbortReasonBexhausted + ":goal_recovery"); finalizeErr != nil {
+					logger.WarnCF("agent", "Goal recovery (archive in retry): finalizeGoalOnTurnEnd failed",
+						map[string]any{"error": finalizeErr.Error()})
+				}
+			}
+			return RetryDecisionAbort, nil
+		}
+		return RetryDecisionDone, nil
+	})
+
+	if err != nil {
+		return ControlBreak, err
+	}
+	if decision == RetryDecisionAbort {
 		return ControlBreak, nil
-
-	default:
-		return ControlContinue, nil
 	}
+	_ = al
+	return ControlContinue, nil
 }
 
 // actionName returns a human-readable label for a RecoveryAction.
@@ -1157,7 +1264,7 @@ func actionName(a RecoveryAction) string {
 	switch a {
 	case RecoveryNone:
 		return "none"
-	case RecoveryRetryNextIteration:
+	case RecoveryRetrySameIteration:
 		return "retry_next_iteration"
 	case RecoveryForceComplete:
 		return "force_complete"
