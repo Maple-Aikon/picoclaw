@@ -1131,6 +1131,16 @@ func (p *Pipeline) handleGoalRecovery(
 	// when the first trigger fires; the in-iter retry is the SAME event, so
 	// we reset and let evaluateRecovery decide per-attempt.
 	ts.emptyResponseRecoverySent = false
+	// Sibling counters: text-only soft/hard retry caps must also reset so the
+	// re-evaluation can re-fire the trigger on attempt 0 if the LLM still
+	// responds text-only. Without this, the caller-side check (textOnly*Done > 0)
+	// marks the trigger as "already attempted this iteration" and escalates to
+	// archive/exhausted, discarding the LLM's actual response. Discovered via
+	// live verify on main-turn-2 (2026-07-24) where "tiếp tục đi" got DefaultResponse
+	// instead of the LLM's 351-char text-only answer.
+	ts.textOnlySoftRetriesDone = 0
+	ts.textOnlyHardRetriesDone = 0
+	ts.toolExecRecoveryAttempts = nil
 
 	decision, err := BoundedRetry(ctx, RetryConfig{
 		Name:        "goal_recovery",

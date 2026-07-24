@@ -431,6 +431,83 @@ func TestHandleGoalRecovery_PendingMessageInjected(t *testing.T) {
 	}
 }
 
+// TestHandleGoalRecovery_TextOnlySoftRetry_CounterReset verifies that the
+// textOnlySoftRetriesDone counter is reset on handleGoalRecovery entry, so a
+// text-only response on attempt 0 re-fires the soft-retry trigger, allowing
+// attempt 1 to call LLM with the recovery hint injected.
+//
+// Pre-Phase 12.11.1 fix: the caller-side increment of textOnlySoftRetriesDone
+// (cap=1) was NOT reset on handleGoalRecovery entry → wrapped func re-eval
+// saw `textOnlySoftRetriesDone > 0` → returned escalated → archive/abort →
+// LLM's text-only response was discarded, user got DefaultResponse. Iter bumped
+// to next iteration with no new LLM call. Discovered via live verify on
+// main-turn-2 (2026-07-24) where "tiếp tục đi" got 88 chars (DefaultResponse)
+// instead of the LLM's 351-char text-only answer.
+//
+// Phase 12.11.1 fix: handleGoalRecovery resets textOnlySoftRetriesDone (and
+// textOnlyHardRetriesDone + toolExecRecoveryAttempts map) on entry, mirroring
+// the existing emptyResponseRecoverySent reset. attempt 1 fires with hint
+// injected, LLM chooses complete_goal or tool call → success.
+func TestHandleGoalRecovery_TextOnlySoftRetry_CounterReset(t *testing.T) {
+	provider := &recoveryTestProvider{
+		responses: []*providers.LLMResponse{
+			{Content: "thinking about this but no tool call yet", FinishReason: "stop"}, // attempt 0: text-only soft
+			{
+				Content: "ok here is the final report",
+				ToolCalls: []providers.ToolCall{
+					{ID: "call-1", Name: "test_tool", Arguments: map[string]any{}},
+				},
+				FinishReason: "tool_calls",
+			}, // attempt 1: tool call → success
+		},
+	}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	pipeline := NewPipeline(al)
+	ws := t.TempDir()
+	agent.Workspace = ws
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+	ts.iterationCap = 10
+	ts.setIteration(2)
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn: %v", err)
+	}
+	writeActiveGoalInWorkspace(t, ws, "test-session")
+
+	// Pre-set the textOnly counter to a non-zero value to simulate the
+	// caller having already incremented it (CallLLM line 713-728 path).
+	// Pre-Phase 12.11.1 fix: this value persisted into handleGoalRecovery
+	// and the soft-retry trigger check `textOnlySoftRetriesDone >= cap`
+	// returned escalated → ControlBreak → LLM's text was discarded.
+	ts.textOnlySoftRetriesDone = 1
+
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
+	if err != nil {
+		t.Fatalf("CallLLM: %v", err)
+	}
+
+	if ctrl == ControlBreak {
+		t.Errorf("expected ControlContinue after same-iter retry succeeded, got ControlBreak")
+	}
+	if ts.goalArchiveRequested {
+		t.Error("expected goalArchiveRequested=false after successful same-iter retry")
+	}
+	// Critical: iteration MUST NOT have bumped.
+	if got := ts.CurrentIteration(); got != 2 {
+		t.Errorf("expected iteration=2 after text-only soft retry same-iter, got %d", got)
+	}
+	// Verify attempt 1 fired (provider.callCount should be 2).
+	if got := provider.mu.callCount; got != 2 {
+		t.Errorf("expected 2 LLM calls (attempt 0 + retry 1), got %d", got)
+	}
+}
+
 // recoveryCaptureProvider captures messages for assertion.
 type recoveryCaptureProvider struct {
 	responses []*providers.LLMResponse
