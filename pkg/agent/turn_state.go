@@ -232,6 +232,7 @@ type turnState struct {
 	goalFinalized         bool   // Phase 11: set true after complete_goal tool call so the loop breaks immediately.
 
 	postCompleteGoalReportSent bool // Phase 12.7: emit the final-report hint once after complete_goal; resets to true after the post-final-report iter runs.
+	pendingFinalReportIter     bool // Phase 12.9: transient signal set at top of body if this iter is the post-complete_goal final-report iter; consumed + cleared at end of body.
 
 	// Replay counter: bound AfterLLM hook replay attempts within a single iteration.
 	// Replay attempts are recovery retries (e.g. malformed tool-call recovery)

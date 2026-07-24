@@ -551,9 +551,12 @@ func TestPostCompleteGoalReport_CapBypass(t *testing.T) {
 	ts.goalFinalized = true
 	ts.postCompleteGoalReportSent = false
 
-	// The cap-bypass logic from turn_coord.go:146-150
-	if !ts.postCompleteGoalReportSent {
-		ts.postCompleteGoalReportSent = true
+	// Phase 12.9: pre-loop hook is now responsible for the cap-bypass.
+	// It bumps iterationCap to ts.iteration+1 (allowing exactly one more
+	// iter) but does NOT touch postCompleteGoalReportSent — that flag
+	// is set at END of body (post-body marker), not at the bypass site.
+	// Modeling the pre-loop hook:
+	if ts.goalFinalized && !ts.postCompleteGoalReportSent {
 		if cap := ts.iteration + 1; cap > ts.iterationCap {
 			ts.iterationCap = cap
 		}
@@ -563,14 +566,37 @@ func TestPostCompleteGoalReport_CapBypass(t *testing.T) {
 	if ts.iterationCap != 25 {
 		t.Errorf("expected iterationCap=25 after cap-bypass, got %d", ts.iterationCap)
 	}
-	if !ts.postCompleteGoalReportSent {
-		t.Error("postCompleteGoalReportSent should be true after first enter")
+	if ts.postCompleteGoalReportSent {
+		t.Error("postCompleteGoalReportSent should still be FALSE after pre-loop hook (set at post-body marker, not bypass site)")
 	}
 
-	// Second call should NOT re-extend cap (because postCompleteGoalReportSent already true)
-	// Just simulate the branch:
+	// Phase 12.9: at top of body, the transient pendingFinalReportIter
+	// signal is set so the post-body marker can detect this iter is the
+	// final-report iter and flip postCompleteGoalReportSent=true.
+	ts.pendingFinalReportIter = true
+
+	// Simulate body running: LLM call, tool exec, etc. (none in this
+	// unit test — we only verify the post-body marker transition).
+
+	// Post-body marker (mirrored from turn_coord.go):
+	if ts.pendingFinalReportIter {
+		ts.postCompleteGoalReportSent = true
+		ts.pendingFinalReportIter = false
+	}
+
 	if !ts.postCompleteGoalReportSent {
-		// This branch must NOT execute
-		t.Error("postCompleteGoalReportSent=false on second check; flag not sticky")
+		t.Error("postCompleteGoalReportSent should be true after post-body marker ran")
+	}
+
+	// Second pass through the pre-loop hook must NOT re-extend cap
+	// (because postCompleteGoalReportSent is now true).
+	prevCap := ts.iterationCap
+	if ts.goalFinalized && !ts.postCompleteGoalReportSent {
+		if cap := ts.iteration + 1; cap > ts.iterationCap {
+			ts.iterationCap = cap
+		}
+	}
+	if ts.iterationCap != prevCap {
+		t.Errorf("pre-loop hook should be a no-op when postCompleteGoalReportSent=true; cap changed from %d to %d", prevCap, ts.iterationCap)
 	}
 }

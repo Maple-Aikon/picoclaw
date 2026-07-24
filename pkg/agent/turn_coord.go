@@ -123,6 +123,23 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	maxMediaSize := pipeline.Cfg.Agents.Defaults.GetMaxMediaSize()
 	finalContent := exec.finalContent
 
+	// Phase 12.9: pre-loop cap-extend for the post-complete_goal final-report
+	// iter. Without this hook, the loop condition below would be FALSE in
+	// the common cap-reached case (currentIteration == iterationCap, no
+	// pending messages, no graceful interrupt), and the loop would exit
+	// before the body — and the goalFinalized block — ever ran. By bumping
+	// iterationCap to allow exactly one more iteration, the loop condition
+	// evaluates TRUE and the body runs with phase=Final + allowlist=[],
+	// giving the LLM its last chance to provide a final user-facing report.
+	// The flag itself is set at the END of the body (post-body marker),
+	// not here — so the in-loop goalFinalized block below can detect
+	// "already sent" and break cleanly on the second pass.
+	if ts.goalFinalized && !ts.postCompleteGoalReportSent {
+		if cap := ts.iteration + 1; cap > ts.iterationCap {
+			ts.iterationCap = cap
+		}
+	}
+
 	for ts.currentIteration() < ts.iterationCap || len(exec.pendingMessages) > 0 || func() bool {
 		graceful, _ := ts.gracefulInterruptRequested()
 		return graceful
@@ -131,25 +148,16 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			turnStatus = TurnEndStatusAborted
 			return al.abortTurn(ts)
 		}
-		// Phase 11: complete_goal sets ts.goalFinalized = true to short-circuit
-		// the per-turn loop. We must check it at the TOP of the loop, not
-		// just at the bottom — the tool may fire on the very last iteration
-		// of a turn that already exhausted its iteration cap.
-		if ts.goalFinalized {
-			// Phase 12.7: One last chance for the LLM to provide a final
-			// user-facing report. Re-enter the loop once with phase=Final
-			// (tool allowlist=[]), postCompleteGoalReportSent=true so the
-			// final-report hint fires. Bypass iterationCap check by
-			// extending cap to ts.iteration+1; ts.iteration itself stays
-			// the same.
-			if !ts.postCompleteGoalReportSent {
-				ts.postCompleteGoalReportSent = true
-				if cap := ts.iteration + 1; cap > ts.iterationCap {
-					ts.iterationCap = cap
-				}
-				continue
-			}
-			break
+		// Phase 11 + Phase 12.9: complete_goal sets ts.goalFinalized = true
+		// to short-circuit the per-turn loop. The pre-loop hook above
+		// extends iterationCap so this block + the body actually runs
+		// once after complete_goal. We DO NOT continue/break here — let
+		// the body run normally with phase=Final + allowlist=[] (which
+		// currentGoalPhase() will compute because goalFinalized=true).
+		// The post-body marker (below) flips postCompleteGoalReportSent
+		// to true once the LLM has actually emitted the final report.
+		if ts.goalFinalized && !ts.postCompleteGoalReportSent {
+			ts.pendingFinalReportIter = true
 		}
 
 		iteration := ts.currentIteration() + 1
@@ -295,6 +303,15 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 
 		switch ctrl {
 		case ControlContinue:
+			// Phase 12.9: post-body marker for early-Continue path (no
+			// tool exec was needed — e.g. text-only LLM response that
+			// still needs a final report). If this iter is the post-
+			// complete_goal final-report iter, flip the flag so the
+			// next loop pass exits cleanly.
+			if ts.pendingFinalReportIter {
+				ts.postCompleteGoalReportSent = true
+				ts.pendingFinalReportIter = false
+			}
 			continue
 		case ControlBreak:
 			// Hard abort: delegate to abortTurn (sets TurnEndStatusAborted)
@@ -341,6 +358,19 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				// Re-read exec.messages since ExecuteTools may have updated it
 				// (added tool results/skipped messages) before returning ControlContinue
 				messages = exec.messages
+				// Phase 12.9: post-body marker. If this iter was flagged as
+				// the post-complete_goal final-report iter (set at top of
+				// body), flip postCompleteGoalReportSent to true so the
+				// next loop pass sees the flag set and the in-loop
+				// goalFinalized check (added below) can break the loop.
+				// The clear of pendingFinalReportIter is defensive — the
+				// flag is only meaningful for the duration of one body
+				// pass, so we reset it here rather than waiting for the
+				// next iter's top-of-body.
+				if ts.pendingFinalReportIter {
+					ts.postCompleteGoalReportSent = true
+					ts.pendingFinalReportIter = false
+				}
 				continue
 			case ToolControlBreak:
 				// Hard abort: delegate to abortTurn (sets TurnEndStatusAborted)
