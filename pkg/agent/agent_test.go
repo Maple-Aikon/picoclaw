@@ -1895,6 +1895,10 @@ func TestProcessMessage_MediaToolHandledSkipsFollowUpLLMAndFinalText(t *testing.
 		store: store,
 		path:  imagePath,
 	})
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so handled_media_tool
+	// is visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
 		Channel:  "telegram",
@@ -1998,6 +2002,10 @@ func TestProcessMessage_HandledToolProcessesQueuedSteeringBeforeReturning(t *tes
 		path:  imagePath,
 		loop:  al,
 	})
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so handled_media_tool
+	// is visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
 		Channel:  "telegram",
@@ -2036,6 +2044,10 @@ func TestRunAgentLoop_ResponseHandledToolPublishesForUserWhenSendResponseDisable
 	telegramChannel := &fakeMediaChannel{fakeChannel: fakeChannel{id: "rid-telegram"}}
 	al.SetChannelManager(newStartedTestChannelManager(t, msgBus, store, "telegram", telegramChannel))
 	al.RegisterTool(&handledUserTool{})
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so handled_user_tool
+	// is visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	defaultAgent := al.registry.GetDefaultAgent()
 	if defaultAgent == nil {
@@ -2308,6 +2320,10 @@ func TestProcessMessage_MediaArtifactCanBeForwardedBySendFile(t *testing.T) {
 		store: store,
 		path:  imagePath,
 	})
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so media_artifact_tool
+	// is visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
 		Channel:  "telegram",
@@ -5253,6 +5269,10 @@ func TestAgentLoop_TextFollowUpAfterLoadImageStaysOnTextModel(t *testing.T) {
 	textProvider := &loadImageThenTextFollowUpProvider{path: pngPath}
 	al := NewAgentLoop(cfg, msgBus, textProvider)
 	al.SetMediaStore(media.NewFileMediaStore())
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so load_image tool
+	// is visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	agent := al.registry.GetDefaultAgent()
 	if agent == nil {
@@ -5360,6 +5380,10 @@ func TestAgentLoop_LoadImageFollowUpRoutesToImageModel(t *testing.T) {
 	planner := &loadImagePlanningProvider{path: pngPath}
 	al := NewAgentLoop(cfg, msgBus, planner)
 	al.SetMediaStore(media.NewFileMediaStore())
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so load_image tool
+	// is visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	agent := al.registry.GetDefaultAgent()
 	if agent == nil {
@@ -5445,6 +5469,10 @@ func TestAgentLoop_LoadImageFollowUpWithoutImageModelFailsClearly(t *testing.T) 
 	}
 	al := NewAgentLoop(cfg, msgBus, planner)
 	al.SetMediaStore(media.NewFileMediaStore())
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so load_image tool
+	// is visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), responseTimeout)
 	defer cancel()
@@ -6425,6 +6453,10 @@ func TestProcessMessage_MessageToolPublishesOutboundWithTurnMetadata(t *testing.
 	msgBus := bus.NewMessageBus()
 	provider := &messageToolProvider{}
 	al := NewAgentLoop(cfg, msgBus, provider)
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so message tool
+	// is visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
 		Channel:  "telegram",

@@ -621,6 +621,10 @@ func TestAgentLoop_Steering_SkipsRemainingTools(t *testing.T) {
 	al := NewAgentLoop(cfg, msgBus, provider)
 	al.RegisterTool(tool1)
 	al.RegisterTool(tool2)
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so tool_one + tool_two
+	// are visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	// Start processing in a goroutine
 	type result struct {
@@ -1457,6 +1461,10 @@ func TestAgentLoop_InterruptGraceful_UsesTerminalNoToolCall(t *testing.T) {
 	al := NewAgentLoop(cfg, msgBus, provider)
 	al.RegisterTool(tool1)
 	al.RegisterTool(tool2)
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so tool_one + tool_two
+	// are visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 	sessionKey := session.BuildMainSessionKey(routing.DefaultAgentID)
 
 	runtimeCh, closeRuntimeEvents := subscribeRuntimeEventsForTest(
@@ -1617,6 +1625,10 @@ func TestAgentLoop_InterruptHard_RestoresSession(t *testing.T) {
 	al := NewAgentLoop(cfg, msgBus, provider)
 	started := make(chan struct{})
 	al.RegisterTool(&interruptibleTool{name: "cancel_tool", started: started})
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so cancel_tool
+	// is visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 	sessionKey := session.BuildMainSessionKey(routing.DefaultAgentID)
 
 	defaultAgent := al.registry.GetDefaultAgent()
@@ -1756,6 +1768,10 @@ func TestAgentLoop_StopCommand_AbortsActiveTurnAndClearsQueuedSteering(t *testin
 	al := NewAgentLoop(cfg, msgBus, provider)
 	started := make(chan struct{})
 	al.RegisterTool(&interruptibleTool{name: "cancel_tool", started: started})
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so cancel_tool
+	// is visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 	sessionKey := session.BuildMainSessionKey(routing.DefaultAgentID)
 
 	runCtx, cancelRun := context.WithCancel(context.Background())
@@ -1963,6 +1979,10 @@ func TestAgentLoop_Steering_SkippedToolsHaveErrorResults(t *testing.T) {
 	al := NewAgentLoop(cfg, msgBus, wrappedProvider)
 	al.RegisterTool(tool1)
 	al.RegisterTool(tool2)
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so slow_tool + skipped_tool
+	// are visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	resultCh := make(chan string, 1)
 	go func() {

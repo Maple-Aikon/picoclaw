@@ -42,6 +42,10 @@ func newHookTestLoop(
 	}
 
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so the test's tool
+	// (echoTextTool, fmt, etc.) is visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 	agent := al.registry.GetDefaultAgent()
 	if agent == nil {
 		t.Fatal("expected default agent")

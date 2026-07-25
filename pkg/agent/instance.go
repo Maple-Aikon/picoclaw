@@ -55,6 +55,13 @@ type AgentInstance struct {
 	// Production callers MUST leave this false.
 	SkipGoalArchiveForTest bool
 
+	// PhaseOverrideForTest, when non-empty, replaces the natural
+	// ResolveGoalPhase classification in currentGoalPhase. ONLY for test
+	// fixtures that need a specific phase (e.g. GoalPhaseOpen) at iter 1
+	// without driving a set_goal preamble. Production callers MUST leave
+	// this empty.
+	PhaseOverrideForTest string
+
 	// Router is non-nil when model routing is configured. It scores each
 	// incoming message and decides whether to route to Light, Medium, or Heavy tier.
 	Router *routing.Router

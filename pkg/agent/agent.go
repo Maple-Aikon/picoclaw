@@ -107,6 +107,21 @@ func (al *AgentLoop) SkipGoalArchiveForTest() {
 	}
 }
 
+// SetGoalPhaseForTest forces a specific goal phase for every registered
+// agent. ONLY for test fixtures that need a specific phase (e.g. Open)
+// at iter 1 without driving a set_goal preamble. Production callers
+// MUST NOT touch this — the natural ResolveGoalPhase classifier is
+// load-bearing for the goal lifecycle (Phase 11).
+//
+// Pass "" to clear the override.
+func (al *AgentLoop) SetGoalPhaseForTest(phase string) {
+	for _, id := range al.registry.ListAgentIDs() {
+		if agent, ok := al.registry.GetAgent(id); ok && agent != nil {
+			agent.PhaseOverrideForTest = phase
+		}
+	}
+}
+
 // processOptions configures how a message is processed
 type processOptions struct {
 	Dispatch                DispatchRequest // Normalized routed request boundary for this turn

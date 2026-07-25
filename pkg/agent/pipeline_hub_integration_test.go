@@ -119,6 +119,10 @@ func newHubIntegrationLoop(t *testing.T, provider providers.LLMProvider) (*Agent
 
 	al := NewAgentLoop(cfg, msgBus, provider)
 	al.channelManager = cm
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so the test's tool
+	// (hub_echo, hub_failing, etc.) is visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	cleanup := func() {
 		// No-op: in-memory bus + local cfg are GC'd when the test ends.

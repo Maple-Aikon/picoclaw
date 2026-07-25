@@ -87,6 +87,13 @@ func (ts *turnState) currentGoalPhase() GoalPhase {
 	if ts == nil || ts.agent == nil {
 		return GoalPhaseSet
 	}
+	// Test-only escape hatch: AgentInstance.PhaseOverrideForTest forces a
+	// specific phase. Used by tests that need a specific phase (e.g.
+	// GoalPhaseOpen) at iter 1 without driving a set_goal preamble. See
+	// pkg/agent/instance.go for the field contract.
+	if ts.agent.PhaseOverrideForTest != "" {
+		return GoalPhase(ts.agent.PhaseOverrideForTest)
+	}
 	return ResolveGoalPhase(
 		ts.hasGoal(),
 		ts.iteration,

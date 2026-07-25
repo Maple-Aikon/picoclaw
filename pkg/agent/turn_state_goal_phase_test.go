@@ -244,7 +244,9 @@ func TestTurnState_ApplyPhaseAllowlist(t *testing.T) {
 		ts := newPhaseTestTurnState(agent, "phase-checkpoint-allow", workspace)
 		ts.applyPhaseAllowlist(GoalPhaseCheckpoint)
 		names := agent.Tools.GetAllowlist()
-		for _, want := range []string{"goal_progress", "complete_goal", "alpha", "beta"} {
+		// Phase 12.14: Checkpoint is ABSOLUTE — returns [goal_progress, complete_goal]
+		// regardless of base frontmatter (alpha, beta, view_goal are NOT included).
+		for _, want := range []string{"goal_progress", "complete_goal"} {
 			if !sliceContains(names, want) {
 				t.Fatalf("Checkpoint allowlist missing %q: got %v", want, names)
 			}
@@ -254,6 +256,12 @@ func TestTurnState_ApplyPhaseAllowlist(t *testing.T) {
 		}
 		if sliceContains(names, "view_goal") {
 			t.Fatalf("Checkpoint allowlist should NOT contain view_goal (only goal_progress/complete_goal): got %v", names)
+		}
+		if sliceContains(names, "alpha") {
+			t.Fatalf("Checkpoint allowlist should NOT contain alpha (absolute phase, base tools excluded): got %v", names)
+		}
+		if sliceContains(names, "beta") {
+			t.Fatalf("Checkpoint allowlist should NOT contain beta (absolute phase, base tools excluded): got %v", names)
 		}
 	})
 }

@@ -418,6 +418,10 @@ func TestAgentLoop_EmitsSteeringAndSkippedToolEvents(t *testing.T) {
 	al := NewAgentLoop(cfg, msgBus, provider)
 	al.RegisterTool(tool1)
 	al.RegisterTool(tool2)
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so tool_one + tool_two
+	// are visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	runtimeCh, closeRuntimeEvents := subscribeRuntimeEventsForTest(
 		t,
@@ -698,6 +702,10 @@ func TestAgentLoop_EmitsFollowUpQueuedEvent(t *testing.T) {
 		followUpText:  "background result",
 		completionSig: doneCh,
 	})
+	// Phase 12.15.7: pre-Phase 11 tests assumed iter=1 had all tools. Post-Phase 11
+	// iter=1 = GoalPhaseSet with [set_goal] only. Force Open so async_followup
+	// is visible at iter 1.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 	defaultAgent := al.registry.GetDefaultAgent()
 	if defaultAgent == nil {
 		t.Fatal("expected default agent")
