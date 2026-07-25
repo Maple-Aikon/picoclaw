@@ -173,12 +173,71 @@ func TestEvaluateRecovery_ToolExecError_ExhaustCap_Archive(t *testing.T) {
 	}
 }
 
-func TestEvaluateRecovery_ToolExecError_LockPhase_NoRetry(t *testing.T) {
+// Phase 12.15: Lock (alias GoalPhaseSet) is NOW eligible for tool-exec
+// recovery. The retry message redirects the LLM to call set_goal with
+// top-level fields. Counter MUST increment so the per-tool cap is honored.
+func TestEvaluateRecovery_ToolExecError_LockPhase_RetriesWithHint(t *testing.T) {
 	ts := newPhase5TurnState(t)
-	ctx := RecoveryContext{Phase: string(GoalPhaseSet), ToolName: "view_goal"}
+	ctx := RecoveryContext{Phase: string(GoalPhaseSet), ToolName: "view_goal", ToolExecError: "not allowed in set phase"}
+	action, msg := evaluateRecovery(ts, ctx)
+	if action != RecoveryRetrySameIteration {
+		t.Fatalf("Phase 12.15: Lock phase + tool error should retry, got %v", action)
+	}
+	if !strings.Contains(msg, "set_goal") {
+		t.Fatalf("Phase 12.15: retry message must redirect to set_goal, got %q", msg)
+	}
+	if !strings.Contains(msg, "top-level") {
+		t.Fatalf("Phase 12.15: retry message must mention top-level args shape, got %q", msg)
+	}
+	if ts.toolExecRecoveryAttempts["view_goal"] != 1 {
+		t.Fatalf("Phase 12.15: counter must increment, got %v", ts.toolExecRecoveryAttempts)
+	}
+}
+
+// Phase 12.15: GoalPhaseFinal is NOW eligible for tool-exec recovery (only
+// when postCompleteGoalReportSent=false). Message redirects to complete_goal.
+func TestEvaluateRecovery_ToolExecError_FinalPhase_RetriesWithHint(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	// postCompleteGoalReportSent=false (default) — final-report iter still
+	// eligible for redirect hint.
+	ctx := RecoveryContext{Phase: string(GoalPhaseFinal), ToolName: "view_goal", ToolExecError: "not allowed in final phase"}
+	action, msg := evaluateRecovery(ts, ctx)
+	if action != RecoveryRetrySameIteration {
+		t.Fatalf("Phase 12.15: Final phase + tool error should retry, got %v", action)
+	}
+	if !strings.Contains(msg, "complete_goal") {
+		t.Fatalf("Phase 12.15: retry message must redirect to complete_goal, got %q", msg)
+	}
+	if !strings.Contains(msg, "summary") {
+		t.Fatalf("Phase 12.15: retry message must mention summary param, got %q", msg)
+	}
+}
+
+// Phase 12.15: Final phase is SKIPPED when postCompleteGoalReportSent=true
+// (final report already published; no more iterations).
+func TestEvaluateRecovery_ToolExecError_FinalPhase_PostReportSilent(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	ts.postCompleteGoalReportSent = true
+	ctx := RecoveryContext{Phase: string(GoalPhaseFinal), ToolName: "view_goal", ToolExecError: "x"}
 	action, _ := evaluateRecovery(ts, ctx)
 	if action != RecoveryNone {
-		t.Fatalf("Lock phase should not retry tool errors, got %v", action)
+		t.Fatalf("Final phase after report should be silent, got %v", action)
+	}
+}
+
+// Phase 12.15: tool-exec recovery at Lock phase must follow the per-tool
+// cap. After 3 attempts, the 4th triggers RecoveryArchiveGoal.
+func TestEvaluateRecovery_ToolExecError_LockPhase_CapArchive(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	ctx := RecoveryContext{Phase: string(GoalPhaseSet), ToolName: "view_goal", ToolExecError: "not allowed"}
+	for i := 0; i < ToolExecErrorRetryCap; i++ {
+		if a, _ := evaluateRecovery(ts, ctx); a != RecoveryRetrySameIteration {
+			t.Fatalf("attempt %d should retry, got %v", i+1, a)
+		}
+	}
+	// Cap reached — next attempt must archive.
+	if a, _ := evaluateRecovery(ts, ctx); a != RecoveryArchiveGoal {
+		t.Fatalf("Phase 12.15: Lock phase tool-exec cap reached should archive, got %v", a)
 	}
 }
 
@@ -295,7 +354,7 @@ func TestBuildToolExecErrorRetryMessage_NoRegistry_BaseOnly(t *testing.T) {
 	// Phase 12.6.1: signature gained `isTransient bool` arg between
 	// ToolExecErrorError and registry. nil registry + isTransient=false →
 	// base message only, no transient hint appended.
-	got := buildToolExecErrorRetryMessage("web_search", "connection refused", false, nil)
+	got := buildToolExecErrorRetryMessage("web_search", "connection refused", false, nil, "")
 	want := fmt.Sprintf(ToolExecErrorRetryMessage, "web_search", "connection refused")
 	if got != want {
 		t.Fatalf("nil registry should return base message\n got: %q\nwant: %q", got, want)
@@ -309,7 +368,7 @@ func TestBuildToolExecErrorRetryMessage_NoRegistry_BaseOnly(t *testing.T) {
 func TestBuildToolExecErrorRetryMessage_RegistryNoKnowledge_BaseOnly(t *testing.T) {
 	r := tools.NewToolRegistry()
 	// No lesson recorded for "web_search" — LoadForEscalation returns "".
-	got := buildToolExecErrorRetryMessage("web_search", "connection refused", false, r)
+	got := buildToolExecErrorRetryMessage("web_search", "connection refused", false, r, "")
 	want := fmt.Sprintf(ToolExecErrorRetryMessage, "web_search", "connection refused")
 	if got != want {
 		t.Fatalf("registry without knowledge should return base message\n got: %q\nwant: %q", got, want)
@@ -333,7 +392,7 @@ func TestBuildToolExecErrorRetryMessage_WithKnowledge_Appends(t *testing.T) {
 	r := tools.NewToolRegistry()
 	r.SetToolKnowledgeStore(store)
 
-	got := buildToolExecErrorRetryMessage("web_search", "connection refused", false, r)
+	got := buildToolExecErrorRetryMessage("web_search", "connection refused", false, r, "")
 	want := fmt.Sprintf(ToolExecErrorRetryMessage, "web_search", "connection refused")
 	if got == want {
 		t.Fatalf("registry with knowledge should append, got base message only")
@@ -361,8 +420,8 @@ func TestBuildToolExecErrorRetryMessage_WithKnowledge_Appends(t *testing.T) {
 // Regression proof: setting isTransient=true does NOT duplicate the base
 // message; setting false does NOT include the hint.
 func TestBuildToolExecErrorRetryMessage_TransientFlag(t *testing.T) {
-	baseNonTransient := buildToolExecErrorRetryMessage("web_search", "timeout", false, nil)
-	baseTransient := buildToolExecErrorRetryMessage("web_search", "timeout", true, nil)
+	baseNonTransient := buildToolExecErrorRetryMessage("web_search", "timeout", false, nil, "")
+	baseTransient := buildToolExecErrorRetryMessage("web_search", "timeout", true, nil, "")
 
 	// Both messages must include the tool name (Phase 12.6.1 wire-up
 	// independent of the transient flag).
