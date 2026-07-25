@@ -48,6 +48,13 @@ type AgentInstance struct {
 	Candidates                []providers.FallbackCandidate
 	ImageCandidates           []providers.FallbackCandidate
 
+	// SkipGoalArchiveForTest, when true, disables both the per-turn archive
+	// hook (Phase 11) and the graceful-finalize archive hook (Phase 6) on
+	// this agent. ONLY for test fixtures that pre-seed an active goal file
+	// before runAgentLoop and need the goal to survive into GoalPhaseOpen.
+	// Production callers MUST leave this false.
+	SkipGoalArchiveForTest bool
+
 	// Router is non-nil when model routing is configured. It scores each
 	// incoming message and decides whether to route to Light, Medium, or Heavy tier.
 	Router *routing.Router

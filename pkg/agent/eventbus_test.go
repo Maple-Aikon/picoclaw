@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"slices"
 	"testing"
@@ -120,21 +121,59 @@ func (m *scriptedToolProvider) Chat(
 	}
 
 	m.calls++
-	if m.calls == 1 {
+	// Note: the test fixture below (TestAgentLoop_EmitsMinimalTurnEvents)
+	// wires a NEW scriptedToolProvider instance per test, so m.calls
+	// resets to 0 between tests. The fixture drives:
+	//   call 1: set_goal (Phase 11: iter 1 = GoalPhaseSet, [set_goal] only;
+	//           the LLM must seed a goal before any other tool is allowed).
+	//   call 2: mock_custom (iter 2 = GoalPhaseOpen, all tools allowed).
+	//   call 3: complete_goal (close the goal — iter 3 still GoalPhaseOpen,
+	//           complete_goal is allowed there).
+	//   call 4+: text-only "done" (post-complete_goal final-report iter,
+	//           Phase 12.7 + 12.9 — the empty Text+HasToolCalls=false path
+	//           trips the default fallback chain which publishes "done"
+	//           as the final response).
+	switch m.calls {
+	case 1:
 		return &providers.LLMResponse{
 			ToolCalls: []providers.ToolCall{
 				{
-					ID:        "call-1",
+					ID:   "call-1",
+					Name: "set_goal",
+					Arguments: map[string]any{
+						"name":             "test-goal",
+						"objective":        "Run a tool for the eventbus test fixture.",
+						"success_criteria": []any{"artifact emitted"},
+						"in_scope":         []any{"emit one tool call"},
+					},
+				},
+			},
+		}, nil
+	case 2:
+		return &providers.LLMResponse{
+			ToolCalls: []providers.ToolCall{
+				{
+					ID:        "call-2",
 					Name:      "mock_custom",
 					Arguments: map[string]any{"task": "ping"},
 				},
 			},
 		}, nil
+	case 3:
+		return &providers.LLMResponse{
+			ToolCalls: []providers.ToolCall{
+				{
+					ID:        "call-3",
+					Name:      "complete_goal",
+					Arguments: map[string]any{"summary": "done"},
+				},
+			},
+		}, nil
+	default:
+		return &providers.LLMResponse{
+			Content: "done",
+		}, nil
 	}
-
-	return &providers.LLMResponse{
-		Content: "done",
-	}, nil
 }
 
 func (m *scriptedToolProvider) GetDefaultModel() string {
@@ -168,12 +207,32 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 		t.Fatal("expected default agent")
 	}
 
+	// Phase 12.15: at iter 1 the runtime is always GoalPhaseSet
+	// (resolveAgentToolAllowlistWithPhase returns [set_goal] only),
+	// regardless of any pre-seeded goal file. The mock provider drives
+	// set_goal at call 1 to advance the phase to Open at iter 2, where
+	// mock_custom becomes allowed. Pre-Phase 11 architecture skipped
+	// this set_goal gate — see Phase 11 plan §3.6 for the rationale.
+	al.SkipGoalArchiveForTest()
+
 	expectedKinds := []runtimeevents.Kind{
+		// iter 1: set_goal
 		runtimeevents.KindAgentTurnStart,
 		runtimeevents.KindAgentLLMRequest,
 		runtimeevents.KindAgentLLMResponse,
 		runtimeevents.KindAgentToolExecStart,
 		runtimeevents.KindAgentToolExecEnd,
+		// iter 2: mock_custom
+		runtimeevents.KindAgentLLMRequest,
+		runtimeevents.KindAgentLLMResponse,
+		runtimeevents.KindAgentToolExecStart,
+		runtimeevents.KindAgentToolExecEnd,
+		// iter 3: complete_goal
+		runtimeevents.KindAgentLLMRequest,
+		runtimeevents.KindAgentLLMResponse,
+		runtimeevents.KindAgentToolExecStart,
+		runtimeevents.KindAgentToolExecEnd,
+		// iter 4: text-only "done" (post-complete_goal final-report iter)
 		runtimeevents.KindAgentLLMRequest,
 		runtimeevents.KindAgentLLMResponse,
 		runtimeevents.KindAgentTurnEnd,
@@ -189,29 +248,38 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 		DefaultResponse: defaultResponse,
 		EnableSummary:   false,
 		SendResponse:    false,
-		InboundContext: &bus.InboundContext{
-			Channel:  "cli",
-			ChatID:   "direct",
-			ChatType: "direct",
-			SenderID: "tester",
-		},
-		RouteResult: &routing.ResolvedRoute{
-			AgentID:   "main",
-			Channel:   "cli",
-			AccountID: routing.DefaultAccountID,
-			SessionPolicy: routing.SessionPolicy{
-				Dimensions: []string{"sender"},
+		// Phase 12.15 fix: processOptions reads SessionKey/UserMessage from
+		// opts.Dispatch (canonical, post-Phase 11), not from the legacy
+		// top-level fields. Without Dispatch, ts.sessionKey="" and
+		// currentGoalPhase() returns GoalPhaseSet (lock), which blocks
+		// mock_custom at the Phase 12.3 execution gate.
+		Dispatch: DispatchRequest{
+			SessionKey:  "session-1",
+			UserMessage: "run tool",
+			InboundContext: &bus.InboundContext{
+				Channel:  "cli",
+				ChatID:   "direct",
+				ChatType: "direct",
+				SenderID: "tester",
 			},
-			MatchedBy: "default",
-		},
-		SessionScope: &session.SessionScope{
-			Version:    session.ScopeVersionV1,
-			AgentID:    "main",
-			Channel:    "cli",
-			Account:    routing.DefaultAccountID,
-			Dimensions: []string{"sender"},
-			Values: map[string]string{
-				"sender": "tester",
+			RouteResult: &routing.ResolvedRoute{
+				AgentID:   "main",
+				Channel:   "cli",
+				AccountID: routing.DefaultAccountID,
+				SessionPolicy: routing.SessionPolicy{
+					Dimensions: []string{"sender"},
+				},
+				MatchedBy: "default",
+			},
+			SessionScope: &session.SessionScope{
+				Version:    session.ScopeVersionV1,
+				AgentID:    "main",
+				Channel:    "cli",
+				Account:    routing.DefaultAccountID,
+				Dimensions: []string{"sender"},
+				Values: map[string]string{
+					"sender": "tester",
+				},
 			},
 		},
 	})
@@ -223,8 +291,8 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 	}
 
 	events := collectRuntimeEventStream(runtimeCh)
-	if len(events) != 8 {
-		t.Fatalf("expected 8 events, got %d", len(events))
+	if len(events) != 16 {
+		t.Fatalf("expected 16 events, got %d", len(events))
 	}
 
 	kinds := make([]runtimeevents.Kind, 0, len(events))
@@ -265,15 +333,19 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 
 	toolStartPayload, ok := events[3].Payload.(ToolExecStartPayload)
 	if !ok {
-		t.Fatalf("expected ToolExecStartPayload, got %T", events[3].Payload)
+		t.Fatalf("expected ToolExecStartPayload at events[3], got %T", events[3].Payload)
 	}
-	if toolStartPayload.Tool != "mock_custom" {
-		t.Fatalf("expected tool name mock_custom, got %q", toolStartPayload.Tool)
+	if toolStartPayload.Tool != "set_goal" {
+		t.Fatalf("expected tool name set_goal at events[3] (iter 1), got %q", toolStartPayload.Tool)
 	}
 
-	toolEndPayload, ok := events[4].Payload.(ToolExecEndPayload)
+	toolEndPayload, ok := events[8].Payload.(ToolExecEndPayload)
 	if !ok {
-		t.Fatalf("expected ToolExecEndPayload, got %T", events[4].Payload)
+		var kinds []string
+		for i, e := range events {
+			kinds = append(kinds, fmt.Sprintf("[%d]%s", i, e.Kind))
+		}
+		t.Fatalf("expected ToolExecEndPayload at index 8, got %T (events: %v)", events[8].Payload, kinds)
 	}
 	if toolEndPayload.Tool != "mock_custom" {
 		t.Fatalf("expected tool end payload for mock_custom, got %q", toolEndPayload.Tool)
@@ -289,8 +361,8 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 	if turnEndPayload.Status != TurnEndStatusCompleted {
 		t.Fatalf("expected completed turn, got %q", turnEndPayload.Status)
 	}
-	if turnEndPayload.Iterations != 2 {
-		t.Fatalf("expected 2 iterations, got %d", turnEndPayload.Iterations)
+	if turnEndPayload.Iterations != 4 {
+		t.Fatalf("expected 4 iterations, got %d", turnEndPayload.Iterations)
 	}
 }
 

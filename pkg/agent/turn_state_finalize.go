@@ -47,6 +47,15 @@ func (ts *turnState) finalizeGoalOnTurnEnd(reason string) error {
 		return nil
 	}
 
+	// Test-only escape hatch: see AgentLoop.SkipGoalArchiveForTest. Tests
+	// that pre-seed an active goal file before runAgentLoop need finalize
+	// to be a no-op too, otherwise BoundedRetry goal-recovery's OnExhausted
+	// (Phase 12.11) archives the seed mid-test. Production callers leave
+	// this false; this branch is unreachable.
+	if ts.agent.SkipGoalArchiveForTest {
+		return nil
+	}
+
 	store := goal.NewStore(ts.agent.Workspace)
 	sessionKey := ts.sessionKey
 	if sessionKey == "" {
@@ -144,7 +153,18 @@ func (ts *turnState) goalArchiveRequestedFromState() string {
 // Wired from pkg/agent/pipeline_setup.go::SetupTurn as the very first
 // step before any other state read.
 func archiveStaleGoalOnTurnStart(al *AgentLoop, sessionKey string) error {
-	if al == nil || al.goalStore() == nil {
+	if al == nil {
+		return nil
+	}
+	// Test-only escape hatch: tests that pre-seed an active goal file
+	// before runAgentLoop need the goal to survive into GoalPhaseOpen
+	// (otherwise the execution gate added in Phase 12.3 blocks all
+	// non-[set_goal] tools at iter 1). Production callers MUST leave
+	// skipGoalArchiveOnTurnStart=false.
+	if al.skipGoalArchiveOnTurnStart.Load() {
+		return nil
+	}
+	if al.goalStore() == nil {
 		return nil
 	}
 	if sessionKey == "" {

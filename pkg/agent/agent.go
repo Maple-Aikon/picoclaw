@@ -81,6 +81,30 @@ type AgentLoop struct {
 	reloadFunc func() error
 
 	providerFactory func(*config.ModelConfig) (providers.LLMProvider, string, error)
+
+	// skipGoalArchiveOnTurnStart, when true, makes the per-turn
+	// archiveStaleGoalOnTurnStart hook a no-op. Test-only escape hatch for
+	// fixtures that drive GoalPhaseOpen by seeding an active goal file
+	// before runAgentLoop; Set phase is reached if the file is archived
+	// before the first iter, blocking all non-[set_goal] tools at the
+	// execution gate. Production callers MUST leave this false.
+	skipGoalArchiveOnTurnStart atomic.Bool
+}
+
+// SkipGoalArchiveForTest disables the per-turn archive hook on this agent.
+// ONLY for use in test fixtures that seed an active goal file before
+// runAgentLoop and need the goal to survive into GoalPhaseOpen. Production
+// callers must not touch this — the per-turn archive is load-bearing for
+// the goal lifecycle (Phase 11).
+func (al *AgentLoop) SkipGoalArchiveForTest() {
+	al.skipGoalArchiveOnTurnStart.Store(true)
+	// Also propagate to every registered agent so finalizeGoalOnTurnEnd
+	// can short-circuit (Phase 6 graceful finalization hook).
+	for _, id := range al.registry.ListAgentIDs() {
+		if agent, ok := al.registry.GetAgent(id); ok && agent != nil {
+			agent.SkipGoalArchiveForTest = true
+		}
+	}
 }
 
 // processOptions configures how a message is processed

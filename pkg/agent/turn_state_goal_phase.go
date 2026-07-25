@@ -87,9 +87,8 @@ func (ts *turnState) currentGoalPhase() GoalPhase {
 	if ts == nil || ts.agent == nil {
 		return GoalPhaseSet
 	}
-	hasGoal := ts.hasGoal()
 	return ResolveGoalPhase(
-		hasGoal,
+		ts.hasGoal(),
 		ts.iteration,
 		ts.iterationCap,
 		ts.maxIterationsCap,
