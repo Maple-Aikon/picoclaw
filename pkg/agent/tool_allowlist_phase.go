@@ -202,6 +202,20 @@ func resolveAgentToolAllowlistWithPhase(definition AgentContextDefinition, phase
 		return []string{"set_goal"}
 	case GoalPhaseFinal:
 		return []string{"complete_goal"}
+	case GoalPhaseCheckpoint:
+		// Checkpoint is also absolute: when the iter cap is hit, the LLM
+		// must either extend (goal_progress) or finalize (complete_goal).
+		// Base tools (read_file/exec/...) are intentionally NOT exposed —
+		// there's no iteration budget left to spend on more tool work,
+		// only on lifecycle decisions. Pre-fix (Phase 12.14), an agent
+		// without a `tools:` frontmatter field fell through to the
+		// "missing base = nil allowlist" branch, exposing all 85 tools
+		// to the LLM at the cap-hit iteration. The LLM would emit
+		// `exec` with broken args (MiniMax-M3 streaming quirk), the
+		// executor would silently run the empty command, and the turn
+		// ended on a toolLimitResponse fallback. See goal `crg-update-latest`
+		// on session `sk_v1_9238bf3573...` from 2026-07-25 12:54 ICT.
+		return []string{"goal_progress", "complete_goal"}
 	}
 
 	if definition.Agent == nil || !frontmatterDeclaresField(definition, "tools") {
