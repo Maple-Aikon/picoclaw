@@ -1213,7 +1213,7 @@ func TestTurnCoord_RecoveryTrigger_ApplyActionState(t *testing.T) {
 		t.Fatalf("retry action should not set goalArchiveRequested")
 	}
 
-	// Phase 12 redesign: text-only recovery now uses RetryNextIteration
+	// Phase 12 redesign: text-only recovery now uses RetrySameIteration
 	// for both soft and hard prompts (no more RecoveryForceComplete
 	// action). The retry just records the message and lets the LLM run
 	// again in the next iteration slot.
@@ -1379,7 +1379,7 @@ func TestRunTurn_Phase12_TextOnly2x_ThenArchive(t *testing.T) {
 
 	act1, msg1 := evaluateRecovery(ts, ctx)
 	if act1 != RecoveryRetrySameIteration || msg1 != TextOnlySoftRetryMessage {
-		t.Fatalf("1st text-only: action=%v msg=%q (want RetryNextIteration + soft)", act1, msg1)
+		t.Fatalf("1st text-only: action=%v msg=%q (want RetrySameIteration + soft)", act1, msg1)
 	}
 	if ts.textOnlySoftRetriesDone != 1 {
 		t.Fatalf("after soft: soft_done=%d (want 1)", ts.textOnlySoftRetriesDone)
@@ -1387,7 +1387,7 @@ func TestRunTurn_Phase12_TextOnly2x_ThenArchive(t *testing.T) {
 
 	act2, msg2 := evaluateRecovery(ts, ctx)
 	if act2 != RecoveryRetrySameIteration || msg2 != TextOnlyHardRetryMessage {
-		t.Fatalf("2nd text-only: action=%v msg=%q (want RetryNextIteration + hard)", act2, msg2)
+		t.Fatalf("2nd text-only: action=%v msg=%q (want RetrySameIteration + hard)", act2, msg2)
 	}
 	if ts.textOnlyHardRetriesDone != 1 {
 		t.Fatalf("after hard: hard_done=%d (want 1)", ts.textOnlyHardRetriesDone)

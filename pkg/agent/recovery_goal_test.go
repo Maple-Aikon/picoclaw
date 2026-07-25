@@ -693,7 +693,7 @@ func TestEvaluateRecovery_ToolExecError_IterationBump_ResetsCap(t *testing.T) {
 	for i := 0; i < ToolExecErrorRetryCap; i++ {
 		action, _ := evaluateRecovery(ts, ctx)
 		if action != RecoveryRetrySameIteration {
-			t.Fatalf("iter 12 retry %d: expected RetryNextIteration, got %v", i, action)
+			t.Fatalf("iter 12 retry %d: expected RetrySameIteration, got %v", i, action)
 		}
 	}
 	// 4th call in iter 12: cap exhausted → archive
@@ -714,7 +714,7 @@ func TestEvaluateRecovery_ToolExecError_IterationBump_ResetsCap(t *testing.T) {
 		ToolName:  "view_goal",
 	})
 	if action13 != RecoveryRetrySameIteration {
-		t.Fatalf("iter 13: expected RetryNextIteration (Fix #1b cap reset), got %v (msg=%q)", action13, msg13)
+		t.Fatalf("iter 13: expected RetrySameIteration (Fix #1b cap reset), got %v (msg=%q)", action13, msg13)
 	}
 	if ts.toolExecRecoveryAttempts["view_goal"] != 1 {
 		t.Fatalf("iter 13: counter should be 1, got %d", ts.toolExecRecoveryAttempts["view_goal"])
@@ -760,13 +760,13 @@ func TestEvaluateRecovery_IterationBump_ResetsBothCounters(t *testing.T) {
 	// iter 13: empty response fires again (Fix #1)
 	actionEmpty, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseOpen), Iteration: 13, TextEmpty: true, HasToolCalls: false})
 	if actionEmpty != RecoveryRetrySameIteration {
-		t.Fatalf("iter 13 empty: expected RetryNextIteration, got %v", actionEmpty)
+		t.Fatalf("iter 13 empty: expected RetrySameIteration, got %v", actionEmpty)
 	}
 
 	// iter 13: tool exec error fires again (Fix #1b)
 	actionTool, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseOpen), Iteration: 13, ToolName: "view_goal"})
 	if actionTool != RecoveryRetrySameIteration {
-		t.Fatalf("iter 13 tool: expected RetryNextIteration, got %v", actionTool)
+		t.Fatalf("iter 13 tool: expected RetrySameIteration, got %v", actionTool)
 	}
 	if ts.toolExecRecoveryAttempts["view_goal"] != 1 {
 		t.Fatalf("iter 13 tool: counter should be 1 (fresh), got %d", ts.toolExecRecoveryAttempts["view_goal"])

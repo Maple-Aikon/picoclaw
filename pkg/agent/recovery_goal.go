@@ -36,12 +36,15 @@ const (
 	// RecoveryNone means no recovery is needed — proceed as normal.
 	RecoveryNone RecoveryAction = iota
 	// RecoveryRetrySameIteration means inject a recovery message and re-run
-	// the LLM call WITHIN THE SAME iteration. The previous name
-	// `RecoveryRetrySameIteration` (Phase 12.10) was a rename of the
-	// original `RecoveryRetrySameIteration` to match the broken iter-bump
-	// pattern. Phase 12.11 restores the original semantics by wrapping the
-	// LLM call in a BoundedRetry loop (see handleGoalRecovery in
-	// pipeline_llm.go) so retries do NOT bump the iteration counter.
+	// the LLM call WITHIN THE SAME iteration. History:
+	//   - Phase 5: original name (intent: sub-attempt within one iter)
+	//   - Phase 12.10: renamed to RecoveryRetryNextIteration to match the
+	//     broken iter-bump pattern (loop top re-entered, setIteration bumped
+	//     ts.iteration, so the recovery prompt actually fired in iter N+1)
+	//   - Phase 12.11: renamed BACK to RecoveryRetrySameIteration after
+	//     replacing the iter-bump pattern with a same-iteration BoundedRetry
+	//     loop (see handleGoalRecovery in pipeline_llm.go). Retries no
+	//     longer bump the iteration counter.
 	//
 	// Design intent (Phase 5 plan §5.3): recovery is a sub-attempt within
 	// one iteration, not a new iteration. The iter-bump pattern broke the
