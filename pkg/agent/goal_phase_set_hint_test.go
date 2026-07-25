@@ -62,6 +62,38 @@ func TestGoalPhaseSetHint_ContentMentionsTwoForwardPaths(t *testing.T) {
 		"hint path 2: no-tool reply is allowed")
 }
 
+// TestGoalPhaseSetHint_IncludesSetGoalArgShapeGuide (Phase 12.12) — the hint
+// must teach LLM the exact top-level field shape of set_goal args. Without
+// this, the LLM wraps args in {"raw": "..."} or omits required fields (like
+// name), causing silent validation failure and a stuck GoalPhaseSet.
+// Lesson learned from goal "crg-update-latest" aborted 2026-07-25 08:10 ICT
+// with abort_reason: bexhausted:goal_recovery — LLM tried set_goal once with
+// {"raw": "{\"cadence\":..."} → tool rejected with "missing required property
+// name" → LLM gave up and tried other tools (all blocked by Set allowlist) →
+// body never advanced → archive after BoundedRetry exhausted.
+func TestGoalPhaseSetHint_IncludesSetGoalArgShapeGuide(t *testing.T) {
+	part := goalPhaseSetHintContributor(PromptBuildRequest{GoalPhase: string(GoalPhaseSet)})
+	if part == nil {
+		t.Fatal("expected hint part for Set phase")
+	}
+	// The example must explicitly show top-level field names — name, objective,
+	// success_criteria — so LLM knows the wrapper pattern is wrong.
+	mustContain(t, part.Content, "name",
+		"hint must mention 'name' as a top-level required field")
+	mustContain(t, part.Content, "objective",
+		"hint must mention 'objective' as a top-level required field")
+	mustContain(t, part.Content, "success_criteria",
+		"hint must mention 'success_criteria' as a top-level required field")
+	// Anti-pattern: must warn against {"raw": ...} wrapper
+	mustContain(t, part.Content, "raw",
+		"hint must explicitly warn against the {\"raw\": ...} wrapper pattern")
+	mustContain(t, part.Content, "top-level",
+		"hint must explicitly state 'top-level' to anchor the shape expectation")
+	// Regex constraint for name field — matches rego rule ^[A-Za-z0-9_-]{1,64}$
+	mustContain(t, part.Content, "[A-Za-z0-9_-]",
+		"hint must document the name regex constraint so LLM avoids invalid chars")
+}
+
 func TestGoalPhaseSetHint_PlacementCapabilityTooling(t *testing.T) {
 	part := goalPhaseSetHintContributor(PromptBuildRequest{GoalPhase: string(GoalPhaseSet)})
 	if part == nil {
