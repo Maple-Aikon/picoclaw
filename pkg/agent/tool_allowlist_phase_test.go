@@ -32,8 +32,8 @@ func TestResolveAgentToolAllowlistWithPhase_AllPhases(t *testing.T) {
 		{"Lock overrides base", GoalPhaseLock, []string{"set_goal"}},
 		{"Open unions view_goal+complete_goal", GoalPhaseOpen,
 			[]string{"complete_goal", "read_file", "view_goal", "write_file"}},
-		{"Checkpoint unions goal_progress+complete_goal", GoalPhaseCheckpoint,
-			[]string{"complete_goal", "goal_progress", "read_file", "write_file"}},
+		{"Checkpoint is absolute (overrides base)", GoalPhaseCheckpoint,
+			[]string{"goal_progress", "complete_goal"}},
 		{"Unknown phase degrades to base only", GoalPhase("gibberish"),
 			[]string{"read_file", "write_file"}},
 	}
@@ -50,7 +50,8 @@ func TestResolveAgentToolAllowlistWithPhase_AllPhases(t *testing.T) {
 // TestResolveAgentToolAllowlistWithPhase_EmptyBase checks the empty-tools
 // edge case under each phase:
 //   - Lock: still ["set_goal"] (phase wins)
-//   - Open / Checkpoint: just the lifecycle union (no base)
+//   - Open: still returns Open-specific union (base was already empty)
+//   - Checkpoint: just the lifecycle tools (phase is absolute — Phase 12.14)
 //   - Unknown: [] (empty)
 func TestResolveAgentToolAllowlistWithPhase_EmptyBase(t *testing.T) {
 	def := AgentContextDefinition{
@@ -68,7 +69,7 @@ func TestResolveAgentToolAllowlistWithPhase_EmptyBase(t *testing.T) {
 	}{
 		{GoalPhaseLock, []string{"set_goal"}},
 		{GoalPhaseOpen, []string{"complete_goal", "view_goal"}},
-		{GoalPhaseCheckpoint, []string{"complete_goal", "goal_progress"}},
+		{GoalPhaseCheckpoint, []string{"goal_progress", "complete_goal"}},
 		{GoalPhase("other"), []string{}},
 	}
 	for _, c := range cases {
@@ -228,20 +229,31 @@ func TestGoalPhase_StringValues(t *testing.T) {
 }
 
 // TestResolveAgentToolAllowlistWithPhase_NoToolsField_PreservesLifecycleOverride
-// is a Phase 12.3 regression test.
+// is a Phase 12.3 + 12.14 regression test.
 //
-// Bug: when an agent's frontmatter omits the `tools:` field entirely
-// (the default for most agents — tool lists come from MCP/built-in
+// Bug (Phase 12.3): when an agent's frontmatter omits the `tools:` field
+// entirely (the default for most agents — tool lists come from MCP/built-in
 // registries), `resolveAgentToolAllowlistWithPhase(def, GoalPhaseSet)`
 // returned nil. That nil was passed to SetAllowlist, which cleared the
 // registry's allowlist, exposing ALL 84 registered tools to the LLM
 // at iter 1 — defeating the Phase 11 "iter 1 = set_goal only" contract.
 //
-// Fix: phase override cases (Set, Final) now short-circuit BEFORE the
-// "missing tools:" base check, so lifecycle tools always surface
-// regardless of base frontmatter. Open/Checkpoint still return nil
-// for missing `tools:` (matching the no-phase resolver's behavior:
-// "all tools available" rather than "zero tools").
+// Bug (Phase 12.14, observed live 2026-07-25 14:54 ICT on goal
+// `crg-update-latest`, session `sk_v1_9238bf3573...`): the same nil
+// allowlist pattern applied to GoalPhaseCheckpoint, because the
+// "missing base tools → return nil" branch sat BELOW the phase
+// override switch. When an agent without `tools:` reached iter 25
+// (cap-hit), the Checkpoint phase was supposed to expose only
+// `[goal_progress, complete_goal]` — but it instead exposed all 85
+// registered tools, because nil allowlist means "no filter". The LLM
+// kept emitting `exec` tool calls (MiniMax-M3 streaming quirk produced
+// empty args, but the parser still counted `HasToolCalls=1` so
+// recovery never fired). Turn ended on toolLimitResponse fallback.
+//
+// Fix: phase override cases (Set, Final, **Checkpoint**) now short-circuit
+// BEFORE the "missing tools:" base check, so lifecycle tools always surface
+// regardless of base frontmatter. Open still returns nil for missing
+// `tools:` because Open legitimately needs all registered tools visible.
 func TestResolveAgentToolAllowlistWithPhase_NoToolsField_PreservesLifecycleOverride(t *testing.T) {
 	// Agent with no `tools:` field declared — typical MCP-only agent.
 	def := AgentContextDefinition{
@@ -278,10 +290,17 @@ func TestResolveAgentToolAllowlistWithPhase_NoToolsField_PreservesLifecycleOverr
 		}
 	})
 
-	t.Run("checkpoint phase returns nil for no-tools (matches base resolver)", func(t *testing.T) {
+	t.Run("checkpoint phase returns lifecycle tools even without base", func(t *testing.T) {
+		// Phase 12.14 fix: Checkpoint is now an absolute shortcut,
+		// matching Set/Final. Iter-cap-hit means the LLM must choose
+		// between goal_progress (extend) or complete_goal (finalize).
+		// Exposing base tools at this phase leads to the
+		// toolLimitResponse fallback observed in turn main-turn-2 on
+		// 2026-07-25 12:54 ICT — LLM kept calling exec until the cap.
 		got := resolveAgentToolAllowlistWithPhase(def, GoalPhaseCheckpoint)
-		if got != nil {
-			t.Errorf("GoalPhaseCheckpoint: got %v, want nil (allow-all)", got)
+		want := []string{"goal_progress", "complete_goal"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("GoalPhaseCheckpoint: got %v, want %v", got, want)
 		}
 	})
 }
