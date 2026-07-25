@@ -258,6 +258,23 @@ type turnState struct {
 	textOnlySoftRetriesDone int // how many soft prompts fired in current iteration
 	textOnlyHardRetriesDone int // how many hard prompts fired in current iteration
 
+	// Phase 12.13: per-iteration phase-stuck counters. Reset at iteration
+	// boundary. Each counter tracks consecutive same-iteration failures of
+	// the phase-specific lifecycle tool. When the counter reaches the
+	// stuck threshold (>= 2) and the goal is archived, the abort_reason
+	// is set to the phase-specific value (goal_set_stuck,
+	// goal_checkpoint_stuck, goal_final_stuck) so applyFallbackForEmptyResponse
+	// can return a user-facing message that names the phase.
+	setGoalFailCount         int // consecutive set_goal invalid arguments in Set phase
+	goalProgressFailCount    int // consecutive goal_progress invalid arguments in Checkpoint phase
+	completeGoalFailCount    int // consecutive complete_goal invalid arguments in Final phase
+
+	// lastPhaseStuckError (Phase 12.13) — last error message from the
+	// phase-specific lifecycle tool. Set whenever a phase-stuck counter
+	// increments. Used by phaseStuckFallbackMessage to format the
+	// user-facing error message with the actual failure cause.
+	lastPhaseStuckError      string
+
 	// Goal-lifecycle recovery side-effects (Phase 5): set by applyRecoveryAction.
 	// Consumed at the start of the next iteration (ControlContinue path) to
 	// inject the recovery message into the conversation, strip non-goal tools,

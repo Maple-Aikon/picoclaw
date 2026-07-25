@@ -1161,7 +1161,14 @@ func (p *Pipeline) handleGoalRecovery(
 			})
 			if ts.hasGoal() && !ts.goalArchiveRequested {
 				ts.goalArchiveRequested = true
-				if finalizeErr := ts.finalizeGoalOnTurnEnd(GoalAbortReasonBexhausted + ":goal_recovery"); finalizeErr != nil {
+				// Phase 12.13: stamp abort_reason with phase-specific value
+				// when the failure was a phase-specific lifecycle tool stuck
+				// (set_goal/goal_progress/complete_goal fail 2x in a row).
+				abortReason := GoalAbortReasonBexhausted + ":goal_recovery"
+				if phaseStuckReason := ts.computePhaseStuckAbortReason(); phaseStuckReason != "" {
+					abortReason = phaseStuckReason
+				}
+				if finalizeErr := ts.finalizeGoalOnTurnEnd(abortReason); finalizeErr != nil {
 					logger.WarnCF("agent", "Goal recovery: finalizeGoalOnTurnEnd failed",
 						map[string]any{"error": finalizeErr.Error()})
 				}
@@ -1249,7 +1256,13 @@ func (p *Pipeline) handleGoalRecovery(
 		case RecoveryArchiveGoal:
 			if !ts.goalArchiveRequested {
 				ts.goalArchiveRequested = true
-				if finalizeErr := ts.finalizeGoalOnTurnEnd(GoalAbortReasonBexhausted + ":goal_recovery"); finalizeErr != nil {
+				// Phase 12.13: stamp abort_reason with phase-specific value
+				// when the failure was a phase-specific lifecycle tool stuck.
+				abortReason := GoalAbortReasonBexhausted + ":goal_recovery"
+				if phaseStuckReason := ts.computePhaseStuckAbortReason(); phaseStuckReason != "" {
+					abortReason = phaseStuckReason
+				}
+				if finalizeErr := ts.finalizeGoalOnTurnEnd(abortReason); finalizeErr != nil {
 					logger.WarnCF("agent", "Goal recovery (archive in retry): finalizeGoalOnTurnEnd failed",
 						map[string]any{"error": finalizeErr.Error()})
 				}

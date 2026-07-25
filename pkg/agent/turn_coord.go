@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/agent/goal"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -170,6 +171,12 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		// recovery to silently skip after the first fire in a turn.
 		ts.emptyResponseRecoverySent = false
 		ts.toolExecRecoveryAttempts = nil
+		// Phase 12.13: reset phase-stuck counters at iteration boundary so
+		// a fresh iteration gets a clean slate. Same lifecycle as the
+		// sibling counters above (reset on iter bump).
+		ts.setGoalFailCount = 0
+		ts.goalProgressFailCount = 0
+		ts.completeGoalFailCount = 0
 		// Phase 2: reset SignatureFailureTracker counters at turn boundary so
 		// a new turn starts with a fresh escalation slate. Mirrors the
 		// nanobot "per-run scope" pattern (Decision 4) and matches the
@@ -441,15 +448,21 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 // turnCoord exits with no assistant prose. Caller must only invoke this when
 // finalContent == "" so we can pick the highest-priority fallback.
 //
-// Preference order (Phase 12.6.0 ordering fix):
+// Preference order (Phase 12.6.0 + Phase 12.13):
 //
 //  1. goal.Summary — if the most recent iteration completed a goal and the LLM
 //     did not emit a free-form prose reply, prefer the persisted goal summary
 //     so the user actually sees the success message they were promised by
 //     complete_goal.
-//  2. toolLimitResponse — if we hit the iteration cap with no prose, explain
+//  2. Phase-stuck message (Phase 12.13) — if the goal was archived with one
+//     of the phase-stuck abort_reason values (goal_set_stuck,
+//     goal_checkpoint_stuck, goal_final_stuck), return the matching
+//     user-facing message that names the stuck phase. This takes priority
+//     over toolLimitResponse/DefaultResponse because the user needs to know
+//     the failure was a phase lifecycle stall, not a generic empty response.
+//  3. toolLimitResponse — if we hit the iteration cap with no prose, explain
 //     the limit was reached (better than the generic "empty response").
-//  3. opts.DefaultResponse — last resort; matches the pre-Phase 11 behavior
+//  4. opts.DefaultResponse — last resort; matches the pre-Phase 11 behavior
 //     when LLM hits an empty response with no goal context.
 func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
 	// Phase 12.6.0 ordering fix: prefer goal.Summary over DefaultResponse
@@ -462,10 +475,41 @@ func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
 			}
 		}
 	}
+	// Phase 12.13: phase-stuck message beats the generic ErrorResponse.
+	// We only show this when the goal was archived with a phase-stuck
+	// abort_reason AND the LLM did not produce a free-form prose reply
+	// (assistantText == ""). Format: title + fail count + last error.
+	if msg := al.phaseStuckFallbackMessage(ts); msg != "" {
+		return msg
+	}
 	if ts.currentIteration() >= ts.iterationCap {
 		return toolLimitResponse
 	}
 	return ts.opts.DefaultResponse
+}
+
+// phaseStuckFallbackMessage (Phase 12.13) returns the matching phase-stuck
+// message if the goal was archived with a phase-stuck abort_reason. Returns
+// empty string if the goal has no phase-stuck abort_reason.
+func (al *AgentLoop) phaseStuckFallbackMessage(ts *turnState) string {
+	if st := al.goalStore(); st != nil {
+		if g, err := st.ReadAny(ts.sessionKey); err == nil && g != nil &&
+			g.Status == goal.StatusAborted && g.AbortReason != "" {
+			lastErr := ts.lastPhaseStuckError
+			if lastErr == "" {
+				lastErr = "(unknown — see goal archive log)"
+			}
+			switch g.AbortReason {
+			case GoalPhaseSetStuckAbortReason:
+				return fmt.Sprintf(GoalPhaseSetStuckMessage, ts.setGoalFailCount, lastErr)
+			case GoalPhaseCheckpointStuckAbortReason:
+				return fmt.Sprintf(GoalPhaseCheckpointStuckMessage, ts.goalProgressFailCount, lastErr)
+			case GoalPhaseFinalStuckAbortReason:
+				return fmt.Sprintf(GoalPhaseFinalStuckMessage, ts.completeGoalFailCount, lastErr)
+			}
+		}
+	}
+	return ""
 }
 
 func (al *AgentLoop) abortTurn(ts *turnState) (turnResult, error) {
