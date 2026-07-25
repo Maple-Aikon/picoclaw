@@ -25,7 +25,25 @@ Two valid paths forward:
 
 2. If this turn does not require any tool (e.g. answering a question, returning text only, or having a conversation): respond directly to the user without calling set_goal or any other tool. No set_goal call is required in this case.
 
-Do not call other tools before set_goal — they will be blocked at execution.`
+Do not call other tools before set_goal — they will be blocked at execution.
+
+set_goal argument shape (CRITICAL — call this exactly)
+
+Pass the arguments as TOP-LEVEL FIELDS of the tool call. Do NOT wrap them inside {"raw": "..."} or any other object. The set_goal tool expects a flat object with these fields:
+
+  name              string  REQUIRED  must match ^[A-Za-z0-9_-]{1,64}$  e.g. "crg-update-latest"
+  objective         string  REQUIRED  one sentence, no JSON
+  success_criteria  string[] REQUIRED  3-5 bullet points, each plain text
+
+  in_scope          string[]  optional
+  out_of_scope      string[]  optional
+  cadence           string    optional  e.g. "one-shot, today"
+
+Example — correct call shape:
+
+  set_goal(name="crg-update-latest", objective="Update sources/code-review-graph to latest version", success_criteria=["Current state shown: HEAD vs latest", "If HEAD != latest: fetch + checkout", "File-level summary of changes"])
+
+If your previous attempt used {"raw": "..."} wrapper, that was wrong — retry with top-level fields exactly as shown above.`
 
 // goalPhaseSetHintContributor returns a Capability-layer / Tooling-slot
 // PromptPart when the request is in GoalPhaseSet phase. Returns nil for any

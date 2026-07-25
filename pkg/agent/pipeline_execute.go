@@ -330,6 +330,18 @@ toolLoop:
 						inferSkillNamesFromToolCall(ts, toolName, toolArgs),
 					)
 
+					// Phase 12.13: track phase-stuck counters for the
+					// phase-specific lifecycle tools (set_goal, goal_progress,
+					// complete_goal). When all 3 fail twice in a row and the
+					// goal is archived, the abort_reason is stamped with the
+					// matching phase-stuck value so applyFallbackForEmptyResponse
+					// can return a user-facing message that names the phase.
+					if hookResult.IsError && hookResult.ErrKind == tools.ErrInvalidInput {
+						if toolName == "set_goal" || toolName == "goal_progress" || toolName == "complete_goal" {
+							ts.recordPhaseStuckToolFail(toolName, toolErrorSummary(hookResult))
+						}
+					}
+
 					messages = append(messages, toolResultMsg)
 					if !ts.opts.NoHistory {
 						ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)
