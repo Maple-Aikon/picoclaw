@@ -126,6 +126,25 @@ const (
 	// refused / etc.). Tells the LLM that a brief retry is likely to succeed
 	// without changing arguments. English per USER.md preference.
 	ToolExecErrorTransientHint = " The error looks transient (timeout, rate-limit, or network). Wait briefly and retry the SAME call — argument changes are unlikely to help."
+
+	// Phase 12.15: ToolExecErrorSetPhaseHint is appended when a tool call
+	// was rejected at GoalPhaseSet (iter 1, no active goal). The allowlist
+	// is `[set_goal]` only — every other tool call is blocked at the
+	// execution gate. Before Phase 12.15, GoalPhaseSet SKIPPED Trigger #3
+	// (tool-exec recovery) entirely, so a MiniMax-M3 `unknown({})` quirk
+	// silently looped into the `max_tool_iterations` fallback. With this
+	// hint, the LLM receives a concrete redirect: call set_goal with
+	// top-level fields.
+	ToolExecErrorSetPhaseHint = " In the current goal phase (set), only `set_goal` is available — every other tool call is blocked. Call `set_goal` with top-level fields (name, objective, success_criteria[]) to start the goal: the tool name is `set_goal`, the field names are `name`, `objective`, `success_criteria[]` (array), and optional `in_scope[]`, `out_of_scope[]`, `cadence`. Do NOT wrap the arguments inside a `{\"raw\":\"...\"}` envelope — provide each field as a top-level key."
+
+	// Phase 12.15: ToolExecErrorFinalPhaseHint is appended when a tool call
+	// was rejected at GoalPhaseFinal (post-complete_goal final-report iter).
+	// Allowlist is `[complete_goal]` only. If the LLM emits a broken tool
+	// call here (e.g. MiniMax-M3 `unknown({})` quirk), the message redirects
+	// back to complete_goal (the only allowed tool) until the goal is fully
+	// closed. Skipped when postCompleteGoalReportSent=true (the final report
+	// has already been published — no more iterations happen).
+	ToolExecErrorFinalPhaseHint = " In the current goal phase (final), only `complete_goal` is available — every other tool call is blocked. The goal is already finalized; call `complete_goal` with a non-empty `summary` (1-500 chars) to close out the turn, or reply with the final user-facing report directly."
 )
 
 // Caps for each trigger. Per §5.2 + §5.3 — these are sub-attempt counts
@@ -158,7 +177,13 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 	//   - Phase=Final: tool allowlist is empty; nothing to retry.
 	//   - postCompleteGoalReportSent: the LLM has already completed the goal;
 	//     a text-only retry prompt would be redundant and could spam the user.
-	if ctx.Phase == "" || ctx.Phase == string(GoalPhaseFinal) || ts.postCompleteGoalReportSent {
+	// Phase 12.15: GoalPhaseFinal is now eligible for tool-exec recovery
+	// (line below), but ONLY when postCompleteGoalReportSent=false. The
+	// post-complete_goal final-report iter is the rare case where the LLM
+	// has already published the user-facing report, so no further retry
+	// prompts should fire. Bare GoalPhaseFinal skips Trigger #3 in the
+	// pre-line check (no `return RecoveryNone` here).
+	if ctx.Phase == "" || ts.postCompleteGoalReportSent {
 		return RecoveryNone, ""
 	}
 
@@ -171,11 +196,19 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 	}
 
 	// Trigger #3: tool execution error (executor returned IsError=true).
-	// Skip if no tool name provided or Phase is Lock (only set_goal allowed).
+	// Skip if no tool name provided.
+	// Phase 12.15: GoalPhaseSet and GoalPhaseFinal are NOW eligible for
+	// tool-exec recovery (was previously skipped). The recovery prompt
+	// appends a phase-specific redirect hint (ToolExecErrorSetPhaseHint /
+	// ToolExecErrorFinalPhaseHint) so the LLM is told which tool is the
+	// only one allowed in the current phase. This closes the recovery-
+	// blind-spot where MiniMax-M3 `unknown({})` quirk at GoalPhaseSet
+	// would silently loop into the `max_tool_iterations` fallback without
+	// any feedback to the LLM (Telegram turn 16:06 ICT 2026-07-25).
 	// Phase 12: when about to retry, fetch tool_knowledge for that tool
 	// (lessons learned from prior calls) and append to the prompt so the
 	// LLM gets relevant guidance instead of repeating the same mistake.
-	if ctx.ToolName != "" && ctx.Phase != string(GoalPhaseSet) { // GoalPhaseLock aliases to GoalPhaseSet per Phase 11
+	if ctx.ToolName != "" {
 		if ts.toolExecRecoveryAttempts == nil {
 			ts.toolExecRecoveryAttempts = make(map[string]int)
 		}
@@ -185,7 +218,7 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 			// wait-then-retry (transient) vs diagnose-or-recomplete (permanent).
 			// Caller (checkToolExecErrorRecovery / pipeline) sets this from
 			// the tool result's error text + circuit-breaker state.
-			msg := buildToolExecErrorRetryMessage(ctx.ToolName, ctx.ToolExecError, ctx.IsTransient, ctx.ToolKnowledgeRegistry)
+			msg := buildToolExecErrorRetryMessage(ctx.ToolName, ctx.ToolExecError, ctx.IsTransient, ctx.ToolKnowledgeRegistry, ctx.Phase)
 			return RecoveryRetrySameIteration, msg
 		}
 		return RecoveryArchiveGoal, "Tool execution error retry exhausted for " + ctx.ToolName + "."
@@ -352,7 +385,14 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 // transient-hint suffix (suggests wait-then-retry without arg changes).
 // When false, the base message asks for diagnose-or-recomplete logic.
 //
-// Format (non-transient):
+// Phase 12.15: now takes `phase` string — when Phase==GoalPhaseSet it
+// appends ToolExecErrorSetPhaseHint (tells the LLM the only allowed tool
+// is set_goal), and when Phase==GoalPhaseFinal it appends
+// ToolExecErrorFinalPhaseHint (only complete_goal is allowed). Other
+// phases (Open/Checkpoint) get no suffix — the base message + transient
+// hint + tool knowledge are sufficient for those.
+//
+// Format (non-transient, phase=Open/Checkpoint/empty):
 //
 //	"Tool "view_goal" failed: <errMsg>. You may retry the same call with
 //	 adjusted arguments, invoke a different tool, or call complete_goal
@@ -367,12 +407,24 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 //	 rate-limit, or network). Wait briefly and retry the SAME call —
 //	 argument changes are unlikely to help.\n\n<Tool knowledge>:\n<body>"
 //
+// Format (phase=Set) — appends ToolExecErrorSetPhaseHint AFTER the base
+// message but BEFORE tool knowledge: the LLM is told "set_goal is the
+// only allowed tool, here is the argument shape".
+//
 // Returns just the standard message when registry is nil or no knowledge
 // exists for the tool. Never returns an empty string.
-func buildToolExecErrorRetryMessage(toolName, errMsg string, isTransient bool, registry *tools.ToolRegistry) string {
+func buildToolExecErrorRetryMessage(toolName, errMsg string, isTransient bool, registry *tools.ToolRegistry, phase string) string {
 	base := fmt.Sprintf(ToolExecErrorRetryMessage, toolName, errMsg)
 	if isTransient {
 		base += ToolExecErrorTransientHint
+	}
+	// Phase 12.15: append phase-specific redirect hint BEFORE tool knowledge
+	// so the LLM sees the corrective guidance first.
+	switch phase {
+	case string(GoalPhaseSet):
+		base += ToolExecErrorSetPhaseHint
+	case string(GoalPhaseFinal):
+		base += ToolExecErrorFinalPhaseHint
 	}
 	if registry == nil {
 		return base

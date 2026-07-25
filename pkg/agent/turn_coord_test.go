@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1175,21 +1176,29 @@ func TestTurnCoord_RecoveryTrigger_EmptyTextNotGoalPhase(t *testing.T) {
 }
 
 // TestTurnCoord_RecoveryTrigger_LockPhaseSilenced verifies that Lock phase
-// suppresses text-only and tool-exec recovery (only set_goal is allowed).
+// suppresses text-only recovery (only set_goal is allowed) but now ELIGIBLE
+// for tool-exec recovery (Phase 12.15). The text-only silent contract is
+// preserved (Trigger #1/2 only run in Open phase per `if ctx.Phase != Open`
+// line 231), but Trigger #3 (tool-exec) now fires for Set phase so the
+// LLM gets a redirect hint to call set_goal.
 func TestTurnCoord_RecoveryTrigger_LockPhaseSilenced(t *testing.T) {
 	ts := &turnState{
 		toolExecRecoveryAttempts: make(map[string]int),
 	}
-	// Lock phase + empty text → silent
+	// Lock phase + empty text → silent (Trigger #1 in Open exclusive)
 	if a, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseSet), TextEmpty: true}); a != RecoveryNone {
 		t.Fatalf("Lock phase + empty should be silent, got %v", a)
 	}
-	// Lock phase + tool error → silent (no retry)
-	if a, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseSet), ToolName: "view_goal"}); a != RecoveryNone {
-		t.Fatalf("Lock phase + tool error should be silent, got %v", a)
+	// Phase 12.15: Lock phase + tool error → fires RecoveryRetrySameIteration
+	// (Trigger #3 now eligible for Set). The message must include the
+	// ToolExecErrorSetPhaseHint redirecting the LLM to call set_goal.
+	if a, msg := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseSet), ToolName: "view_goal", ToolExecError: "not allowed"}); a != RecoveryRetrySameIteration {
+		t.Fatalf("Lock phase + tool error should now retry (Phase 12.15), got %v", a)
+	} else if !strings.Contains(msg, "set_goal") {
+		t.Fatalf("Lock phase retry message must redirect to set_goal, got %q", msg)
 	}
-	if len(ts.toolExecRecoveryAttempts) != 0 {
-		t.Fatalf("Lock phase should not bump tool-exec counter, got %v", ts.toolExecRecoveryAttempts)
+	if ts.toolExecRecoveryAttempts["view_goal"] != 1 {
+		t.Fatalf("Set phase should bump tool-exec counter (Phase 12.15), got %v", ts.toolExecRecoveryAttempts)
 	}
 }
 
