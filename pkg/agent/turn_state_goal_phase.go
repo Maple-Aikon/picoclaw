@@ -25,6 +25,8 @@ package agent
 // allowlist recomputation.
 
 import (
+	"log"
+
 	"github.com/sipeed/picoclaw/pkg/agent/goal"
 )
 
@@ -48,9 +50,12 @@ func (ts *turnState) hasGoal() bool {
 	store := goal.NewStore(ts.workspace)
 	g, err := store.Read(ts.sessionKey)
 	if err != nil || g == nil {
+		log.Printf("DEBUG[12.16] hasGoal session=%s workspace=%s result=NO (err=%v g=%v)", ts.sessionKey, ts.workspace, err, g)
 		return false
 	}
-	return g.Status == goal.StatusActive
+	isActive := g.Status == goal.StatusActive
+	log.Printf("DEBUG[12.16] hasGoal session=%s name=%s status=%s active=%v", ts.sessionKey, g.Name, g.Status, isActive)
+	return isActive
 }
 
 // iterationCapFinalized returns true when this turn has hit the iteration
@@ -92,15 +97,19 @@ func (ts *turnState) currentGoalPhase() GoalPhase {
 	// GoalPhaseOpen) at iter 1 without driving a set_goal preamble. See
 	// pkg/agent/instance.go for the field contract.
 	if ts.agent.PhaseOverrideForTest != "" {
+		log.Printf("DEBUG[12.16] currentGoalPhase session=%s phaseOverride=%s", ts.sessionKey, ts.agent.PhaseOverrideForTest)
 		return GoalPhase(ts.agent.PhaseOverrideForTest)
 	}
-	return ResolveGoalPhase(
-		ts.hasGoal(),
+	hasG := ts.hasGoal()
+	resolved := ResolveGoalPhase(
+		hasG,
 		ts.iteration,
 		ts.iterationCap,
 		ts.maxIterationsCap,
 		ts.goalFinalized,
 	)
+	log.Printf("DEBUG[12.16] currentGoalPhase session=%s hasGoal=%v iter=%d iterCap=%d maxCap=%d goalFinalized=%v -> %s", ts.sessionKey, hasG, ts.iteration, ts.iterationCap, ts.maxIterationsCap, ts.goalFinalized, resolved)
+	return resolved
 }
 
 // applyPhaseAllowlist recomputes the tool allowlist for the given phase

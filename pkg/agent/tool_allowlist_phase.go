@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"log"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/agent/goal"
@@ -185,7 +186,13 @@ func unionAllowlist(a, b []string) []string {
 // Fail-closed: frontmatterParseFailed → empty allowlist.
 func resolveAgentToolAllowlistWithPhase(definition AgentContextDefinition, phase GoalPhase) []string {
 	if frontmatterParseFailed(definition) {
+		log.Printf("DEBUG[12.16] resolveAgentToolAllowlistWithPhase phase=%s frontmatterParseFailed=true -> []", phase)
 		return []string{}
+	}
+	if definition.Agent != nil {
+		log.Printf("DEBUG[12.16] resolveAgentToolAllowlistWithPhase phase=%s frontmatterTools=%d", phase, len(definition.Agent.Frontmatter.Tools))
+	} else {
+		log.Printf("DEBUG[12.16] resolveAgentToolAllowlistWithPhase phase=%s agentNil=true", phase)
 	}
 
 	// Phase override shortcuts that DO NOT depend on base allowlist.

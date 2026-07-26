@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -468,12 +469,19 @@ func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
 	// Phase 12.6.0 ordering fix: prefer goal.Summary over DefaultResponse
 	// when goal was finalized without prose. See helper doc above for
 	// full rationale + preference order.
+	goalSummary := ""
+	hadGoal := false
 	if ts.goalFinalized && ts.assistantText == "" {
 		if st := al.goalStore(); st != nil {
 			if g, err := st.ReadAny(ts.sessionKey); err == nil && g != nil && g.Summary != "" {
-				return g.Summary
+				goalSummary = g.Summary
+				hadGoal = true
 			}
 		}
+	}
+	log.Printf("DEBUG[12.16] applyFallbackForEmptyResponse session=%s goalFinalized=%v assistantText=%q hadGoal=%v goalSummaryLen=%d iter=%d iterCap=%d ts.iteration=%d", ts.sessionKey, ts.goalFinalized, ts.assistantText, hadGoal, len(goalSummary), ts.currentIteration(), ts.iterationCap, ts.iteration)
+	if goalSummary != "" {
+		return goalSummary
 	}
 	// Phase 12.13: phase-stuck message beats the generic ErrorResponse.
 	// We only show this when the goal was archived with a phase-stuck

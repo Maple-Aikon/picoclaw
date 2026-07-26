@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"log"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/agent/goal"
@@ -154,6 +155,7 @@ func (ts *turnState) goalArchiveRequestedFromState() string {
 // step before any other state read.
 func archiveStaleGoalOnTurnStart(al *AgentLoop, sessionKey string) error {
 	if al == nil {
+		log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart SKIP al=nil")
 		return nil
 	}
 	// Test-only escape hatch: tests that pre-seed an active goal file
@@ -162,29 +164,40 @@ func archiveStaleGoalOnTurnStart(al *AgentLoop, sessionKey string) error {
 	// non-[set_goal] tools at iter 1). Production callers MUST leave
 	// skipGoalArchiveOnTurnStart=false.
 	if al.skipGoalArchiveOnTurnStart.Load() {
+		log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart SKIP skipGoalArchiveOnTurnStart=true session=%s", sessionKey)
 		return nil
 	}
 	if al.goalStore() == nil {
+		log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart SKIP goalStore=nil session=%s", sessionKey)
 		return nil
 	}
 	if sessionKey == "" {
+		log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart SKIP sessionKey=empty")
 		return nil
 	}
 	store := al.goalStore()
 	g, err := store.Read(sessionKey)
 	if err != nil {
+		log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart Read err session=%s err=%v", sessionKey, err)
 		// Missing/unreadable file → not stale.
 		return nil
 	}
 	if g == nil || g.Status != goal.StatusActive {
+		if g == nil {
+			log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart no-op session=%s goal=nil", sessionKey)
+		} else {
+			log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart no-op session=%s status=%s (not active)", sessionKey, g.Status)
+		}
 		return nil
 	}
+	log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart ARCHIVING session=%s name=%s status=%s", sessionKey, g.Name, g.Status)
 	now := time.Now().UTC()
 	g.Status = goal.StatusAborted
 	g.AbortedAt = &now
 	g.AbortReason = "stale_turn_boundary"
 	g.UpdatedAt = now
 	if err := store.Write(sessionKey, g); err != nil {
+		log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart Write FAILED session=%s err=%v", sessionKey, err)
 		return err
 	}
 	logger.InfoCF("agent", "Stale active goal archived on turn start",
@@ -192,5 +205,10 @@ func archiveStaleGoalOnTurnStart(al *AgentLoop, sessionKey string) error {
 			"session": sessionKey,
 			"name":    g.Name,
 		})
-	return store.Archive(sessionKey)
+	if err := store.Archive(sessionKey); err != nil {
+		log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart Archive FAILED session=%s err=%v", sessionKey, err)
+		return err
+	}
+	log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart Archive OK session=%s name=%s", sessionKey, g.Name)
+	return nil
 }

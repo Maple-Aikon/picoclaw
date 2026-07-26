@@ -9,6 +9,7 @@ package goal
 import (
 	"context"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -258,10 +259,12 @@ func (t *SetGoalTool) Execute(ctx context.Context, args map[string]any) *toolsha
 		return invalidInputForLLM("set_goal: validation failed: " + err.Error())
 	}
 	if err := store.Write(sessionKey, g); err != nil {
+		log.Printf("DEBUG[12.16] set_goal Write FAILED session=%s name=%s replaced=%v err=%v", sessionKey, name, replaced, err)
 		if tr := mapStoreError(err); tr != nil {
 			return tr
 		}
 	}
+	log.Printf("DEBUG[12.16] set_goal Write OK session=%s name=%s status=%s replaced=%v workspace=%s", sessionKey, name, g.Status, replaced, t.workspace)
 	// Phase 11: StatusSnapshot / cross-turn reminder mechanism removed
 	// (per-turn scope — the goal exists only for this turn, no need to
 	// seed cross-turn context). The prompt-injection slot that used to
@@ -628,15 +631,19 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, args map[string]any) *to
 	g.UpdatedAt = time.Now().UTC()
 	g.Summary = summary // Phase 11: persist LLM-supplied final reply alongside the archive.
 	if err := store.Write(sessionKey, g); err != nil {
+		log.Printf("DEBUG[12.16] complete_goal Write FAILED session=%s name=%s err=%v", sessionKey, g.Name, err)
 		if tr := mapStoreError(err); tr != nil {
 			return tr
 		}
 	}
+	log.Printf("DEBUG[12.16] complete_goal Write OK session=%s name=%s summary_len=%d", sessionKey, g.Name, len(summary))
 	if err := store.Archive(sessionKey); err != nil {
+		log.Printf("DEBUG[12.16] complete_goal Archive FAILED session=%s name=%s err=%v", sessionKey, g.Name, err)
 		if tr := mapStoreError(err); tr != nil {
 			return tr
 		}
 	}
+	log.Printf("DEBUG[12.16] complete_goal Archive OK session=%s name=%s workspace=%s", sessionKey, g.Name, t.workspace)
 
 	// Phase 11: mark the turn as finalized so the iteration loop breaks
 	// immediately after this tool result is processed. Without this, the
@@ -644,6 +651,7 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, args map[string]any) *to
 	// reference), wasting iterations and confusing the user.
 	if ts := TurnStateFromContext(ctx); ts != nil {
 		ts.MarkGoalFinalized()
+		log.Printf("DEBUG[12.16] complete_goal MarkGoalFinalized session=%s name=%s", sessionKey, g.Name)
 	}
 
 	return &toolshared.ToolResult{
