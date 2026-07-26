@@ -413,14 +413,18 @@ func (t *GoalProgressTool) Description() string {
 	return `Append a progress entry to the current session's goal log. Each entry is timestamped.
 
 When to use:
-- At the end of any turn that moved the goal forward (decisions made, code shipped, blockers discovered).
-- When drift is detected (set drift_detected=true and explain in next_action).
+- When more concrete work remains for THIS turn (e.g., running tests, applying a follow-up commit, drafting the next iteration). The remaining_steps list extends the turn's iteration cap so the agent can keep working through them.
 
-All fields are optional except that something must be set — calling with zero meaningful fields is rejected to prevent accidental empty entries. Recommended minimum: completed_steps OR remaining_steps OR next_action.
+When NOT to use:
+- When your work is done and the user has no pending decision — call complete_goal instead.
+- When you need to wait for user approval, decision, or review before continuing — call complete_goal with a summary describing the wait state. complete_goal accepts any 1-500 char summary; "Waiting for Maple to review X" is a valid summary even when goal work is not yet complete.
+- Calling goal_progress with empty remaining_steps is rejected to prevent "log then complete_goal at next iter" cycles.
+
+Required field: remaining_steps MUST be non-empty (>= 1 entry). The runtime extends the iteration cap only when this field is populated.
 
 - completed_steps: things finished this turn
 - blockers: anything blocking forward progress
-- remaining_steps: explicit "not done yet" list (helps future turns resume)
+- remaining_steps: REQUIRED. Explicit list of what's still pending — extends the iteration cap so the agent can continue within this turn
 - drift_detected: set true when the work is no longer aligned with the original objective
 - next_action: one sentence describing the next concrete step (MUST be present if drift_detected is true)`
 }
@@ -441,8 +445,9 @@ func (t *GoalProgressTool) Parameters() map[string]any {
 			},
 			"remaining_steps": map[string]any{
 				"type":        "array",
+				"minItems":    1,
 				"items":       map[string]any{"type": "string"},
-				"description": "Optional. Explicit list of what's still pending (helps future turns resume context).",
+				"description": "REQUIRED. Non-empty list of what's still pending — drives iteration-cap extension so the agent can keep working within this turn. Empty or missing is rejected. If your work is done or you need user approval/decision before continuing, call complete_goal instead.",
 			},
 			"drift_detected": map[string]any{
 				"type":        "boolean",
@@ -473,6 +478,17 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 	}
 	if drift && next == "" {
 		return invalidInputForLLM("goal_progress: when drift_detected=true you MUST also provide next_action describing how to realign")
+	}
+	// Phase 12.20: remaining_steps is REQUIRED. Empty/missing list means the
+	// LLM is signalling "nothing more to do right now" — which is exactly
+	// the case where complete_goal should be called instead. We previously
+	// allowed empty remaining_steps + blockers/next_action as a "wait for
+	// user" primitive, but in practice this caused LLM to log progress and
+	// then call complete_goal at the next iteration (extra round-trip with
+	// no real work). Strict rule: any goal_progress call must extend the
+	// iteration cap, which only happens when remaining_steps is non-empty.
+	if len(remaining) == 0 {
+		return invalidInputForLLM("goal_progress: remaining_steps is required and must be non-empty. If your work is finished or you need user approval/decision before continuing, call complete_goal instead (the summary field accepts a 'Waiting for X to review Y' message).")
 	}
 
 	store := newStoreFromCtx(ctx, t.workspace)
@@ -577,7 +593,11 @@ func (t *CompleteGoalTool) Description() string {
 
 If no goal exists, or the goal is already completed, the tool returns an invalid_input error. Use set_goal to start a new one before calling this.
 
-Provide a ` + "`summary`" + ` argument (1-500 chars) — the LLM's final user-facing reply. The tool stores it in the archive file as the goal's ` + "`summary`" + ` field. If the LLM has already output a text reply this iteration (assistantText non-empty), that text is sent to the user instead of the summary. Either way, the LLM's final reply is guaranteed to reach the user before the turn loop breaks.`
+Provide a ` + "`summary`" + ` argument (1-500 chars) — the LLM's final user-facing reply. The tool stores it in the archive file as the goal's ` + "`summary`" + ` field. If the LLM has already output a text reply this iteration (assistantText non-empty), that text is sent to the user instead of the summary. Either way, the LLM's final reply is guaranteed to reach the user before the turn loop breaks.
+
+When to use complete_goal even when goal work is not yet "fully done":
+- When you need user approval, decision, or review before continuing (e.g., "Waiting for Maple to review the 2 SOP candidates"). The summary field accepts any 1-500 char message — including wait-state descriptions. complete_goal is the canonical way to pause for user input; do NOT call goal_progress with empty remaining_steps as a substitute (it is rejected as of Phase 12.20).
+- When all remaining_steps are blocked by something external (human decision, upstream dependency) and there is no more tool work to do in this turn.`
 }
 
 func (t *CompleteGoalTool) Parameters() map[string]any {
