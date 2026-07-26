@@ -62,3 +62,30 @@ func TestGoalCompleteReportHint_LayerSlotCapabilityTooling(t *testing.T) {
 		t.Errorf("Slot = %q, want %q (Tooling-slot groups tool-usage rules)", got.Slot, PromptSlotTooling)
 	}
 }
+
+// Phase 12.20.1: enhanced hint must include all 5 structured-section markers
+// so LLM has an explicit template to fill. Owner decision (anh Maple,
+// 2026-07-27 06:24 ICT): final reports were sometimes too short or missing
+// sections — 5-section template enforces task recap / done / remaining /
+// approach pros-cons / open notes.
+func TestGoalCompleteReportHint_StructuredFiveSections_Phase12_20_1(t *testing.T) {
+	got := goalCompleteReportHintContributor(PromptBuildRequest{PostCompleteGoalReport: true})
+	if got == nil {
+		t.Fatalf("expected non-nil PromptPart")
+	}
+	sections := []struct {
+		name    string
+		keyword string
+	}{
+		{"task-recap", "TASK RECAP"},
+		{"done", "DONE SO FAR"},
+		{"remaining", "REMAINING"},
+		{"approach", "APPROACH"},
+		{"open-notes", "OPEN NOTES"},
+	}
+	for _, s := range sections {
+		if !strings.Contains(got.Content, s.keyword) {
+			t.Errorf("hint missing section %q (expected keyword %q) — see Phase 12.20.1 5-section template", s.name, s.keyword)
+		}
+	}
+}

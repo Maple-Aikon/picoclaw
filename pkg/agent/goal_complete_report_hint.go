@@ -16,11 +16,28 @@ package agent
 // goalCompleteReportHintText is the static hint injected at the
 // post-complete_goal final-report iter (Phase 12.7). English per
 // USER.md preference (saves tokens vs VN for recovery prompts).
+//
+// Phase 12.20.1: structured 5-section template. Owner decision (anh Maple,
+// 2026-07-27 06:24 ICT): final reports were sometimes too short / missing
+// sections. New template enforces 5 sections: (1) task recap, (2) done so
+// far with concrete artifacts, (3) remaining / not done, (4) approach
+// pros/cons, (5) open notes going forward. Anchors via "Tools are now
+// locked. Do NOT call any tools." preserves Phase 12.7 behavior.
 const goalCompleteReportHintText = `Goal complete. The final summary has been recorded.
 
-This is your LAST CHANCE to provide a final report to the user for this goal. If you have not yet given a complete user-facing report, provide it now. You may also add any additional info or supplementary details you want the user to know.
+This is your LAST CHANCE to send a final report to the user for this goal. Tools are now locked — do NOT call any tools (including set_goal or complete_goal again). Output a single user-facing report in 5 sections, in this order:
 
-Tools are now locked. Do NOT call any tools.`
+1. TASK RECAP — restate the user's original task in 1-2 sentences (what they asked for).
+
+2. DONE SO FAR — list what was accomplished. Include concrete artifacts: file paths, commit hashes, binary md5 sums, API endpoints shipped, migrations applied, etc. Use bullet points.
+
+3. REMAINING / NOT DONE — list anything left incomplete or out of scope. Be honest about gaps. If everything is done, say "Nothing remaining."
+
+4. APPROACH: PROS / CONS — brief honest tradeoff analysis of the chosen approach (1-2 short paragraphs or bullets). Why this approach? What did it cost? What did it buy? When would a different approach have been better?
+
+5. OPEN NOTES — anything the user should know going forward: caveats, follow-ups, gotchas to remember next time, deferred items, recommended next-step direction.
+
+Keep the report focused and scannable. Skip a section ONLY if it genuinely does not apply (and say so explicitly); otherwise cover all 5.`
 
 // goalCompleteReportHintContributor returns a Capability-layer / Tooling-slot
 // PromptPart when PostCompleteGoalReport=true (the post-complete_goal

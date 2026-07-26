@@ -643,7 +643,19 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, args map[string]any) *to
 		return invalidInputForLLM("complete_goal: no goal set for this session. Call set_goal first.")
 	}
 	if g.Status == StatusCompleted {
-		return invalidInputForLLM("complete_goal: goal is already completed (archived). Call set_goal to start a new one.")
+		// Phase 12.20.1 fix (C): idempotent success (was error pre-12.20.1).
+		// Goal archive in Phase 11 moved active file to archive/, so a 2nd
+		// complete_goal call at iter N+1 (final-report iter) previously
+		// returned "already completed (archived)" — but LLM training data may
+		// retry-complete_goal on errors, looping wastefully until cap. Now
+		// returns success with explicit "you may output your final report"
+		// signal so LLM switches to text-only mode at iter N+1.
+		return &toolshared.ToolResult{
+			ForLLM: fmt.Sprintf(
+				"Goal %q is already completed (archived). This is a no-op — you may output your final user-facing report and exit. Do NOT call any more tools.",
+				g.Name,
+			),
+		}
 	}
 
 	completedCount := len(g.Progress)
