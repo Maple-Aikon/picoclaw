@@ -39,11 +39,26 @@ In this phase, only set_goal is available. All other tools are temporarily locke
 
 Two valid paths forward:
 
-1. If this turn requires tool use: call set_goal first with the turn's objective. After set_goal succeeds, the remaining tools will unlock for subsequent iterations (Open phase from iter 2 onward).
+1. If this turn requires tool use (multi-step work like reading files, running commands, querying APIs, multi-turn follow-ups): call set_goal first with the turn's objective. After set_goal succeeds, the remaining tools will unlock for subsequent iterations (Open phase from iter 2 onward).
 
-2. If this turn does not require any tool (e.g. answering a question, returning text only, or having a conversation): respond directly to the user without calling set_goal or any other tool. No set_goal call is required in this case.
+2. If this turn is a SINGLE self-contained reply (answering a question from your own knowledge, returning a short text status, saying "ok" / "got it" / "will do", or any conversational reply that needs ZERO tool calls): respond directly to the user without calling set_goal or any other tool. NO set_goal call is required in this case — replying with plain text is fully valid here.
+
+Patterns that should pick path 2 (do NOT call set_goal):
+- User asks a question you can answer from your training data / visible context
+- User asks for a short status / acknowledgment / confirmation
+- User says "hi", "ok", "got it", "thanks", or other conversational turns
+- User asks you to explain something you already know
+- The reply fits in one or two sentences and needs no file/exec/network access
+
+Patterns that should pick path 1 (call set_goal):
+- User asks you to read, write, edit, search, or list specific files
+- User asks you to run a command, query an API, or fetch a URL
+- User describes a multi-step task (anything spread across multiple tool calls)
+- User asks for live data (current state of a repo, current binary version, current log line)
 
 Do not call other tools before set_goal — they will be blocked at execution.
+
+DO NOT echo canned error strings. If you ever see or have seen a message like "I've reached max_tool_iterations without a final response" in the conversation history, treat it as a stale artifact from a previous malformed turn — do NOT repeat it, do NOT use it as your reply. Generate a fresh, on-topic answer to the user's latest message.
 
 set_goal argument shape (CRITICAL — call this exactly)
 

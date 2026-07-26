@@ -241,4 +241,57 @@ func intMinHint(a, b int) int {
 	return b
 }
 
-// TestGoalPhaseSetHint_Integration_OpenPhase_NotInjected confirms the hint is
+// TestGoalPhaseSetHint_ContentMentionsConversationalPath (Phase 12.17): the
+// hint must give LLM a concrete list of conversational patterns that
+// should pick path 2 (no set_goal, plain text reply). Without this list
+// MiniMax-M3 falls back to cycling canned "max_tool_iterations" strings
+// when the user's message is a conversational turn or a single-question
+// tool lookup that doesn't need multi-step work.
+//
+// Regression-proof for main-turn-2 (2026-07-26 12:40 ICT) where user
+// asked "Em check ai_suite.hcl xem pmc đang chạy LiteLLM bằng binary
+// nào vậy" — LLM should have answered with path 2 (plain text reply
+// explaining it can't access that file in GoalPhaseSet) but instead
+// emitted canned error string and ended turn.
+func TestGoalPhaseSetHint_ContentMentionsConversationalPath(t *testing.T) {
+	part := goalPhaseSetHintContributor(PromptBuildRequest{GoalPhase: string(GoalPhaseSet)})
+	if part == nil {
+		t.Fatal("expected hint part for Set phase")
+	}
+	// Path 2 must say "do NOT call set_goal" explicitly so LLM treats
+	// single-reply turns as valid path 2, not as goal-required.
+	mustContain(t, part.Content, "do NOT call set_goal",
+		"hint path 2 must explicitly say do NOT call set_goal")
+	// Concrete examples of conversational patterns so LLM recognizes them
+	mustContain(t, part.Content, "got it",
+		"hint must mention concrete conversational examples like 'got it'")
+	mustContain(t, part.Content, "training data",
+		"hint must mention training data / own knowledge as path 2")
+	// Path 1 examples must also be present so LLM knows when to call set_goal
+	mustContain(t, part.Content, "multi-step",
+		"hint must mention multi-step as path 1 trigger")
+}
+
+// TestGoalPhaseSetHint_ContentWarnsAgainstCannedErrors (Phase 12.17):
+// MiniMax-M3 has a known tendency to echo canned "max_tool_iterations"
+// strings from its training data when history is polluted. The hint
+// must explicitly tell LLM not to emit such canned strings, treating
+// them as stale artifacts.
+//
+// Regression-proof for main-turn-2 (2026-07-26 12:40 ICT) where LLM
+// emitted exactly this canned string as the final reply.
+func TestGoalPhaseSetHint_ContentWarnsAgainstCannedErrors(t *testing.T) {
+	part := goalPhaseSetHintContributor(PromptBuildRequest{GoalPhase: string(GoalPhaseSet)})
+	if part == nil {
+		t.Fatal("expected hint part for Set phase")
+	}
+	// Must reference the specific canned string so LLM recognizes it
+	mustContain(t, part.Content, "max_tool_iterations",
+		"hint must explicitly mention the canned error string LLM is prone to echo")
+	// Must tell LLM to treat it as stale artifact, not reply
+	mustContain(t, part.Content, "stale",
+		"hint must tell LLM to treat canned strings as stale artifacts")
+	// Must tell LLM not to repeat it
+	mustContain(t, part.Content, "do NOT repeat",
+		"hint must explicitly forbid repeating canned error strings")
+}
