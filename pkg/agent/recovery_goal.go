@@ -144,7 +144,7 @@ const (
 	// back to complete_goal (the only allowed tool) until the goal is fully
 	// closed. Skipped when postCompleteGoalReportSent=true (the final report
 	// has already been published — no more iterations happen).
-	ToolExecErrorFinalPhaseHint = " In the current goal phase (final), only `complete_goal` is available — every other tool call is blocked. The goal is already finalized; call `complete_goal` with a non-empty `summary` (1-500 chars) to close out the turn, or reply with the final user-facing report directly."
+	ToolExecErrorFinalPhaseHint = " In the current goal phase (final), only `complete_goal` is available — every other tool call is blocked. The goal is already finalized; call `complete_goal` with a non-empty `summary` (1-500 chars) to close out the turn, or reply with the final user-facing report directly. The summary field accepts wait-state descriptions such as 'Waiting for user approval before proceeding with X' — use this when you need user approval/decision before continuing."
 
 	// Phase 12.18: ToolExecErrorCheckpointPhaseHint is appended when a tool
 	// call was rejected at GoalPhaseCheckpoint (iter == iterationCap, hit the
@@ -158,7 +158,7 @@ const (
 	// the current phase..."). Combined effect was a silent recovery blind
 	// spot that ended the turn with a canned "max_tool_iterations" string.
 	// Telegram user feedback 2026-07-26: main-turn-4 hit this at iter 25.
-	ToolExecErrorCheckpointPhaseHint = " This is the final iteration (goal phase: checkpoint). Only `goal_progress` (to extend with another step) and `complete_goal` (to wrap up the goal) are available. Every other tool call is blocked. If your current work is incomplete, call `goal_progress` to extend the turn; otherwise call `complete_goal` with a non-empty `summary` (1-500 chars) to close out the goal."
+	ToolExecErrorCheckpointPhaseHint = " This is the final iteration (goal phase: checkpoint). Only `goal_progress` (to extend with another step — remaining_steps MUST be non-empty) and `complete_goal` (to wrap up the goal or wait for user approval/decision via the summary field) are available. Every other tool call is blocked. If your current work is incomplete and you still have concrete next steps, call `goal_progress` with non-empty `remaining_steps` to extend the turn; otherwise call `complete_goal` with a non-empty `summary` (1-500 chars) — the summary may describe a wait-state such as 'Waiting for Maple review' if you need user approval before proceeding."
 )
 
 // Caps for each trigger. Per §5.2 + §5.3 — these are sub-attempt counts

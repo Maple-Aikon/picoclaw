@@ -225,6 +225,7 @@ func TestViewGoalTool_PaginationHonored(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		NewGoalProgressTool(ws).Execute(ctx, map[string]any{
 			"completed_steps": []string{"step" + string(rune('A'+i))},
+			"remaining_steps": []string{"continue iteration " + string(rune('A'+i))},
 		})
 	}
 
@@ -275,6 +276,7 @@ func TestGoalProgressTool_AppendsAndPersists(t *testing.T) {
 
 	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
 		"completed_steps": []string{"write code"},
+		"remaining_steps": []string{"run tests"},
 		"next_action":     "run tests",
 	})
 	if res.IsError {
@@ -721,7 +723,10 @@ func TestGoalProgressTool_NoExtend_WhenAtCeiling(t *testing.T) {
 	}
 }
 
-func TestGoalProgressTool_NoExtend_WhenNoRemainingSteps(t *testing.T) {
+func TestGoalProgressTool_RejectsWhenRemainingStepsEmpty(t *testing.T) {
+	// Phase 12.20: remaining_steps is REQUIRED. Empty list is rejected
+	// regardless of other populated fields (completed/blockers/next_action).
+	// LLM must call complete_goal instead when there's no more tool work.
 	ws := tempWorkspace(t)
 	ctx := ctxWithSession("sess-noremaining", "agent")
 	NewSetGoalTool(ws).Execute(ctx, map[string]any{
@@ -730,19 +735,48 @@ func TestGoalProgressTool_NoExtend_WhenNoRemainingSteps(t *testing.T) {
 		"success_criteria": []string{"c"},
 	})
 
-	ext := &fakeExtender{remaining: 0, canExtend: true}
+	ext := &fakeExtender{remaining: 5, canExtend: true}
 	ctx = WithIterationExtender(ctx, ext)
 
 	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
 		"completed_steps": []string{"write code", "run tests"},
 		"next_action":     "done",
-		// no remaining_steps → goal effectively complete, should NOT extend.
+		"blockers":        []string{"waiting for Maple review"},
+		// no remaining_steps → must be rejected per Phase 12.20 strict rule.
+	})
+	if !res.IsError || res.ErrKind != toolshared.ErrInvalidInput {
+		t.Errorf("expected invalid_input when remaining_steps empty, got isErr=%v kind=%q", res.IsError, res.ErrKind)
+	}
+	if ext.callCount() != 0 {
+		t.Errorf("expected 0 ExtendIterationCap calls when rejected, got %d", ext.callCount())
+	}
+}
+
+func TestGoalProgressTool_AcceptsRemainingSteps_WithBlockers(t *testing.T) {
+	// Phase 12.20: remaining_steps non-empty is accepted even when blockers
+	// are also populated. The remaining_steps drives iteration-cap
+	// extension; blockers document the constraint but do not block extend.
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-blockers-remaining", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+
+	ext := &fakeExtender{remaining: 5, canExtend: true}
+	ctx = WithIterationExtender(ctx, ext)
+
+	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
+		"completed_steps": []string{"drafted SOP"},
+		"blockers":        []string{"need legal sign-off"},
+		"remaining_steps": []string{"apply legal feedback", "ship final"},
 	})
 	if res.IsError {
 		t.Fatalf("unexpected error: %v", res.Err)
 	}
-	if ext.callCount() != 0 {
-		t.Errorf("expected 0 ExtendIterationCap calls when remaining_steps empty, got %d", ext.callCount())
+	if ext.callCount() != 1 {
+		t.Errorf("expected 1 ExtendIterationCap call when remaining_steps non-empty, got %d", ext.callCount())
 	}
 }
 
