@@ -142,7 +142,16 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		}
 	}
 
-	for ts.currentIteration() < ts.iterationCap || len(exec.pendingMessages) > 0 || func() bool {
+	// Phase 12.20.1 fix (A): force-exit after final-report iter has run.
+	// Without this guard, if the LLM emits a 2nd complete_goal tool call
+	// at iter N+1 instead of producing a final report, the post-body
+	// marker still flips postCompleteGoalReportSent=true (line below), but
+	// the loop continues because iterationCap was bumped to N+1. Result:
+	// wasted iterations + publishPicoToolCallInterim emissions until the
+	// LLM finally emits text or hits cap. Bounding the loop on
+	// "goal finalized AND report already sent" makes iter N+1 strictly
+	// the final iter regardless of LLM tool-call behavior.
+	for (ts.currentIteration() < ts.iterationCap && !(ts.goalFinalized && ts.postCompleteGoalReportSent)) || len(exec.pendingMessages) > 0 || func() bool {
 		graceful, _ := ts.gracefulInterruptRequested()
 		return graceful
 	}() {

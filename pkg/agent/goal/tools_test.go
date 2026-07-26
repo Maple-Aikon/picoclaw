@@ -405,7 +405,14 @@ func TestCompleteGoalTool_NoGoalSentinel(t *testing.T) {
 	}
 }
 
-func TestCompleteGoalTool_IdempotentGuard(t *testing.T) {
+// Phase 12.20.1 fix (C): 2nd complete_goal call now returns IDEMPOTENT
+// SUCCESS (was error pre-12.20.1). Goal archive in Phase 11 moved active
+// file to archive/, so a 2nd complete_goal call at iter N+1 (final-report
+// iter) previously returned "already completed (archived)" — but LLM
+// training data may retry-complete_goal on errors, looping wastefully
+// until cap. Now returns success with explicit "you may output your final
+// report" signal so LLM switches to text-only mode at iter N+1.
+func TestCompleteGoalTool_IdempotentSuccess(t *testing.T) {
 	ws := tempWorkspace(t)
 	ctx := ctxWithSession("sess-A", "agent")
 	NewSetGoalTool(ws).Execute(ctx, map[string]any{
@@ -416,11 +423,35 @@ func TestCompleteGoalTool_IdempotentGuard(t *testing.T) {
 	NewCompleteGoalTool(ws).Execute(ctx, map[string]any{"summary": "first"})
 
 	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{"summary": "second"})
-	if !res.IsError || res.ErrKind != toolshared.ErrInvalidInput {
-		t.Errorf("expected invalid_input on second call, got isErr=%v kind=%q", res.IsError, res.ErrKind)
+	if res.IsError {
+		t.Errorf("expected success (not error) on 2nd complete_goal, got isErr=true err_kind=%q msg=%q",
+			res.ErrKind, res.ForLLM)
 	}
 	if !strings.Contains(res.ForLLM, "already completed") {
-		t.Errorf("expected 'already completed' message, got: %s", res.ForLLM)
+		t.Errorf("expected 'already completed' message in success reply, got: %s", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "no-op") {
+		t.Errorf("expected 'no-op' marker in success reply (LLM signal to switch to text-only), got: %s", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "Do NOT call any more tools") {
+		t.Errorf("expected 'Do NOT call any more tools' directive, got: %s", res.ForLLM)
+	}
+}
+
+// Phase 12.20.1 fix (C) negative regression test: ensure the "no goal
+// set" branch still returns error (only the "already completed" branch
+// became idempotent success). Two different semantic branches must not be
+// conflated.
+func TestCompleteGoalTool_NoGoalSentinel_StillError(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-no-goal", "agent")
+	// No set_goal call — store has no goal at all.
+	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{"summary": "x"})
+	if !res.IsError {
+		t.Errorf("expected error when no goal exists, got isErr=false msg=%q", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "no goal set") && !strings.Contains(res.ForLLM, "set_goal") {
+		t.Errorf("expected 'no goal set / set_goal' directive, got: %s", res.ForLLM)
 	}
 }
 
