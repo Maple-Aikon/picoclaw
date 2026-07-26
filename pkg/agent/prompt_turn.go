@@ -31,6 +31,11 @@ func promptBuildRequestForTurn(
 		// Phase 12.7: emit post-complete_goal final-report hint on the
 		// extra iter after complete_goal (phase=Final, tools stripped).
 		PostCompleteGoalReport: ts.shouldEmitPostCompleteGoalReport(),
+		// Phase 12.16.1: thread current iter through so the system prompt
+		// cache key includes iter (prevents iter-1 prompt from being
+		// reused at later iters) and goalPhaseSetHintContributor can refer
+		// to the actual iter instead of hardcoding "(iter 1)".
+		Iteration: ts.currentIteration(),
 	}
 	hasCallableTools := true
 	if ts.profile.Enabled {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -129,6 +130,9 @@ func TestGoalPhaseSetHint_Integration_BuildSystemPromptParts(t *testing.T) {
 	parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
 		IncludeToolUseRule: true,
 		GoalPhase:           string(GoalPhaseSet),
+		// Phase 12.16.1: iter must be populated for the hint header to
+		// render "(iter N)" correctly. Tests typically run as iter 1.
+		Iteration:           1,
 	})
 	// Hunt for our hint part by ID (stable identifier, no race on text edits).
 	found := false
@@ -167,6 +171,7 @@ func TestGoalPhaseSetHint_Integration_OpenPhase_NotInjected(t *testing.T) {
 		parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
 			IncludeToolUseRule: true,
 			GoalPhase:           phase,
+			Iteration:           0,
 		})
 		for _, p := range parts {
 			if p.Source.ID == PromptSourceGoalPhaseSetHint {
@@ -175,3 +180,65 @@ func TestGoalPhaseSetHint_Integration_OpenPhase_NotInjected(t *testing.T) {
 		}
 	}
 }
+// TestGoalPhaseSetHint_IterationHeaderReflectsReq (Phase 12.16.1): the hint
+// header must show the actual iter from the request, not a hardcoded
+// "(iter 1)". Without this fix the iter 1 prompt was cached and reused at
+// later iters, producing a wrong-context header that confused the LLM
+// during the main-turn-4 oscillation.
+//
+// Verifies the iter in the header is the value supplied via
+// PromptBuildRequest.Iteration, not a static fallback. The header format is
+// "Goal phase: SET (iter N)." where N is the iter.
+func TestGoalPhaseSetHint_IterationHeaderReflectsReq(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	for _, tc := range []struct {
+		name string
+		iter int
+	}{
+		{"iter 1", 1},
+		{"iter 5", 5},
+		{"iter 17", 17},
+		{"iter 0 (defaults to 1)", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
+				IncludeToolUseRule: true,
+				GoalPhase:           string(GoalPhaseSet),
+				Iteration:           tc.iter,
+			})
+
+			var hint *PromptPart
+			for i := range parts {
+				if parts[i].ID == "capability.goal_phase_set_hint" {
+					hint = &parts[i]
+					break
+				}
+			}
+			if hint == nil {
+				t.Fatalf("GoalPhaseSet hint part not found in parts for iter=%d", tc.iter)
+			}
+
+			expectedIter := tc.iter
+			if expectedIter == 0 {
+				expectedIter = 1
+			}
+			wantHeader := fmt.Sprintf("Goal phase: SET (iter %d).", expectedIter)
+			if !strings.Contains(hint.Content, wantHeader) {
+				t.Errorf("hint header missing %q in iter=%d build; got:\n%s", wantHeader, tc.iter, hint.Content[:intMinHint(500, len(hint.Content))])
+			}
+		})
+	}
+}
+
+// intMinHint helper for substring slicing in tests (avoids name collision with
+// the Go 1.21+ builtin min on two ints; also avoids sharing a helper
+// across packages).
+func intMinHint(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// TestGoalPhaseSetHint_Integration_OpenPhase_NotInjected confirms the hint is

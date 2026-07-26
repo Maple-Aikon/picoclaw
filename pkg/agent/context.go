@@ -38,6 +38,7 @@ type ContextBuilder struct {
 	cachedSystemPrompt         string
 	cachedSystemPromptGoalPhase string // GoalPhase value cached alongside the prompt; empty when no phase set
 	cachedSystemPromptPostCompleteGoalReport bool // Phase 12.7: cache key dimension for GoalCompleteReport hint
+	cachedSystemPromptIteration int    // Phase 12.16.1: cache key dimension for iter (1..N); prevents iter-1 prompt from being reused at later iters
 	wasLastPostCompleteGoalReport bool // Phase 12.7: previous postCompleteGoalReport state for debug log
 	cachedAt                   time.Time // max observed mtime across tracked paths at cache build time
 
@@ -232,16 +233,24 @@ func formatToolDiscoveryRule(useBM25, useRegex bool) string {
 // goalCompleteReportHintContributor so the post-complete_goal final-
 // report iter informs the LLM this is its LAST CHANCE to provide a
 // user-facing final report.
-func (cb *ContextBuilder) BuildSystemPrompt(goalPhase string, postCompleteGoalReport bool) string {
-	return renderPromptPartsLegacy(cb.BuildSystemPromptParts(goalPhase, postCompleteGoalReport))
+//
+// Phase 12.16.1: added iteration int parameter. The iter is threaded
+// through BuildSystemPromptParts → systemPromptBuildOptions.Iteration →
+// PromptBuildRequest.Iteration → goalPhaseSetHintContributor, so the
+// hint can refer to the actual iter (not hardcoded "(iter 1)") and the
+// cache key in BuildSystemPromptWithCache includes iter so iter-1
+// prompts are not reused at later iters in the same turn.
+func (cb *ContextBuilder) BuildSystemPrompt(goalPhase string, postCompleteGoalReport bool, iteration int) string {
+	return renderPromptPartsLegacy(cb.BuildSystemPromptParts(goalPhase, postCompleteGoalReport, iteration))
 }
 
-func (cb *ContextBuilder) BuildSystemPromptParts(goalPhase string, postCompleteGoalReport bool) []PromptPart {
+func (cb *ContextBuilder) BuildSystemPromptParts(goalPhase string, postCompleteGoalReport bool, iteration int) []PromptPart {
 	return cb.buildSystemPromptParts(systemPromptBuildOptions{
 		IncludeSkillCatalog:      true,
 		IncludeToolUseRule:       true,
 		GoalPhase:                goalPhase,
 		PostCompleteGoalReport:   postCompleteGoalReport,
+		Iteration:                iteration,
 	})
 }
 
@@ -260,6 +269,14 @@ type systemPromptBuildOptions struct {
 	// tool allowlist=[]. Fires the goalCompleteReportHintContributor so LLM
 	// gets one last chance to provide a user-facing final report.
 	PostCompleteGoalReport bool
+
+	// Iteration (Phase 12.16.1) is the current iteration index within the
+	// turn (1-based: 1..MaxIter). Threaded through to PromptBuildRequest so
+	// goalPhaseSetHintContributor can refer to the actual iter instead of
+	// hardcoding "(iter 1)". A non-zero value also acts as a cache key
+	// dimension in BuildSystemPromptWithCache so iter-1 prompts are not
+	// reused at later iters.
+	Iteration int
 }
 
 func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) []PromptPart {
@@ -371,7 +388,13 @@ Each part separated by the marker will be sent as an independent message.`,
 	// two valid forward paths: (a) call set_goal to unlock tools, or
 	// (b) reply directly without any tool call. See plan file
 	// ~/.picoclaw/workspace/memory/plan/picoclaw-phase12.3-execution-gate-allowlist-prompt-20260723.md §3.2.
-	if hintPart := goalPhaseSetHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase}); hintPart != nil {
+	//
+	// Phase 12.16.1: passes Iteration so goalPhaseSetHintContributor can
+	// refer to the actual iter instead of hardcoding "(iter 1)". The (iter N)
+	// text is now used to confirm to the LLM that even though the cache may
+	// return a stale prompt, the LLM should trust the iter number from the
+	// hint, not the prompt header.
+	if hintPart := goalPhaseSetHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase, Iteration: opts.Iteration}); hintPart != nil {
 		add(*hintPart)
 	}
 
@@ -401,10 +424,18 @@ Each part separated by the marker will be sent as an independent message.`,
 // Phase 12.7: postCompleteGoalReport is a SECOND cache key dimension.
 // GoalCompleteReport hint fires only when this flag is true. Cache must
 // invalidate when postCompleteGoalReport flag toggles.
-func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompleteGoalReport bool) string {
+//
+// Phase 12.16.1: iteration is a THIRD cache key dimension. Without it,
+// complete_goal → archive → hasGoal=false → phase=set returns the iter 1
+// prompt verbatim at later iters, including the stale "Goal phase: SET
+// (iter 1)" header and the hardcoded (iter 1) reference in
+// goalPhaseSetHintText. This caused the main-turn-4 oscillation where the
+// LLM saw the iter 1 prompt 25 times in a row. Iteration is 1-indexed:
+// 1 for the first iter of a turn, 2..MaxIter for subsequent iters.
+func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompleteGoalReport bool, iteration int) string {
 	// Try read lock first — fast path when cache is valid
 	cb.systemPromptMutex.RLock()
-	if cb.cachedSystemPrompt != "" && cb.cachedSystemPromptGoalPhase == goalPhase && cb.cachedSystemPromptPostCompleteGoalReport == postCompleteGoalReport && !cb.sourceFilesChangedLocked() {
+	if cb.cachedSystemPrompt != "" && cb.cachedSystemPromptGoalPhase == goalPhase && cb.cachedSystemPromptPostCompleteGoalReport == postCompleteGoalReport && cb.cachedSystemPromptIteration == iteration && !cb.sourceFilesChangedLocked() {
 		result := cb.cachedSystemPrompt
 		cb.systemPromptMutex.RUnlock()
 		return result
@@ -416,7 +447,7 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompl
 	defer cb.systemPromptMutex.Unlock()
 
 	// Double-check: another goroutine may have rebuilt while we waited
-	if cb.cachedSystemPrompt != "" && cb.cachedSystemPromptGoalPhase == goalPhase && !cb.sourceFilesChangedLocked() {
+	if cb.cachedSystemPrompt != "" && cb.cachedSystemPromptGoalPhase == goalPhase && cb.cachedSystemPromptIteration == iteration && !cb.sourceFilesChangedLocked() {
 		return cb.cachedSystemPrompt
 	}
 
@@ -427,11 +458,13 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompl
 	// rebuild. The alternative (baseline after build) risks caching stale
 	// content with a too-new baseline, making the staleness invisible.
 	previousPhase := cb.cachedSystemPromptGoalPhase
+	previousIter := cb.cachedSystemPromptIteration
 	baseline := cb.buildCacheBaseline()
-	prompt := cb.BuildSystemPrompt(goalPhase, postCompleteGoalReport)
+	prompt := cb.BuildSystemPrompt(goalPhase, postCompleteGoalReport, iteration)
 	cb.cachedSystemPrompt = prompt
 	cb.cachedSystemPromptGoalPhase = goalPhase
 	cb.cachedSystemPromptPostCompleteGoalReport = postCompleteGoalReport
+	cb.cachedSystemPromptIteration = iteration
 	cb.cachedAt = baseline.maxMtime
 	cb.existedAtCache = baseline.existed
 	cb.skillFilesAtCache = baseline.skillFiles
@@ -442,6 +475,14 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompl
 				"previous_phase": previousPhase,
 				"new_phase":      goalPhase,
 				"length":         len(prompt),
+			})
+	} else if previousIter != 0 && previousIter != iteration {
+		logger.DebugCF("agent", "System prompt cache invalidated by iteration change",
+			map[string]any{
+				"goal_phase":        goalPhase,
+				"previous_iter":     previousIter,
+				"new_iter":          iteration,
+				"length":            len(prompt),
 			})
 	} else if postCompleteGoalReport != cb.wasLastPostCompleteGoalReport {
 		logger.DebugCF("agent", "System prompt cache invalidated by post-complete_goal report state change",
@@ -454,6 +495,7 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompl
 		logger.DebugCF("agent", "System prompt cached",
 			map[string]any{
 				"goal_phase": goalPhase,
+				"iteration":  iteration,
 				"length":     len(prompt),
 			})
 	}
@@ -474,7 +516,7 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 		len(req.AllowedSkills) == 0 &&
 		len(req.AllowedTools) == 0
 	if useDefaultCache {
-		staticPrompt := cb.BuildSystemPromptWithCache(req.GoalPhase, req.PostCompleteGoalReport)
+		staticPrompt := cb.BuildSystemPromptWithCache(req.GoalPhase, req.PostCompleteGoalReport, req.Iteration)
 		return staticPrompt, []providers.ContentBlock{
 			promptContentBlock(PromptPart{
 				ID:      "kernel.static",
@@ -492,6 +534,8 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 		AllowedSkills:       req.AllowedSkills,
 		AllowedTools:        req.AllowedTools,
 		GoalPhase:           req.GoalPhase,
+		PostCompleteGoalReport: req.PostCompleteGoalReport,
+		Iteration:           req.Iteration,
 	})
 	staticPrompt := renderPromptPartsLegacy(parts)
 	blocks := make([]providers.ContentBlock, 0, len(parts))
@@ -568,7 +612,11 @@ func xmlEscapeForPrompt(s string) string {
 // then read the empty-phase cache and miss the hint. The empty-phase
 // estimate is approximate anyway; never let it write through the cache.
 func (cb *ContextBuilder) EstimateSystemTokens(summary string, activeSkills []string) int {
-	staticPrompt := cb.BuildSystemPrompt("", false)
+	// Phase 12.16.1: pass iteration=0 to indicate "estimate, not real". A
+	// 0 iteration means the cache (if any real-phase entry exists) will
+	// NEVER match (cache key requires iteration==current). The estimate
+	// itself is approximate anyway; never let it write through the cache.
+	staticPrompt := cb.BuildSystemPrompt("", false, 0)
 
 	// Dynamic context is small and varies per request; use a representative estimate.
 	// Actual buildDynamicContext produces ~200-400 chars of time/runtime/session info.

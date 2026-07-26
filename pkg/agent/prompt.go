@@ -141,6 +141,14 @@ type PromptBuildRequest struct {
 	// prompt fires a "LAST CHANCE to provide final report" hint. Always set
 	// when goalFinalized=true and postCompleteGoalReportSent=false.
 	PostCompleteGoalReport bool
+
+	// Iteration is the current iteration index within the turn (1-indexed:
+	// 1 for the first iter, 2..MaxIter for subsequent iters). Threaded
+	// through to goalPhaseSetHintContributor (Phase 12.16.1) so the hint
+	// can refer to the actual iter instead of hardcoding "(iter 1)".
+	// Defaults to 0 when the caller doesn't know the iter (e.g. legacy
+	// callers, tests, EstimateSystemTokens).
+	Iteration int
 }
 
 type PromptContributor interface {
