@@ -425,14 +425,44 @@ Each part separated by the marker will be sent as an independent message.`,
 // GoalCompleteReport hint fires only when this flag is true. Cache must
 // invalidate when postCompleteGoalReport flag toggles.
 //
-// Phase 12.16.1: iteration is a THIRD cache key dimension. Without it,
-// complete_goal → archive → hasGoal=false → phase=set returns the iter 1
-// prompt verbatim at later iters, including the stale "Goal phase: SET
-// (iter 1)" header and the hardcoded (iter 1) reference in
-// goalPhaseSetHintText. This caused the main-turn-4 oscillation where the
-// LLM saw the iter 1 prompt 25 times in a row. Iteration is 1-indexed:
+// Phase 12.16.1: iteration is a THIRD cache key dimension for GoalPhaseOpen
+// only. Without it, complete_goal → archive → hasGoal=false → phase=set
+// returns the iter 1 prompt verbatim at later iters, including the stale
+// "Goal phase: SET (iter 1)" header and the hardcoded (iter 1) reference
+// in goalPhaseSetHintText. This caused the main-turn-4 oscillation where
+// the LLM saw the iter 1 prompt 25 times in a row. Iteration is 1-indexed:
 // 1 for the first iter of a turn, 2..MaxIter for subsequent iters.
+//
+// Phase 12.16.1 also: cache is BYPASSED for GoalPhaseSet, GoalPhaseCheckpoint,
+// and GoalPhaseFinal — tool allowlist in those phases is restricted to 1-2
+// lifecycle tools and the prompt body is essentially constant per turn.
+// Rebuilding is cheaper than tracking cache invalidation across the iter
+// dimension for a prompt that barely changes. Also removes any residual
+// stale-prompt risk during a goal-phase transition mid-turn. See
+// isCacheableGoalPhase for the detailed reasoning.
+func isCacheableGoalPhase(goalPhase string) bool {
+	// Only GoalPhaseOpen has a tool allowlist with enough variance to
+	// justify the cache complexity (full ~85 tools × per-iter decisions
+	// in the prompt). GoalPhaseSet, GoalPhaseCheckpoint, and GoalPhaseFinal
+	// are restricted to 1-2 goal lifecycle tools (set_goal, goal_progress,
+	// complete_goal) — their prompt bodies are dominated by constant hint
+	// text + a tiny tool section, so rebuilding every time is cheaper than
+	// tracking cache invalidation across the iter/phase dimensions.
+	return goalPhase == string(GoalPhaseOpen)
+}
+
 func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompleteGoalReport bool, iteration int) string {
+	// Phase 12.16.1: skip cache for non-Open phases. The tool allowlist is
+	// 1-2 lifecycle tools (set_goal, goal_progress, complete_goal) and the
+	// prompt body is dominated by constant hint text + a tiny tool section.
+	// Rebuilding is cheaper than tracking cache invalidation across the
+	// iter dimension for a prompt that barely changes. Also avoids any
+	// residual risk of stale-prompt leakage when an LLM transitions
+	// between goal phases mid-turn. Open phase remains cached.
+	if !isCacheableGoalPhase(goalPhase) {
+		return cb.BuildSystemPrompt(goalPhase, postCompleteGoalReport, iteration)
+	}
+
 	// Try read lock first — fast path when cache is valid
 	cb.systemPromptMutex.RLock()
 	if cb.cachedSystemPrompt != "" && cb.cachedSystemPromptGoalPhase == goalPhase && cb.cachedSystemPromptPostCompleteGoalReport == postCompleteGoalReport && cb.cachedSystemPromptIteration == iteration && !cb.sourceFilesChangedLocked() {

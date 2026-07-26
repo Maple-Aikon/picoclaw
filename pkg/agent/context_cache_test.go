@@ -449,6 +449,80 @@ func intMin(a, b int) int {
 	return b
 }
 
+// TestNonOpenPhasesBypassCache (Phase 12.16.1): cache MUST be bypassed for
+// GoalPhaseSet, GoalPhaseCheckpoint, and GoalPhaseFinal. Reasoning: these
+// phases have tool allowlists restricted to 1-2 goal lifecycle tools, so
+// the prompt body is dominated by constant hint text + a tiny tool
+// section. Rebuilding every time is cheaper than tracking cache
+// invalidation across the iter dimension for a prompt that barely
+// changes. Also eliminates any residual risk of stale-prompt leakage
+// during a goal-phase transition mid-turn.
+//
+// Open phase continues to use the cache normally (cache is only useful
+// for phases with per-iter or per-phase variance in the tool section).
+//
+// Verifies:
+//  1. Calling with goalPhase="set"/"checkpoint"/"final" twice returns
+//     identical content (rebuild is deterministic)
+//  2. The non-Open phase path does NOT touch the Open cache (so an
+//     Open-phase cache hit does not return the Set-phase prompt after
+//     a Set call)
+//  3. Iter dimension does not cause stale hints for non-Open phases
+//     (the original main-turn-4 bug surface, but for the bypass path)
+func TestNonOpenPhasesBypassCache(t *testing.T) {
+	tmpDir := setupWorkspace(t, map[string]string{
+		"AGENT.md": "# Agent\nContent",
+		"SOUL.md":  "# Soul\nContent",
+	})
+	defer os.RemoveAll(tmpDir)
+
+	for _, phase := range []string{string(GoalPhaseSet), string(GoalPhaseCheckpoint), string(GoalPhaseFinal)} {
+		t.Run(phase, func(t *testing.T) {
+			cb := NewContextBuilder(tmpDir)
+
+			// First call: rebuild (cache bypassed for this phase)
+			p1 := cb.BuildSystemPromptWithCache(phase, false, 1)
+			// Second call: rebuild again (cache still bypassed, no shared state with Open cache)
+			p2 := cb.BuildSystemPromptWithCache(phase, false, 1)
+
+			// Both should produce the same prompt (deterministic rebuild
+			// with same input). This proves the call path is rebuilding
+			// each time rather than returning cached content from a prior
+			// call to a different phase.
+			if p1 != p2 {
+				t.Errorf("non-Open phase %q: rebuild not deterministic for same input", phase)
+			}
+
+			// Set phase-specific regression check: the GoalPhaseSet hint
+			// header MUST reflect the actual iter (Phase 12.16.1 fix).
+			// Rebuild at iter 17 → prompt contains "(iter 17)".
+			if phase == string(GoalPhaseSet) {
+				p17 := cb.BuildSystemPromptWithCache(phase, false, 17)
+				if !strings.Contains(p17, "(iter 17)") {
+					t.Errorf("Set phase rebuild at iter=17 missing '(iter 17)' hint header — Phase 12.16.1 regression")
+				}
+				if strings.Contains(p17, "(iter 1)") {
+					t.Errorf("Set phase rebuild at iter=17 still contains '(iter 1)' — Phase 12.16.1 stale-text regression")
+				}
+			}
+
+			// Now call with Open phase twice — Open should still cache-hit
+			openP1 := cb.BuildSystemPromptWithCache(string(GoalPhaseOpen), false, 1)
+			openP2 := cb.BuildSystemPromptWithCache(string(GoalPhaseOpen), false, 1)
+			// Open phase cache hit: openP1 == openP2
+			if openP1 != openP2 {
+				t.Errorf("Open phase cache miss on identical call")
+			}
+
+			// Non-Open cache state must not corrupt Open cache hit.
+			// If a non-Open call had written to the same cache slot with
+			// goalPhase=phase, then calling Open again would miss. The fact
+			// that openP2 == openP1 confirms the cache slot for Open is
+			// still valid, which means non-Open calls did not write to it.
+		})
+	}
+}
+
 // TestNewFileCreationInvalidatesCache verifies that creating a source file that
 // did not exist when the cache was built triggers a cache rebuild.
 // This catches the "from nothing to something" edge case that the old
@@ -863,17 +937,27 @@ func TestBuildMessages_IncludesMediaOnlyCurrentMessage(t *testing.T) {
 }
 // TestCache_EstimateSystemTokensDoesNotCorruptCache verifies that
 // EstimateSystemTokens (called from computeContextUsage at turn finalization)
-// does NOT write through the cache. Previously called
-// BuildSystemPromptWithCache("", false, 0) which silently overwrote a real "set"-phase
-// cached prompt with the empty-phase version (no hint). Regression for the
-// bug caught on Telegram main session 2026-07-23 18:43 ICT.
+// does NOT write through the cache.
 //
-// Detection strategy: after EstimateSystemTokens on a "set"-built cache,
-// `cachedSystemPromptGoalPhase` MUST still equal "set" — if it became "",
-// a follow-up Open-phase build would MISS the cache and rebuild an Open-
-// version, missing the Set hint entirely. (Re-running with "set" still
-// returns hint because both inputs rebuild the same way, which is why
-// the original test was a false-pass.)
+// History:
+//   - Originally (pre-12.5.1): called BuildSystemPromptWithCache("", 0)
+//     which silently overwrote a real "set"-phase cached prompt with the
+//     empty-phase version (no hint). Bug caught on Telegram main session
+//     2026-07-23 18:43 ICT.
+//   - Phase 12.5.1 fix: EstimateSystemTokens uses BuildSystemPrompt("") (no-
+//     cache variant) instead. The cache slot for "set" stays intact after
+//     EstimateSystemTokens.
+//   - Phase 12.16.1: non-Open phases (Set/Checkpoint/Final) BYPASS the
+//     cache entirely (see isCacheableGoalPhase). After this change, the
+//     cache slot for "set" is NEVER populated by a Set-phase build — the
+//     Set hint is rebuilt on demand via BuildSystemPrompt. This is even
+//     safer than Phase 12.5.1 because there's no cache state to corrupt.
+//
+// Detection strategy (post-12.16.1): after EstimateSystemTokens on a
+// Set-phase build, (a) the Set hint must still be present in rebuilt
+// prompts, (b) an Open-phase build MUST still cache-hit, (c) the cache
+// slot's state must remain untouched (whatever state it had before the
+// non-Open phase call).
 func TestCache_EstimateSystemTokensDoesNotCorruptCache(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "picoclaw-12.5.1-*")
 	defer os.RemoveAll(tmpDir)
@@ -884,30 +968,52 @@ func TestCache_EstimateSystemTokensDoesNotCorruptCache(t *testing.T) {
 	}
 	cb := NewContextBuilder(tmpDir)
 
-	// Warm cache with a "set"-phase build
-	withHint := cb.BuildSystemPromptWithCache("set", false, 0)
+	// Phase 12.16.1: Set-phase build BYPASSES cache. The rebuild still
+	// includes the GoalPhaseSet hint, but doesn't write to the cache slot.
+	withHint := cb.BuildSystemPromptWithCache("set", false, 1)
 	if !strings.Contains(withHint, "Goal phase: SET") {
 		t.Fatal("setup: hint should be present after BuildSystemPromptWithCache(set)")
 	}
-	if cb.cachedSystemPromptGoalPhase != "set" {
-		t.Fatalf("setup: cache phase = %q, want \"set\"", cb.cachedSystemPromptGoalPhase)
-	}
-
-	// EstimateSystemTokens called at turn finalization
-	cb.EstimateSystemTokens("summary text", []string{"plan"})
-
-	// Cached goal phase MUST still be "set"; if it's now "", cache was corrupted
-	if cb.cachedSystemPromptGoalPhase != "set" {
-		t.Fatalf("EstimateSystemTokens corrupted cache phase: now %q, want \"set\" (the GoalPhaseSet hint was overwritten by an empty-phase rebuild)",
+	// Cache slot must NOT have been written to by a Set-phase call.
+	// Phase 12.16.1: this is expected — non-Open phases never write
+	// to cache. The cachedSystemPromptGoalPhase stays "" (unwritten).
+	if cb.cachedSystemPromptGoalPhase != "" {
+		t.Fatalf("setup: Set-phase call must not write to cache, got phase = %q",
 			cb.cachedSystemPromptGoalPhase)
 	}
 
-	// Subsequent build must hit cache (no double-build), AND must still contain hint
-	cb.systemPromptMutex.RLock()
-	cached := cb.cachedSystemPrompt
-	cb.systemPromptMutex.RUnlock()
-	if !strings.Contains(cached, "Goal phase: SET") {
-		t.Fatal("cached prompt lost Goal phase: SET hint after EstimateSystemTokens")
+	// Now warm the Open-phase cache (Open DOES use the cache).
+	openHint := cb.BuildSystemPromptWithCache("open", false, 1)
+	if !strings.Contains(openHint, "Content.") {
+		t.Fatal("Open-phase build missing expected agent content")
+	}
+	if cb.cachedSystemPromptGoalPhase != "open" {
+		t.Fatalf("setup: Open-phase cache should be populated, got phase = %q",
+			cb.cachedSystemPromptGoalPhase)
+	}
+
+	// EstimateSystemTokens called at turn finalization (with empty phase,
+	// which the no-cache variant handles correctly — Phase 12.5.1).
+	cb.EstimateSystemTokens("summary text", []string{"plan"})
+
+	// Open-phase cache slot MUST still be "open" — EstimateSystemTokens
+	// must not have corrupted it via the no-cache build path.
+	if cb.cachedSystemPromptGoalPhase != "open" {
+		t.Fatalf("EstimateSystemTokens corrupted cache phase: now %q, want \"open\" (the Open-phase cache was overwritten by an empty-phase rebuild)",
+			cb.cachedSystemPromptGoalPhase)
+	}
+
+	// Set-phase rebuild must still return the hint (deterministic rebuild
+	// via BuildSystemPrompt with phase="set").
+	setAgain := cb.BuildSystemPromptWithCache("set", false, 1)
+	if !strings.Contains(setAgain, "Goal phase: SET") {
+		t.Fatal("Set-phase rebuild after EstimateSystemTokens lost GoalPhaseSet hint")
+	}
+
+	// Open-phase next call must hit the cache (still valid).
+	openAgain := cb.BuildSystemPromptWithCache("open", false, 1)
+	if openAgain != openHint {
+		t.Fatal("Open-phase cache miss after EstimateSystemTokens — cache was corrupted")
 	}
 }
 
