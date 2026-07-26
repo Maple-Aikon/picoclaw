@@ -271,6 +271,31 @@ func TestToolRegistry_SetPhaseBlocksDiscoveryToolInFinalPhase(t *testing.T) {
 	}
 }
 
+// Phase 12.18: at GoalPhaseCheckpoint the registry must ALSO suppress the
+// discovery-tool exemption — main-turn-4 (2026-07-26 14:00 ICT) reported
+// `tools=3` at iter 25 (Checkpoint) instead of the expected 2. The third
+// tool was tool_search_tool_bm25 leaking through the discovery exemption.
+// Checkpoint is the same absolute-phase family as Set/Final — discovery
+// exemption must NOT leak. Regression-proof for main-turn-4.
+func TestToolRegistry_SetPhaseBlocksDiscoveryToolInCheckpointPhase(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(newMockTool(BM25SearchToolName, "discover hidden tools"))
+	r.SetAllowlist([]string{"goal_progress", "complete_goal"})
+	r.SetPhase("checkpoint")
+
+	result := r.ExecuteWithContext(context.Background(), BM25SearchToolName, nil, "telegram", "chat-1", nil)
+	if !result.IsError {
+		t.Errorf("expected discovery tool to be blocked at GoalPhaseCheckpoint, got success: %s", result.ForLLM)
+	}
+	// Sanity: non-discovery, non-allowlist tool also blocked (existing
+	// gate behavior — verifies we didn't accidentally relax the gate).
+	r.Register(newMockTool("read_file", "read a file"))
+	result = r.ExecuteWithContext(context.Background(), "read_file", nil, "telegram", "chat-1", nil)
+	if !result.IsError {
+		t.Errorf("expected read_file (non-allowlist) to be blocked at Checkpoint, got success: %s", result.ForLLM)
+	}
+}
+
 // Phase 12.5: Open phase keeps the legacy behavior — discovery tools can
 // still bypass even when allowlist is small.
 func TestToolRegistry_SetPhaseAllowsDiscoveryToolInOpenPhase(t *testing.T) {

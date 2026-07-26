@@ -350,6 +350,100 @@ func TestCheckToolExecErrorRecovery_NonToolRole(t *testing.T) {
 	}
 }
 
+// TestCheckToolExecErrorRecovery_ExecutionGateFormat_TriggersRecovery
+// (Phase 12.18): the Phase 12.3 execution gate in pkg/tools/registry.go
+// rejects non-allowlist tool calls with format:
+//
+//	`tool "X" is not available in the current phase (allowed tools: [...])`
+//
+// This is the error message that reaches the LLM at GoalPhaseCheckpoint
+// when the LLM keeps calling non-lifecycle tools at the iteration cap.
+// Before Phase 12.18, recovery (Trigger #3) silently MISSED this format
+// because checkToolExecErrorRecovery only matched the legacy
+// `Tool execution failed:` prefix. The silent miss caused main-turn-4 on
+// 2026-07-26 to hit the canned "max_tool_iterations" fallback at iter 25.
+//
+// Regression-proof for the main-turn-4 failure.
+func TestCheckToolExecErrorRecovery_ExecutionGateFormat_TriggersRecovery(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	exec := &turnExecution{
+		messages: []providers.Message{
+			{Role: "tool", Content: `tool "read_file" is not available in the current phase (allowed tools: [goal_progress complete_goal])`},
+		},
+	}
+	tool, msg := checkToolExecErrorRecovery(ts, exec)
+	if tool != "" {
+		t.Fatalf("expected retry (no archive) on first execution-gate rejection, got tool=%q msg=%q", tool, msg)
+	}
+	if ts.toolExecRecoveryAttempts["read_file"] != 1 {
+		t.Fatalf("expected attempt count=1 for read_file (parsed from quoted name), got %d", ts.toolExecRecoveryAttempts["read_file"])
+	}
+}
+
+// TestCheckToolExecErrorRecovery_ExecutionGateFormat_NotTransient verifies
+// execution-gate rejections are classified as PERMANENT (not transient).
+// The Phase 12.3 gate blocks tools based on phase policy — retrying with
+// different arguments will NOT help. Marking as non-transient ensures the
+// retry prompt asks the LLM to "invoke a different tool or call
+// complete_goal" instead of "wait and retry the same call".
+func TestCheckToolExecErrorRecovery_ExecutionGateFormat_NotTransient(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	exec := &turnExecution{
+		messages: []providers.Message{
+			// Phrase the error to include "timeout" so the transient
+			// heuristic WOULD trigger if applied — verifies our explicit
+			// override at the recovery call site.
+			{Role: "tool", Content: `tool "read_file" is not available in the current phase (timeout waiting on allowed tools)`},
+		},
+	}
+	// Force Checkpoint phase so the recovery builder picks the
+	// Checkpoint-specific hint AND verify the produced message contains
+	// no transient hint (production path passes isTransient=false for
+	// execution-gate rejections).
+	ts.agent.PhaseOverrideForTest = string(GoalPhaseCheckpoint)
+	tool, msg := checkToolExecErrorRecovery(ts, exec)
+	if tool != "" {
+		t.Fatalf("expected retry (no archive) on first execution-gate rejection, got tool=%q msg=%q", tool, msg)
+	}
+	if !strings.Contains(msg, "final iteration") {
+		t.Fatalf("expected Checkpoint hint to fire, got: %s", msg)
+	}
+	if strings.Contains(msg, "looks transient") {
+		t.Fatalf("expected NO transient hint for execution-gate rejection, got: %s", msg)
+	}
+}
+
+// TestBuildToolExecErrorRetryMessage_CheckpointPhase (Phase 12.18): the
+// Checkpoint-phase hint must appear when buildToolExecErrorRetryMessage
+// is called with phase=string(GoalPhaseCheckpoint). The hint tells the
+// LLM that goal_progress + complete_goal are the only allowed tools and
+// it must wrap up (no further tool work).
+func TestBuildToolExecErrorRetryMessage_CheckpointPhase(t *testing.T) {
+	got := buildToolExecErrorRetryMessage(
+		"read_file",
+		"rejected by execution gate",
+		false,
+		nil,
+		string(GoalPhaseCheckpoint),
+	)
+	if !strings.Contains(got, "goal_progress") {
+		t.Fatalf("expected Checkpoint hint to mention goal_progress, got: %s", got)
+	}
+	if !strings.Contains(got, "complete_goal") {
+		t.Fatalf("expected Checkpoint hint to mention complete_goal, got: %s", got)
+	}
+	if !strings.Contains(got, "final iteration") {
+		t.Fatalf("expected Checkpoint hint to mention 'final iteration', got: %s", got)
+	}
+	// Also verify base message + tool name + phase hint are all present.
+	if !strings.Contains(got, `"read_file"`) {
+		t.Fatalf("expected tool name in quotes, got: %s", got)
+	}
+	if !strings.Contains(got, "rejected by execution gate") {
+		t.Fatalf("expected original error in message, got: %s", got)
+	}
+}
+
 func TestBuildToolExecErrorRetryMessage_NoRegistry_BaseOnly(t *testing.T) {
 	// Phase 12.6.1: signature gained `isTransient bool` arg between
 	// ToolExecErrorError and registry. nil registry + isTransient=false →

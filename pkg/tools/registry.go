@@ -338,7 +338,16 @@ func (r *ToolRegistry) toolAllowedLocked(name string) bool {
 		// tool_search_tool_bm25] instead of just [set_goal]. Suppress the
 		// discovery exemption in those phases so the LLM sees exactly the
 		// tools in the allowlist and nothing else.
-		if r.phase != "set" && r.phase != "final" {
+		//
+		// Phase 12.18: extended to GoalPhaseCheckpoint too. The LLM has hit
+		// the iteration cap and must either extend (goal_progress) or
+		// finalize (complete_goal) — letting it BM25-search for hidden tools
+		// to keep working defeats the lifecycle gate. Goal user feedback
+		// 2026-07-26: main-turn-4 reported iter 25 (Checkpoint) showing
+		// `tools=3` (goal_progress + complete_goal + tool_search_tool_bm25)
+		// instead of the expected 2. Checkpoint is the same absolute-phase
+		// family as Set/Final — discovery exemption must NOT leak through.
+		if r.phase != "set" && r.phase != "final" && r.phase != "checkpoint" {
 			return true
 		}
 	}

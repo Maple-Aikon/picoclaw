@@ -448,7 +448,16 @@ func isCacheableGoalPhase(goalPhase string) bool {
 	// complete_goal) — their prompt bodies are dominated by constant hint
 	// text + a tiny tool section, so rebuilding every time is cheaper than
 	// tracking cache invalidation across the iter/phase dimensions.
-	return goalPhase == string(GoalPhaseOpen)
+	//
+	// Empty phase ("") is also cacheable: it represents test fixtures and
+	// read-only helpers (EstimateSystemTokens pre-warm) that pass phase=""
+	// as a neutral input. Empty phase has no goal-phase prompt branches,
+	// so the cache invalidation risk that motivated bypassing Set/Checkpoint/
+	// Final does NOT apply — keeping "" cacheable preserves the legacy
+	// behavior the test suite relies on (test fixtures call
+	// BuildSystemPromptWithCache("", false, 0) to pre-populate the cache
+	// baseline before checking sourceFilesChanged).
+	return goalPhase == string(GoalPhaseOpen) || goalPhase == ""
 }
 
 func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompleteGoalReport bool, iteration int) string {
