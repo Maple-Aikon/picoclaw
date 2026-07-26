@@ -80,9 +80,22 @@ func newTurnProfileAgentLoop(
 	if cfg.Agents.Defaults.MaxToolIterations == 0 {
 		cfg.Agents.Defaults.MaxToolIterations = 10
 	}
-	return NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+	// Phase 12.15.7 escape hatches: these tests don't seed active goal files,
+	// so per-turn archive-on-start would silently no-op and ResolveGoalPhase
+	// would pin iter<=1 to GoalPhaseSet (allowlist=[set_goal] only). The
+	// mock provider's tool list (echo_text etc.) would be filtered out by
+	// the Phase 12.3 execution gate, leaving the LLM with 0 tools. Both knobs
+	// must be applied together (see skills/picoclaw-test-fixtures/SKILL.md):
+	//   1. SkipGoalArchiveForTest — prevent archive-on-start from overwriting
+	//      seeded state (here no-op since no seeded goal, but flips the flag
+	//      for archival symmetry with finalizeGoalOnTurnEnd).
+	//   2. SetGoalPhaseForTest("open") — bypass the ResolveGoalPhase pin and
+	//      force Phase 12.3's allowlist to expose the full tool registry.
+	al.SkipGoalArchiveForTest()
+	al.SetGoalPhaseForTest("open")
+	return al
 }
-
 func writeTurnProfileSkill(t *testing.T, workspace, name, body string) {
 	t.Helper()
 	dir := filepath.Join(workspace, "skills", name)
