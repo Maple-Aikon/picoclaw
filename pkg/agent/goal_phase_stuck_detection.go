@@ -1,5 +1,7 @@
 package agent
 
+import "fmt"
+
 // Phase 12.13 — phase-stuck detection helpers.
 //
 // When the goal is about to be archived (OnExhausted or RecoveryArchiveGoal),
@@ -15,18 +17,36 @@ package agent
 // the matching phase. Returns empty string if no phase-stuck condition is
 // detected (caller should fall back to GoalAbortReasonBexhausted).
 func (ts *turnState) computePhaseStuckAbortReason() string {
-	phase := ts.currentGoalPhase()
+	return computePhaseStuckAbortReasonForPhase(
+		ts.currentGoalPhase(),
+		ts.setGoalFailCount,
+		ts.goalProgressFailCount,
+		ts.completeGoalFailCount,
+	)
+}
+
+// computePhaseStuckAbortReasonForPhase is the static helper split out
+// from computePhaseStuckAbortReason so tests can exercise the pure
+// threshold logic without spinning up a full AgentLoop. Returns the
+// matching GoalPhase*StuckAbortReason if the count >= 2 for that phase;
+// empty string otherwise.
+func computePhaseStuckAbortReasonForPhase(
+	phase GoalPhase,
+	setGoalFails,
+	goalProgressFails,
+	completeGoalFails int,
+) string {
 	switch phase {
 	case GoalPhaseSet:
-		if ts.setGoalFailCount >= 2 {
+		if setGoalFails >= 2 {
 			return GoalPhaseSetStuckAbortReason
 		}
 	case GoalPhaseCheckpoint:
-		if ts.goalProgressFailCount >= 2 {
+		if goalProgressFails >= 2 {
 			return GoalPhaseCheckpointStuckAbortReason
 		}
 	case GoalPhaseFinal:
-		if ts.completeGoalFailCount >= 2 {
+		if completeGoalFails >= 2 {
 			return GoalPhaseFinalStuckAbortReason
 		}
 	}
@@ -51,4 +71,54 @@ func (ts *turnState) recordPhaseStuckToolFail(toolName, errMsg string) {
 		ts.completeGoalFailCount++
 		ts.lastPhaseStuckError = errMsg
 	}
+}
+
+// recordPhaseStuckToolAllowedBlock (Phase 12.21) — called whenever a tool
+// call is rejected by the runtime allowlist (ExecuteWithContext→IsAllowed)
+// while the agent is in a restricted-allowlist phase (Set/Checkpoint/Final).
+// Maps the rejection to the matching phase-stuck counter so that 2+ blocked
+// tool calls in the same restricted phase trigger GoalPhase*StuckMessage
+// on archive (Phase 12.21 Fix B; see plan §2.2).
+//
+// WHY THIS IS DISTINCT FROM recordPhaseStuckToolFail: in a restricted
+// phase, the LLM calling a NON-lifecycle tool (write_file, web_search,
+// etc.) is itself a phase-stuck signal — the LLM should have called
+// set_goal/goal_progress/complete_goal instead. We don't know which
+// lifecycle tool the LLM "should have" called, so we bucket the failure
+// by current phase only.
+//
+// Caller responsibility: pass the blocked tool name and the error message
+// from the allowlist rejection. The caller is responsible for verifying
+// the rejection came from the IsAllowed gate (text contains "is not
+// available in the current phase") before calling.
+func (ts *turnState) recordPhaseStuckToolAllowedBlock(toolName, errMsg string) {
+	enrichedMsg := fmt.Sprintf(
+		"called tool %q but %s only allows the phase-specific lifecycle tools",
+		toolName, ts.currentGoalPhase(),
+	)
+	if errMsg != "" {
+		enrichedMsg = enrichedMsg + " — " + errMsg
+	}
+	recordPhaseStuckToolAllowedBlockInPhase(ts, ts.currentGoalPhase(), toolName, enrichedMsg)
+}
+
+// recordPhaseStuckToolAllowedBlockInPhase is the static helper used by
+// recordPhaseStuckToolAllowedBlock; split out so tests can exercise the
+// pure counter logic without spinning up a full AgentLoop. Same package,
+// same function body otherwise.
+func recordPhaseStuckToolAllowedBlockInPhase(ts *turnState, phase GoalPhase, toolName, enrichedMsg string) {
+	switch phase {
+	case GoalPhaseSet:
+		ts.setGoalFailCount++
+		ts.lastPhaseStuckError = enrichedMsg
+	case GoalPhaseCheckpoint:
+		ts.goalProgressFailCount++
+		ts.lastPhaseStuckError = enrichedMsg
+	case GoalPhaseFinal:
+		ts.completeGoalFailCount++
+		ts.lastPhaseStuckError = enrichedMsg
+	}
+	// GoalPhaseOpen: no phase-stuck semantics — full tool set is allowed,
+	// so a runtime rejection is unexpected and not tracked here. Recovery
+	// will still trigger via checkToolExecErrorRecovery (Phase 12.11).
 }

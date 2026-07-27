@@ -398,6 +398,24 @@ Each part separated by the marker will be sent as an independent message.`,
 		add(*hintPart)
 	}
 
+	// Phase 12.21 — GoalPhaseCheckpoint hint. Fires ONLY when the per-turn
+	// loop has hit the iteration cap AND iter < max_iterations_cap (i.e.
+	// GoalPhaseCheckpoint, not GoalPhaseFinal). Tool allowlist is reduced
+	// to [goal_progress, complete_goal] only — the hint explains the
+	// forward paths and arg-shape required for both tools so the LLM
+	// avoids retrying with malformed args when the cap hits.
+	if hintPart := goalPhaseCheckpointHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase, Iteration: opts.Iteration}); hintPart != nil {
+		add(*hintPart)
+	}
+
+	// Phase 12.21 — GoalPhaseFinal hint. Fires ONLY when the per-turn
+	// loop has reached the absolute max_iterations_cap terminal phase.
+	// Tool allowlist = [complete_goal] only. The hint tells the LLM
+	// the only remaining tool is complete_goal with mandatory summary.
+	if hintPart := goalPhaseFinalHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase}); hintPart != nil {
+		add(*hintPart)
+	}
+
 	// Phase 12.7 — Post-complete_goal final-report hint. Fires when the
 	// post-complete_goal final-report iter is active (one extra iter after
 	// complete_goal with phase=GoalPhaseFinal, tool allowlist=[]). Tells LLM
