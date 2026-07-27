@@ -564,21 +564,14 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 				// per turn_state.go:544).
 				amount = ext.IterationCap()
 			}
-			// Ceiling-bound edge case (Phase 12.24d): when iterCap is within 3
-			// slots of the absolute MaxIterationsCap ceiling, normal extend
-			// would mostly clamp and waste budget. Bump directly to ceiling
-			// instead — threshold=3 covers 1 Final iter + 1 post-complete
-			// report iter + 1 buffer.
-			ceilingBound := false
-			if maxCap := ext.MaxIterationsCap(); maxCap > 0 {
-				if gap := maxCap - ext.IterationCap(); gap > 0 && gap <= 3 {
-					_, _ = ext.ExtendIterationCap(gap, "goal_progress: ceiling-bound (within 3 of ceiling), direct bump to ceiling")
-					ceilingBound = true
-				}
-			}
-			if !ceilingBound {
-				_, _ = ext.ExtendIterationCap(amount, "goal_progress: remaining_steps>0, extending cap for next iteration")
-			}
+			// Phase 12.24e (anh Maple decision, 2026-07-27): always extend by
+			// MaxIterationsPerCheckpoint at Checkpoint. The previous ceiling-bound
+			// threshold (gap ≤ 3) added complexity without benefit — ExtendIterationCap
+			// already clamps to MaxIterationsCap internally (turn_state.go:591-594),
+			// so a single unconditional ExtendIterationCap(amount, ...) call handles
+			// every case: small gaps clamp to ceiling, large gaps grant full amount,
+			// zero gap is a no-op (CanExtendIterationCap guards above).
+			_, _ = ext.ExtendIterationCap(amount, "goal_progress: checkpoint extend by MaxIterationsPerCheckpoint (clamped to ceiling if exceeded)")
 		}
 	}
 
