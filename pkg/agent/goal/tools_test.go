@@ -725,20 +725,23 @@ func TestGoalProgressTool_NoExtend_WhenNoCanExtend(t *testing.T) {
 	}
 }
 
-func TestGoalProgressTool_NoExtend_WhenAtCeiling(t *testing.T) {
-	// Both remaining==0 (no iteration slot in hand; Phase 12.8 removed
-	// Tier 3 force-wrap so goal_progress IS callable at cap, but our guard
-	// still requires RemainingIterations > 0 to avoid ordering edge cases
-	// with the loop-cap check) AND CanExtend==false — wire must not fire.
+func TestGoalProgressTool_ExtendsIterationCap_AtCheckpointCap(t *testing.T) {
+	// Phase 12.23: at GoalPhaseCheckpoint (iter == iterationCap), goal_progress
+	// IS callable (Phase 12.8 deleted Tier 3 force-wrap, so tools are not
+	// stripped at cap). The LLM calls goal_progress to lift the cap so it can
+	// keep working through remaining_steps on subsequent iterations. Without
+	// this wire, the goal_progress tool output is "burned" by the loop exit
+	// and the user sees canned toolLimitResponse ("I've reached
+	// max_tool_iterations...") instead of the goal progress summary.
 	ws := tempWorkspace(t)
-	ctx := ctxWithSession("sess-ceiling", "agent")
+	ctx := ctxWithSession("sess-checkpoint", "agent")
 	NewSetGoalTool(ws).Execute(ctx, map[string]any{
 		"name":             "n",
 		"objective":        "o",
 		"success_criteria": []string{"c"},
 	})
 
-	ext := &fakeExtender{remaining: 0, canExtend: false} // at cap + ceiling
+	ext := &fakeExtender{remaining: 0, canExtend: true} // at cap, ceiling available
 	ctx = WithIterationExtender(ctx, ext)
 
 	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
@@ -749,8 +752,51 @@ func TestGoalProgressTool_NoExtend_WhenAtCeiling(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error: %v", res.Err)
 	}
+	if ext.callCount() != 1 {
+		t.Errorf("expected 1 ExtendIterationCap call at cap (Checkpoint extend), got %d", ext.callCount())
+	}
+	reason, n := ext.recorded()
+	if !strings.Contains(reason, "goal_progress") {
+		t.Errorf("expected reason to mention goal_progress, got %q", reason)
+	}
+	if n != ext.MaxIterationsPerCheckpoint() {
+		t.Errorf("expected n=%d (MaxIterationsPerCheckpoint), got %d", ext.MaxIterationsPerCheckpoint(), n)
+	}
+}
+
+func TestGoalProgressTool_NoExtend_WhenNoRemainingSteps(t *testing.T) {
+	// Phase 12.20: remaining_steps is REQUIRED non-empty; Phase 12.23
+	// additionally requires that empty remaining_steps does NOT trigger
+	// extension even when remaining>0 + canExtend=true. Regression guard
+	// after dropping the RemainingIterations() > 0 guard — the only
+	// remaining gate is len(remaining) > 0.
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-noremaining-extend", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+
+	ext := &fakeExtender{remaining: 5, canExtend: true}
+	ctx = WithIterationExtender(ctx, ext)
+
+	// Note: empty remaining_steps — but Phase 12.20 returns ErrInvalidInput
+	// BEFORE the extend wire fires, so the test asserts callCount==0 by
+	// the time the Execute returns. We rely on the Phase 12.20 reject
+	// message; we still want a positive control showing the wire is
+	// gated on remaining_steps non-empty, which it is (the IsError short-
+	// circuits the extension block).
+	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
+		"completed_steps": []string{"write code"},
+		"next_action":     "wait for user",
+		// remaining_steps intentionally absent — Phase 12.20 reject.
+	})
+	if !res.IsError {
+		t.Fatalf("expected error (Phase 12.20 empty remaining_steps), got success")
+	}
 	if ext.callCount() != 0 {
-		t.Errorf("expected 0 ExtendIterationCap calls when at cap+ceiling, got %d", ext.callCount())
+		t.Errorf("expected 0 ExtendIterationCap calls when remaining_steps empty, got %d", ext.callCount())
 	}
 }
 

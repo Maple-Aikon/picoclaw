@@ -530,7 +530,7 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 	summary := fmt.Sprintf("Logged progress entry #%d for session %s.\n\n%s",
 		idx, shortSessionKey(sessionKey), lastEntryRendered(g.Progress[len(g.Progress)-1]))
 
-	// Phase 10.1 + 11: self-extend the turn's iteration cap so the agent
+	// Phase 12.23: self-extend the turn's iteration cap so the agent
 	// can keep working through remaining_steps across iterations of this
 	// turn. Wire: goal_progress -> ExtendIterationCap(n, ...) where n is
 	// sourced from the extender's MaxIterationsPerCheckpoint field. The
@@ -538,18 +538,20 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 	// Open → Checkpoint transition (default 20 iterations), so each
 	// checkpoint effectively resets the budget. Without this, the LLM
 	// would burn its last iteration just to discover the cap is hit.
-	// Guard: only extend when there is at least one remaining step AND the
-	// turn still has iteration slots remaining (RemainingIterations > 0) AND
-	// we have not yet hit the absolute ceiling. After Phase 12.8 the legacy
-	// Tier 3 force-wrap (toolLimitHintMessage + providerToolDefs=nil) is
-	// removed; at RemainingIterations==0 the GoalPhaseCheckpoint allowlist
-	// still includes goal_progress, so the LLM CAN call it at cap. We keep
-	// the RemainingIterations > 0 guard anyway because extending at
-	// remaining==0 would create a chicken-and-egg ordering with the
-	// iterationCap loop check (the extension has to take effect for the
-	// loop to continue — easier to require a slot in hand).
+	//
+	// Phase 12.23 removed the `RemainingIterations() > 0` half of the
+	// original guard. Phase 10.1.1 added it to dodge a dead-code path
+	// under the legacy Tier 3 force-wrap (which stripped tools when
+	// remaining==0, so the older `==0` guard never fired). Phase 11 then
+	// replaced Tier 3 with the 4-phase allowlist, and Phase 12.8 deleted
+	// Tier 3 outright — at GoalPhaseCheckpoint (iter == iterationCap)
+	// goal_progress IS callable and is the only tool that can lift the
+	// cap. The iterationCap++ from ExtendIterationCap takes effect
+	// BEFORE the loop condition is re-evaluated, so extending at
+	// remaining==0 is safe: the loop continues and the LLM can call
+	// complete_goal on the next iteration.
 	if ext := IterationExtenderFromContext(ctx); ext != nil {
-		if len(remaining) > 0 && ext.RemainingIterations() > 0 && ext.CanExtendIterationCap() {
+		if len(remaining) > 0 && ext.CanExtendIterationCap() {
 			amount := ext.MaxIterationsPerCheckpoint()
 			if amount <= 0 {
 				// Defensive: if the agent's MaxIterations was zeroed out
