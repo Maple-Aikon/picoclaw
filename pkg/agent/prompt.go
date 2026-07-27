@@ -65,8 +65,10 @@ const (
 	PromptSourceToolResult     PromptSourceID = "turn:tool_result"
 	PromptSourceInterrupt      PromptSourceID = "turn:interrupt"
 	PromptSourceRecovery        PromptSourceID = "turn:recovery"
-	PromptSourceGoalPhaseSetHint PromptSourceID = "capability:goal_phase_set_hint"
-	PromptSourceGoalCompleteReportHint PromptSourceID = "capability:goal_complete_report_hint"
+	PromptSourceGoalPhaseSetHint       PromptSourceID = "capability:goal_phase_set_hint"
+	PromptSourceGoalPhaseCheckpointHint PromptSourceID = "capability:goal_phase_checkpoint_hint"
+	PromptSourceGoalPhaseFinalHint      PromptSourceID = "capability:goal_phase_final_hint"
+	PromptSourceGoalCompleteReportHint  PromptSourceID = "capability:goal_complete_report_hint"
 )
 
 type PromptCachePolicy string
@@ -276,6 +278,20 @@ func builtinPromptSources() []PromptSourceDescriptor {
 			ID:              PromptSourceGoalPhaseSetHint,
 			Owner:           "agent",
 			Description:     "Goal-phase SET hint: explains iter-1 tool lockdown and 2 forward paths (set_goal OR no-tool reply)",
+			Allowed:         []PromptPlacement{{Layer: PromptLayerCapability, Slot: PromptSlotTooling}},
+			StableByDefault: false,
+		},
+		{
+			ID:              PromptSourceGoalPhaseCheckpointHint,
+			Owner:           "agent",
+			Description:     "Goal-phase CHECKPOINT hint (Phase 12.21): explains iter-cap tool lockdown to goal_progress + complete_goal only, with concrete arg-shape + wait-state via complete_goal summary",
+			Allowed:         []PromptPlacement{{Layer: PromptLayerCapability, Slot: PromptSlotTooling}},
+			StableByDefault: false,
+		},
+		{
+			ID:              PromptSourceGoalPhaseFinalHint,
+			Owner:           "agent",
+			Description:     "Goal-phase FINAL hint (Phase 12.21): terminal phase, only complete_goal is available, summary REQUIRED (1-500 chars)",
 			Allowed:         []PromptPlacement{{Layer: PromptLayerCapability, Slot: PromptSlotTooling}},
 			StableByDefault: false,
 		},

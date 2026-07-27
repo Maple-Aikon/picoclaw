@@ -342,6 +342,30 @@ toolLoop:
 						}
 					}
 
+					// Phase 12.21 — Fix B: track phase-stuck counters when a
+					// tool call is rejected by the runtime allowlist
+					// (ExecuteWithContext→IsAllowed) while the agent is in a
+					// restricted-allowlist phase (Set/Checkpoint/Final).
+					// Without this, the LLM calling write_file/web_search/etc.
+					// at Checkpoint phase would be blocked but the counter
+					// would stay at 0 — GoalPhaseCheckpointStuckMessage would
+					// never fire on archive (only `toolLimitResponse` would).
+					//
+					// Detection: IsAllowed block uses empty ErrKind + IsError
+					// with message containing "is not available in the current
+					// phase" (registry.go:630). Match against the same prefix
+					// rather than introducing a new ErrKind to keep the
+					// backend layered (registry knows nothing about agent
+					// phase semantics — it just blocks).
+					if hookResult.IsError &&
+						hookResult.ErrKind == "" &&
+						strings.Contains(hookResult.ForLLM, "is not available in the current phase") {
+						phase := ts.currentGoalPhase()
+						if phase == GoalPhaseSet || phase == GoalPhaseCheckpoint || phase == GoalPhaseFinal {
+							ts.recordPhaseStuckToolAllowedBlock(toolName, toolErrorSummary(hookResult))
+						}
+					}
+
 					messages = append(messages, toolResultMsg)
 					if !ts.opts.NoHistory {
 						ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)
