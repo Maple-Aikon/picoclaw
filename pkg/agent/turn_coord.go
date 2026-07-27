@@ -365,9 +365,21 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			case ToolControlContinue:
 				// Phase 5 trigger #3: tool-execution error recovery.
 				// Evaluate recovery for the most recent tool result (if any).
-				// If archive is requested, break the turn with archive flag.
+				// Phase 12.22: wire checkToolExecErrorRecovery same-iter BoundedRetry
+				// for restricted-allowlist phases (Set/Checkpoint/Final). The
+				// recovery helper returns (toolName, msg) where:
+				//   - toolName != "" → counter exhausted → archive goal
+				//   - toolName == "" && msg != "" → counter not exhausted
+				//     → retry (Phase 12.18 returns msg here for callers to
+				//     use as recovery prompt)
+				// For restricted phases, retry attempts MUST stay in the same
+				// iteration so LLM has a chance to correct before the loop
+				// exits at iterationCap — otherwise the user sees the
+				// generic toolLimitResponse fallback. Open phase keeps the
+				// historical iter-bump behavior.
 				if ts.hasGoal() {
-					if archiveTool, archiveMsg := checkToolExecErrorRecovery(ts, exec); archiveTool != "" {
+					archiveTool, archiveMsg := checkToolExecErrorRecovery(ts, exec)
+					if archiveTool != "" {
 						ts.goalArchiveRequested = true
 						logger.InfoCF("agent", "Goal archive triggered by tool-exec error retry exhaustion",
 							map[string]any{
@@ -377,6 +389,74 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 							})
 						turnStatus = TurnEndStatusError
 						return turnResult{}, fmt.Errorf("goal archive requested after tool-exec retries exhausted for %s", archiveTool)
+					} else if archiveMsg != "" {
+						currentPhase := ts.currentGoalPhase()
+						isRestricted := currentPhase == GoalPhaseSet ||
+							currentPhase == GoalPhaseCheckpoint ||
+							currentPhase == GoalPhaseFinal
+						if isRestricted {
+							// Same-iter BoundedRetry wrap. The blocked tool
+							// call produced an error result — strip the
+							// blocked tool call from the LLM's last
+							// assistant message and re-call LLM with the
+							// recovery hint injected. BoundedRetry gives up
+							// to ToolExecErrorRetryCap=3 attempts; on
+							// exhaustion, computePhaseStuckAbortReason
+							// fires and the goal is archived with the
+							// matching phase-stuck reason.
+							ctrl, retryErr := pipeline.retryLLMForBlockedTool(
+								ctx, turnCtx, ts, exec, iteration, archiveMsg)
+							if retryErr != nil {
+								logger.WarnCF("agent", "Goal recovery handler errored at restricted phase",
+									map[string]any{
+										"agent_id": ts.agent.ID,
+										"phase":    string(currentPhase),
+										"err":      retryErr.Error(),
+									})
+								return turnResult{}, retryErr
+							}
+							switch ctrl {
+							case ControlBreak:
+								// Archive-after-exhaustion path:
+								// retryLLMForBlockedTool stamped
+								// goalArchiveRequested=true and set the
+								// matching phase-stuck abort reason. Honor
+								// it here so finalizeGoalOnTurnEnd picks up
+								// the right AbortReason.
+								logger.InfoCF("agent", "Goal archive triggered by tool-exec recovery exhaustion at restricted phase",
+									map[string]any{
+										"agent_id":        ts.agent.ID,
+										"phase":           string(currentPhase),
+										"archive_request": ts.goalArchiveRequested,
+									})
+								turnStatus = TurnEndStatusError
+								return turnResult{}, fmt.Errorf("goal archive requested after tool-exec recovery exhaustion at %s", currentPhase)
+							case ControlContinue, ControlToolLoop:
+								// Same-iter retry succeeded — re-read exec
+								// messages (callLLMCore may have added more
+								// entries), drop into the post-tool-exec
+								// continuation path below.
+								messages = exec.messages
+								if ts.pendingFinalReportIter {
+									ts.postCompleteGoalReportSent = true
+									ts.pendingFinalReportIter = false
+								}
+								continue
+							default:
+								logger.WarnCF("agent", "Unexpected control signal from goal recovery at restricted phase",
+									map[string]any{
+										"agent_id": ts.agent.ID,
+										"phase":    string(currentPhase),
+										"ctrl":     ctrl,
+									})
+							}
+						}
+						// Open phase: legacy behavior — pendingRecoveryMessage
+						// is set so the next iteration's recovery prompt
+						// fires, no same-iter wrap needed.
+						if ts.pendingRecoveryMessage == "" {
+							ts.pendingRecoveryMessage = archiveMsg
+						}
 					}
 				}
 				// Re-read exec.messages since ExecuteTools may have updated it

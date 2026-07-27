@@ -1296,3 +1296,179 @@ func actionName(a RecoveryAction) string {
 	}
 	return "unknown"
 }
+
+// retryLLMForBlockedTool (Phase 12.22) — same-iter BoundedRetry wrap
+// around callLLMCore for tool-exec errors at restricted-allowlist
+// phases (Set/Checkpoint/Final). The blocked tool call has already
+// produced an ErrorResult in exec.messages[-1]. We:
+//   1. Reset the 4 sibling counters on entry (Phase 12.11.1 pattern).
+//   2. Append the recovery hint as a user message (same as the
+//      Open-phase pendingRecoveryMessage path, but injected same-iter).
+//   3. Re-call callLLMCore in a BoundedRetry loop up to
+//      ToolExecErrorRetryCap=3 attempts.
+//   4. On each attempt, if LLM emits a non-blocked tool call or text
+//      response, return ControlContinue / ControlToolLoop and let the
+//      caller drop into the normal post-tool-exec continuation path.
+//   5. On exhaustion, set goalArchiveRequested=true with the matching
+//      phase-stuck abort reason and return ControlBreak.
+//
+// This is the Phase 12.22 wire that closes the main-turn-3 user-visible
+// gap (2026-07-27 09:37 ICT): at GoalPhaseCheckpoint with low cap,
+// LLM emits blocked tool, counter increments but no recovery fires
+// because the loop exits at iterationCap before the iter-bump path
+// can run. Same-iter BoundedRetry keeps the LLM in the same iter
+// with the recovery hint, giving it a chance to emit a lifecycle
+// tool before the loop terminates.
+func (p *Pipeline) retryLLMForBlockedTool(
+	ctx, turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	iteration int,
+	recoveryMsg string,
+) (Control, error) {
+	// Reset 4 sibling counters on entry (Phase 12.11.1 lesson).
+	ts.emptyResponseRecoverySent = false
+	ts.textOnlySoftRetriesDone = 0
+	ts.textOnlyHardRetriesDone = 0
+	ts.toolExecRecoveryAttempts = map[string]int{}
+
+	currentPhase := ts.currentGoalPhase()
+	phaseLabel := string(currentPhase)
+	_ = phaseLabel
+
+	// Inject the recovery hint as a user message so LLM sees it in
+	// the same iter. The last message in exec.messages is the tool
+	// error from the blocked execution — callLLMCore will see that
+	// + the user hint, and LLM can choose a different tool.
+	exec.messages = append(exec.messages, providers.Message{
+		Role:    "user",
+		Content: recoveryMsg,
+	})
+	exec.callMessages = exec.messages
+
+	exhausted := false
+	logFields := map[string]any{
+		"agent_id":  ts.agent.ID,
+		"phase":     phaseLabel,
+		"iteration": iteration,
+	}
+
+	decision, err := BoundedRetry(ctx, RetryConfig{
+		Name:        "goal_recovery_blocked_tool",
+		MaxAttempts: ToolExecErrorRetryCap,
+		OnRetry: func(rc RetryContext, reason string) {
+			logFields["action"] = "retry_same_iter"
+			logger.InfoCF("agent", "Goal recovery retry (same iter, blocked tool)", logFields)
+		},
+		OnExhausted: func(rc RetryContext) {
+			exhausted = true
+			// (Phase 12.21 Fix B wire). The finalizer in
+			// finalizeGoalOnTurnEnd picks up the abort reason from
+			// lastPhaseStuckError.
+			ts.goalArchiveRequested = true
+			// Phase 12.22: the BoundedRetry exhaustion itself is the
+			// stuck signal — LLM could not produce an allowed tool
+			// call after MaxAttempts retries. Phase 12.21's
+			// counter-based detection is for lifecycle-tool failures;
+			// the BoundedRetry-exhausted path covers the "wrong tool
+			// at this phase" case which has no lifecycle counter to
+			// bump. Set a phase-specific reason directly.
+			switch currentPhase {
+			case GoalPhaseSet:
+				ts.lastPhaseStuckError = GoalPhaseSetStuckAbortReason
+			case GoalPhaseCheckpoint:
+				ts.lastPhaseStuckError = GoalPhaseCheckpointStuckAbortReason
+			case GoalPhaseFinal:
+				ts.lastPhaseStuckError = GoalPhaseFinalStuckAbortReason
+			default:
+				ts.lastPhaseStuckError = computePhaseStuckAbortReasonForPhase(
+					currentPhase, ts.setGoalFailCount, ts.goalProgressFailCount, ts.completeGoalFailCount)
+			}
+			logFields["action"] = "exhausted_archive"
+			logFields["archive_reason"] = ts.lastPhaseStuckError
+			logger.InfoCF("agent", "Goal recovery exhausted in same iter (blocked tool), archiving with phase-stuck reason", logFields)
+		},
+	}, func(attemptCtx context.Context, rc RetryContext) (RetryDecision, error) {
+		// Re-call LLM with the recovery hint already in callMessages.
+		resp, callErr := p.callLLMCore(attemptCtx, turnCtx, ts, exec, exec.messages, exec.providerToolDefs, iteration)
+		if callErr != nil {
+			return RetryDecisionAbort, callErr
+		}
+		if resp != nil {
+			exec.response = resp
+		}
+		if exec.response == nil {
+			// No response — abort (caller treats as fatal).
+			return RetryDecisionAbort, nil
+		}
+		// Evaluate the new response. If LLM emitted a tool call that
+		// the runtime allowlist would block again, retry. If it
+		// emitted a text-only response or an allowed tool, we're done.
+		if len(exec.response.ToolCalls) == 0 {
+			// Text-only response — caller continues with text path.
+			return RetryDecisionDone, nil
+		}
+		// Has tool calls. Check the first tool name against the
+		// runtime allowlist for the current phase by calling the
+		// resolver from pkg/agent/tool_allowlist_phase.go.
+		firstTool := exec.response.ToolCalls[0].Name
+		phaseForRetry := ts.currentGoalPhase()
+		var resolvedRetry []string
+		if ts.agent != nil {
+			resolvedRetry = resolveAgentToolAllowlistWithPhase(ts.agent.Definition, phaseForRetry)
+		}
+		logger.InfoCF("agent", "Phase 12.22 retry evaluate", map[string]any{
+			"agent_id":  ts.agent.ID,
+			"attempt":   rc.Attempt,
+			"firstTool": firstTool,
+			"phase":     string(phaseForRetry),
+			"resolved":  fmt.Sprintf("%v", resolvedRetry),
+		})
+		if firstTool == "" {
+			// Malformed tool call — retry.
+			return RetryDecisionRetry, nil
+		}
+		if len(resolvedRetry) == 0 {
+			// Empty allowlist = all tools allowed (Open phase
+			// default — base frontmatter missing).
+			return RetryDecisionDone, nil
+		}
+		allowed := false
+		for _, name := range resolvedRetry {
+			if name == firstTool {
+				allowed = true
+				break
+			}
+		}
+		if allowed {
+			return RetryDecisionDone, nil
+		}
+		// Tool still blocked — append another recovery hint and retry.
+		exec.messages = append(exec.messages, providers.Message{
+			Role:    "user",
+			Content: recoveryMsg,
+		})
+		exec.callMessages = exec.messages
+		return RetryDecisionRetry, nil
+	})
+	if err != nil {
+		return ControlBreak, err
+	}
+	switch decision {
+	case RetryDecisionDone:
+		// Retry succeeded — caller continues.
+		return ControlToolLoop, nil
+	case RetryDecisionAbort:
+		// Exhausted or fatal — caller breaks the loop.
+		return ControlBreak, nil
+	}
+	if exhausted {
+		// BoundedRetry hit cap (returned RetryDecisionRetry because
+		// the last attempt's closure asked for another retry, but no
+		// attempts left). OnExhausted already fired and set
+		// goalArchiveRequested + lastPhaseStuckError — break the loop
+		// so caller archives via finalizeGoalOnTurnEnd.
+		return ControlBreak, nil
+	}
+	return ControlContinue, nil
+}
