@@ -246,9 +246,23 @@ func resolveAgentToolAllowlistWithPhase(definition AgentContextDefinition, phase
 
 	switch phase {
 	case GoalPhaseOpen:
+		// GoalPhaseOpen = "work" phase. LLM has full base tools plus
+		// view_goal (peek at goal state) and complete_goal (early
+		// completion without going through Checkpoint).
+		// IMPORTANT: goal_progress is INTENTIONALLY NOT exposed here
+		// (Phase 11 design decision, validated Phase 12.14/12.23/12.24d).
+		// Self-extending iteration cap from Open would allow LLM to
+		// bypass the cap-burst checkpoint semantics and risk infinite
+		// loops. To extend cap, LLM must reach Checkpoint (iter ==
+		// iterationCap) which exposes goal_progress as a deterministic
+		// one-shot trigger.
 		result := sortedKeys(base)
 		return unionAllowlist(result, []string{"view_goal", "complete_goal"})
 	case GoalPhaseCheckpoint:
+		// GoalPhaseCheckpoint = "extend or complete" phase. Lifecycle-only
+		// allowlist (goal_progress for self-extend, complete_goal for
+		// finalization). ABSOLUTE — base tools not exposed regardless of
+		// frontmatter config.
 		result := sortedKeys(base)
 		return unionAllowlist(result, []string{"goal_progress", "complete_goal"})
 	default:

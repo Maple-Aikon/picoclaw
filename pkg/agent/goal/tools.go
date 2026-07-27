@@ -81,6 +81,10 @@ type IterationExtender interface {
 	// budget (default = agent.MaxIterations, e.g. 20). Used by
 	// goal_progress to pick the ExtendIterationCap amount.
 	MaxIterationsPerCheckpoint() int
+	// MaxIterationsCap returns the absolute ceiling (e.g. 200) — goal_progress
+	// uses this to detect the ceiling-bound edge case where normal extend
+	// would mostly clamp to ceiling and waste the budget.
+	MaxIterationsCap() int
 }
 
 // WithIterationExtender attaches an IterationExtender to ctx. Pipeline
@@ -560,7 +564,21 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 				// per turn_state.go:544).
 				amount = ext.IterationCap()
 			}
-			_, _ = ext.ExtendIterationCap(amount, "goal_progress: remaining_steps>0, extending cap for next iteration")
+			// Ceiling-bound edge case (Phase 12.24d): when iterCap is within 3
+			// slots of the absolute MaxIterationsCap ceiling, normal extend
+			// would mostly clamp and waste budget. Bump directly to ceiling
+			// instead — threshold=3 covers 1 Final iter + 1 post-complete
+			// report iter + 1 buffer.
+			ceilingBound := false
+			if maxCap := ext.MaxIterationsCap(); maxCap > 0 {
+				if gap := maxCap - ext.IterationCap(); gap > 0 && gap <= 3 {
+					_, _ = ext.ExtendIterationCap(gap, "goal_progress: ceiling-bound (within 3 of ceiling), direct bump to ceiling")
+					ceilingBound = true
+				}
+			}
+			if !ceilingBound {
+				_, _ = ext.ExtendIterationCap(amount, "goal_progress: remaining_steps>0, extending cap for next iteration")
+			}
 		}
 	}
 

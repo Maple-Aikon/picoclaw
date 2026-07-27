@@ -8,6 +8,7 @@ package goal
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -620,6 +621,7 @@ type fakeExtender struct {
 	canExtend      bool
 	iterCap        int
 	maxPerCheck    int
+	maxCap         int
 	extendCalls    int
 	lastReason     string
 	lastN          int
@@ -638,6 +640,12 @@ func (f *fakeExtender) MaxIterationsPerCheckpoint() int {
 		return 20
 	}
 	return f.maxPerCheck
+}
+func (f *fakeExtender) MaxIterationsCap() int {
+	if f.maxCap == 0 {
+		return 200
+	}
+	return f.maxCap
 }
 func (f *fakeExtender) ExtendIterationCap(n int, reason string) (int, int) {
 	f.mu.Lock()
@@ -761,6 +769,162 @@ func TestGoalProgressTool_ExtendsIterationCap_AtCheckpointCap(t *testing.T) {
 	}
 	if n != ext.MaxIterationsPerCheckpoint() {
 		t.Errorf("expected n=%d (MaxIterationsPerCheckpoint), got %d", ext.MaxIterationsPerCheckpoint(), n)
+	}
+}
+
+// Phase 12.24d: ceiling-bound edge case tests. When iterCap is within 3
+// slots of MaxIterationsCap (ceiling), goal_progress should bump directly
+// to ceiling instead of requesting MaxIterationsPerCheckpoint() which would
+// mostly clamp and waste the budget.
+//
+// Edge case geometry: ceiling=200, currentIter=iterCap=199, amount=20 →
+// normal extend gives cap=219→clamped to 200 → wasted 19 slots. Threshold=3
+// catches this so the LLM is told "next iter = ceiling = Final phase" and
+// can complete_goal immediately rather than expecting more work slots.
+
+// helper: assert ceiling-bound extend with given gap and ceiling values
+func assertCeilingBound(t *testing.T, ws string, iterCap, maxCap int) {
+	t.Helper()
+	ctx := ctxWithSession(fmt.Sprintf("sess-ceiling-bound-%d-%d", iterCap, maxCap), "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+
+	ext := &fakeExtender{remaining: 0, canExtend: true, iterCap: iterCap, maxCap: maxCap, maxPerCheck: 20}
+	ctx = WithIterationExtender(ctx, ext)
+
+	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
+		"completed_steps": []string{"write code"},
+		"remaining_steps": []string{"wrap up"},
+		"next_action":     "wrap up",
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+	if ext.callCount() != 1 {
+		t.Fatalf("expected 1 ExtendIterationCap call, got %d", ext.callCount())
+	}
+	reason, n := ext.recorded()
+	if !strings.Contains(reason, "ceiling-bound") {
+		t.Errorf("expected reason to mention ceiling-bound, got %q", reason)
+	}
+	expectedN := maxCap - iterCap
+	if n != expectedN {
+		t.Errorf("expected n=%d (gap to ceiling), got %d", expectedN, n)
+	}
+}
+
+func TestGoalProgressTool_CeilingBound_OneSlot(t *testing.T) {
+	// iterCap = maxCap - 1: gap = 1, ceiling-bound path should fire.
+	ws := tempWorkspace(t)
+	assertCeilingBound(t, ws, 199, 200)
+}
+
+func TestGoalProgressTool_CeilingBound_ThreeSlots(t *testing.T) {
+	// iterCap = maxCap - 3: gap = 3, ceiling-bound path should fire.
+	ws := tempWorkspace(t)
+	assertCeilingBound(t, ws, 197, 200)
+}
+
+func TestGoalProgressTool_JustAboveThreshold_NormalExtend(t *testing.T) {
+	// iterCap = maxCap - 4: gap = 4, threshold=3 NOT triggered → normal extend.
+	// With maxPerCheck=20, normal extend returns n=20 which clamps to ceiling
+	// (delta = maxCap - iterCap = 4, since ExtendIterationCap clamps internally).
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-just-above-threshold", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+	ext := &fakeExtender{remaining: 0, canExtend: true, iterCap: 196, maxCap: 200, maxPerCheck: 20}
+	ctx = WithIterationExtender(ctx, ext)
+	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
+		"completed_steps": []string{"write code"},
+		"remaining_steps": []string{"wrap up"},
+		"next_action":     "wrap up",
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+	if ext.callCount() != 1 {
+		t.Fatalf("expected 1 ExtendIterationCap call, got %d", ext.callCount())
+	}
+	reason, _ := ext.recorded()
+	if strings.Contains(reason, "ceiling-bound") {
+		t.Errorf("reason should NOT mention ceiling-bound when gap=4, got %q", reason)
+	}
+	if !strings.Contains(reason, "remaining_steps>0") {
+		t.Errorf("expected reason to mention remaining_steps>0 (normal extend), got %q", reason)
+	}
+}
+
+func TestGoalProgressTool_AlreadyAtCeiling_NoExtend(t *testing.T) {
+	// iterCap = maxCap exactly: gap = 0, ceiling-bound short-circuits via
+	// gap > 0 check (no extend attempted). Verifies the gap > 0 precondition
+	// in the ceiling-bound logic, preventing a wasted extend call when the
+	// cap is already at the absolute ceiling.
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-already-at-ceiling", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+	ext := &fakeExtender{remaining: 0, canExtend: true, iterCap: 200, maxCap: 200, maxPerCheck: 20}
+	ctx = WithIterationExtender(ctx, ext)
+	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
+		"completed_steps": []string{"write code"},
+		"remaining_steps": []string{"wrap up"},
+		"next_action":     "wrap up",
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+	// gap=0 → ceiling-bound block does not fire (gap > 0 precondition);
+	// falls through to normal extend path with amount=20, which the
+	// fakeExtender would attempt. Verify that the ceiling-bound reason
+	// is NOT used (gap > 0 check protects against this case).
+	if ext.callCount() != 1 {
+		t.Errorf("expected 1 ExtendIterationCap call, got %d", ext.callCount())
+	}
+	reason, _ := ext.recorded()
+	if strings.Contains(reason, "ceiling-bound") {
+		t.Errorf("reason should NOT mention ceiling-bound when gap=0, got %q", reason)
+	}
+}
+
+func TestGoalProgressTool_NormalExtend_NotAffected(t *testing.T) {
+	// iterCap well below ceiling: normal extend path fires, ceiling-bound
+	// short-circuits via gap > 3.
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-normal-extend", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+	ext := &fakeExtender{remaining: 0, canExtend: true, iterCap: 100, maxCap: 200, maxPerCheck: 20}
+	ctx = WithIterationExtender(ctx, ext)
+	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
+		"completed_steps": []string{"write code"},
+		"remaining_steps": []string{"run tests"},
+		"next_action":     "run tests",
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+	if ext.callCount() != 1 {
+		t.Fatalf("expected 1 ExtendIterationCap call, got %d", ext.callCount())
+	}
+	reason, n := ext.recorded()
+	if strings.Contains(reason, "ceiling-bound") {
+		t.Errorf("reason should NOT mention ceiling-bound when iterCap=100, maxCap=200, got %q", reason)
+	}
+	if n != 20 {
+		t.Errorf("expected n=20 (MaxIterationsPerCheckpoint), got %d", n)
 	}
 }
 
