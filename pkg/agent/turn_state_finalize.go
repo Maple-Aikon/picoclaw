@@ -212,3 +212,52 @@ func archiveStaleGoalOnTurnStart(al *AgentLoop, sessionKey string) error {
 	log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart Archive OK session=%s name=%s", sessionKey, g.Name)
 	return nil
 }
+// archiveAndResetPriorTurnGoal is the Phase 12.25 cross-turn scope hook.
+// It is fired at the START of every new turn (after SetupTurn, BEFORE the
+// Phase 12.9 cap+1 pre-loop bump) to enforce the per-turn goal scope:
+//
+//  1. Archive any unarchived prior-turn active goal on disk (delegates to
+//     archiveStaleGoalOnTurnStart for the durable side-effect — file move
+//     to archive/ dir).
+//  2. Reset in-memory turn-state goal flags so the new turn starts with a
+//     clean slate (regardless of whether the prior turn finished or was
+//     interrupted). Reset fields:
+//     - ts.goalFinalized = false
+//     - ts.postCompleteGoalReportSent = false
+//     - ts.goalArchiveRequested = false
+//     - ts.pendingFinalReportIter = false
+//
+// Order rationale (Q6 in plan §14): archive FIRST (durable side-effect)
+// then reset (in-memory). If the reset were first, an interrupted archive
+// would leave in-memory state inconsistent with disk state. By archiving
+// first, disk state is always committed before in-memory state is wiped.
+//
+// Errors from the archive sub-step are propagated (caller logs but does
+// not fail the turn — same best-effort policy as archiveStaleGoalOnTurnStart).
+//
+// Wired from pkg/agent/turn_coord.go::runTurn AFTER SetupTurn and BEFORE
+// the Phase 12.9 pre-loop cap+1 bump. This replaces the Phase 12.9
+// cross-turn final-report-iter mechanism with explicit per-turn scope.
+func archiveAndResetPriorTurnGoal(al *AgentLoop, ts *turnState) error {
+	// Step 1: archive prior turn's unarchived active goal (durable).
+	if err := archiveStaleGoalOnTurnStart(al, ts.sessionKey); err != nil {
+		logger.WarnCF("agent", "phase12.25 archive-and-reset: archive failed",
+			map[string]any{
+				"session_key": ts.sessionKey,
+				"error":       err.Error(),
+			})
+		// Continue with reset anyway — in-memory state must still be
+		// wiped for the new turn to start clean.
+	}
+	// Step 2: reset in-memory goal flags (per-turn scope).
+	ts.goalFinalized = false
+	ts.postCompleteGoalReportSent = false
+	ts.goalArchiveRequested = false
+	ts.pendingFinalReportIter = false
+	logger.InfoCF("agent", "phase12.25 archive-and-reset: in-memory state cleared",
+		map[string]any{
+			"session_key": ts.sessionKey,
+			"turn_id":     ts.turnID,
+		})
+	return nil
+}
