@@ -1176,7 +1176,7 @@ func (p *Pipeline) handleGoalRecovery(
 		},
 	}, func(attemptCtx context.Context, rc RetryContext) (RetryDecision, error) {
 		// Evaluate recovery triggers on the (possibly fresh) response.
-		// For attempts > 0, re-invoke callLLMCore with pendingRecoveryMessage
+		// For attempts > 0, re-invoke RecallLLM with pendingRecoveryMessage
 		// injected into callMessages. Attempt 0 uses the response already
 		// populated by the caller (CallLLM line 162-318).
 		if rc.Attempt > 0 {
@@ -1204,7 +1204,12 @@ func (p *Pipeline) handleGoalRecovery(
 			// attempts within this iteration do not re-inject the same hint.
 			ts.pendingRecoveryMessage = ""
 
-			resp, callErr := p.callLLMCore(attemptCtx, turnCtx, ts, exec, exec.callMessages, exec.providerToolDefs, iteration)
+			// Phase 12.26 (Q5A): RecallLLM wraps callLLMCore with transient
+			// retry semantics. For handleGoalRecovery, the 4-counter reset
+			// already runs at outer entry (line 1133-1143) BEFORE BoundedRetry
+			// so attempt 0 can re-evaluate fresh. setupFunc passes nil here
+			// because per-attempt setup (msg injection) is OUTSIDE RecallLLM.
+			resp, callErr := p.RecallLLM(attemptCtx, turnCtx, ts, exec, iteration, "handleGoalRecovery", nil)
 			if callErr != nil {
 				return RetryDecisionAbort, callErr
 			}
@@ -1326,25 +1331,9 @@ func (p *Pipeline) retryLLMForBlockedTool(
 	iteration int,
 	recoveryMsg string,
 ) (Control, error) {
-	// Reset 4 sibling counters on entry (Phase 12.11.1 lesson).
-	ts.emptyResponseRecoverySent = false
-	ts.textOnlySoftRetriesDone = 0
-	ts.textOnlyHardRetriesDone = 0
-	ts.toolExecRecoveryAttempts = map[string]int{}
-
 	currentPhase := ts.currentGoalPhase()
 	phaseLabel := string(currentPhase)
 	_ = phaseLabel
-
-	// Inject the recovery hint as a user message so LLM sees it in
-	// the same iter. The last message in exec.messages is the tool
-	// error from the blocked execution — callLLMCore will see that
-	// + the user hint, and LLM can choose a different tool.
-	exec.messages = append(exec.messages, providers.Message{
-		Role:    "user",
-		Content: recoveryMsg,
-	})
-	exec.callMessages = exec.messages
 
 	exhausted := false
 	logFields := map[string]any{
@@ -1389,8 +1378,28 @@ func (p *Pipeline) retryLLMForBlockedTool(
 			logger.InfoCF("agent", "Goal recovery exhausted in same iter (blocked tool), archiving with phase-stuck reason", logFields)
 		},
 	}, func(attemptCtx context.Context, rc RetryContext) (RetryDecision, error) {
-		// Re-call LLM with the recovery hint already in callMessages.
-		resp, callErr := p.callLLMCore(attemptCtx, turnCtx, ts, exec, exec.messages, exec.providerToolDefs, iteration)
+		// Phase 12.26 (Q5A): RecallLLM wraps callLLMCore with transient
+		// retry semantics. setupFunc absorbs the 4-counter reset + initial
+		// recovery hint injection that previously lived OUTSIDE BoundedRetry
+		// at lines 1335-1352 — prevents sibling-counter asymmetry bug class
+		// of Phase 12.11 and centralizes per-call one-time init.
+		resp, callErr := p.RecallLLM(attemptCtx, turnCtx, ts, exec, iteration, "retryLLMForBlockedTool", func() {
+			// Reset 4 sibling counters on entry (Phase 12.11.1 lesson).
+			ts.emptyResponseRecoverySent = false
+			ts.textOnlySoftRetriesDone = 0
+			ts.textOnlyHardRetriesDone = 0
+			ts.toolExecRecoveryAttempts = map[string]int{}
+
+			// Inject the recovery hint as a user message so LLM sees it in
+			// the same iter. The last message in exec.messages is the tool
+			// error from the blocked execution — callLLMCore will see that
+			// + the user hint, and LLM can choose a different tool.
+			exec.messages = append(exec.messages, providers.Message{
+				Role:    "user",
+				Content: recoveryMsg,
+			})
+			exec.callMessages = exec.messages
+		})
 		if callErr != nil {
 			return RetryDecisionAbort, callErr
 		}
@@ -1471,4 +1480,127 @@ func (p *Pipeline) retryLLMForBlockedTool(
 		return ControlBreak, nil
 	}
 	return ControlContinue, nil
+}
+
+// RecallLLM wraps callLLMCore with transient retry semantics for use inside
+// BoundedRetry closure bodies. Same-iter retry (does NOT consume iterationCap
+// slots) for transient LLM errors per transientLLMRetryReason semantics.
+// Returns the latest *providers.LLMResponse or error.
+//
+// Phase 12.26 design (LOCKED):
+//   - Transient retry ONLY (skip context compression — outer CallLLM handles
+//     that via ContextManager.Compact on first error, not per BoundedRetry).
+//   - BeforeLLM hook skipped (caller already ran).
+//   - Caller manages exec.response assignment (caller pattern: exec.response
+//     is the canonical source — RecallLLM returns the value; caller assigns).
+//   - proceedPastLLM runs OUTSIDE RecallLLM (caller invokes after BoundedRetry
+//     exit).
+//   - setupFunc runs ONCE before BoundedRetry loop — absorbs caller setup
+//     (counter reset, msg injection) so future callers can't forget
+//     (Phase 12.26 Q5A: prevents sibling counter asymmetry bug class of
+//     Phase 12.11/12.11.1).
+//
+// Used by the 2 BoundedRetry paths in pipeline_llm.go that handle goal
+// recovery (handleGoalRecovery, retryLLMForBlockedTool). handleHookReplay
+// is EXCLUDED per Q4A — different exhaustion control (ControlContinue vs
+// ControlBreak) and hook-decision logic.
+//
+// setupFunc is optional. Pass nil if caller has no one-time setup.
+// setupFunc runs in caller's context — has access to ts/exec/iteration
+// via closure capture. setupFunc MUST NOT return error — if setup fails,
+// that's a programming bug; let it panic.
+func (p *Pipeline) RecallLLM(
+	ctx context.Context,
+	turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	iteration int,
+	helperName string,
+	setupFunc func(),
+) (*providers.LLMResponse, error) {
+	const maxTransientRetries = 2 // smaller than outer's 2 to avoid 4-layer
+	                              // compounding; outer already retried once
+	                              // before BoundedRetry paths fire
+	const backoffSecs = 1         // shorter than outer's 2s — BoundedRetry
+	                              // outer loop has its own pacing
+
+	start := time.Now()
+
+	// Q5A: run caller-provided setup ONCE before any LLM call.
+	// Absorbs counter reset, msg injection, or any other one-time init.
+	// setupFunc is optional — caller passes nil if no setup needed.
+	if setupFunc != nil {
+		setupFunc()
+	}
+
+	var lastErr error
+
+	for transientAttempt := 0; transientAttempt <= maxTransientRetries; transientAttempt++ {
+		// Honor hard-abort between attempts
+		if ts.hardAbortRequested() {
+			logger.DebugCF("agent", "agent.recall_llm", map[string]any{
+				"helper":    helperName,
+				"transient": transientAttempt,
+				"ok":        false,
+				"error":     "hard_abort",
+			})
+			return nil, fmt.Errorf("hard abort requested before RecallLLM attempt")
+		}
+
+		resp, callErr := p.callLLMCore(ctx, turnCtx, ts, exec, exec.callMessages, exec.providerToolDefs, iteration)
+		if callErr == nil {
+			logger.DebugCF("agent", "agent.recall_llm", map[string]any{
+				"helper":      helperName,
+				"transient":   transientAttempt,
+				"duration_ms": time.Since(start).Milliseconds(),
+				"ok":          true,
+			})
+			return resp, nil
+		}
+
+		// Don't retry context errors — those go through ContextManager.Compact
+		retryReason, isTransient := transientLLMRetryReason(callErr)
+		if !isTransient {
+			logger.DebugCF("agent", "agent.recall_llm", map[string]any{
+				"helper":      helperName,
+				"transient":   transientAttempt,
+				"duration_ms": time.Since(start).Milliseconds(),
+				"ok":          false,
+				"error":       classifyRecallError(callErr),
+				"error_class": retryReason,
+			})
+			return resp, callErr
+		}
+
+		// Transient — log retry intent
+		logger.DebugCF("agent", "agent.recall_llm", map[string]any{
+			"helper":    helperName,
+			"transient": transientAttempt,
+			"ok":        false,
+			"error":     "transient",
+			"reason":    retryReason,
+		})
+		lastErr = callErr
+
+		if transientAttempt < maxTransientRetries {
+			if sleepErr := sleepWithContext(ctx, time.Duration(backoffSecs)*time.Second); sleepErr != nil {
+				return resp, sleepErr
+			}
+		}
+	}
+
+	return nil, lastErr
+}
+
+// classifyRecallError returns a short string describing the error class for
+// observability logs. Used by RecallLLM to distinguish transient (retried)
+// errors from fatal (propagated) errors.
+func classifyRecallError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "context"
+	}
+	return "fatal"
 }
