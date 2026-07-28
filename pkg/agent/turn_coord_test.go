@@ -1387,16 +1387,16 @@ func TestRunTurn_Phase12_TextOnly2x_ThenArchive(t *testing.T) {
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), HasToolCalls: false, TextEmpty: false}
 
 	act1, msg1 := evaluateRecovery(ts, ctx)
-	if act1 != RecoveryRetrySameIteration || msg1 != TextOnlySoftRetryMessage {
-		t.Fatalf("1st text-only: action=%v msg=%q (want RetrySameIteration + soft)", act1, msg1)
+	if act1 != RecoveryRetryNextIteration || msg1 != TextOnlySoftRetryOpenMessage {
+		t.Fatalf("1st text-only at Open: action=%v msg=%q (want RetryNextIteration + Open soft)", act1, msg1)
 	}
 	if ts.textOnlySoftRetriesDone != 1 {
 		t.Fatalf("after soft: soft_done=%d (want 1)", ts.textOnlySoftRetriesDone)
 	}
 
 	act2, msg2 := evaluateRecovery(ts, ctx)
-	if act2 != RecoveryRetrySameIteration || msg2 != TextOnlyHardRetryMessage {
-		t.Fatalf("2nd text-only: action=%v msg=%q (want RetrySameIteration + hard)", act2, msg2)
+	if act2 != RecoveryRetryNextIteration || msg2 != TextOnlyHardRetryOpenMessage {
+		t.Fatalf("2nd text-only at Open: action=%v msg=%q (want RetryNextIteration + Open hard)", act2, msg2)
 	}
 	if ts.textOnlyHardRetriesDone != 1 {
 		t.Fatalf("after hard: hard_done=%d (want 1)", ts.textOnlyHardRetriesDone)

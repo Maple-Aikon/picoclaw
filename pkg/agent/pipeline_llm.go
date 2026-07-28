@@ -718,13 +718,30 @@ func (p *Pipeline) proceedPastLLM(
 		// re-invoke LLM in the same iteration, force-complete, or archive.
 		if ts.hasGoal() && !exec.gracefulTerminal {
 			if action, msg := evaluateRecovery(ts, RecoveryContext{
-				Phase:                 string(ts.currentGoalPhase()),
-				Iteration:             iteration,
-				TextEmpty:             exec.response.Content == "",
-				HasToolCalls:          false,
-				MaxIterations:         ts.iterationCap,
-				ToolKnowledgeRegistry: ts.agent.Tools,
+				Phase:                  string(ts.currentGoalPhase()),
+				Iteration:              iteration,
+				TextEmpty:              exec.response.Content == "",
+				HasToolCalls:           false,
+				MaxIterations:          ts.iterationCap,
+				PostCompleteGoalReport: ts.postCompleteGoalReportSent,
+				ToolKnowledgeRegistry:  ts.agent.Tools,
 			}); action != RecoveryNone {
+				// Phase 12.27: RecoveryRetryNextIteration (Open phase only)
+				// — carry the message forward via ts.pendingRecoveryMessage
+				// and let the caller bump iter naturally. Do NOT invoke
+				// RecallLLM (Phase 12.26) for this path — RecallLLM is for
+				// SAME-iteration re-prompts only.
+				if action == RecoveryRetryNextIteration {
+					ts.pendingRecoveryMessage = msg
+					logger.InfoCF("agent", "Text-only next-iter recovery: msg carried forward", map[string]any{
+						"agent_id":              ts.agent.ID,
+						"iteration":             iteration,
+						"phase":                 string(ts.currentGoalPhase()),
+						"msg_len":               len(msg),
+						"recovery_action":       actionName(action),
+					})
+					return ControlContinue, nil
+				}
 				return p.handleGoalRecovery(ctx, turnCtx, ts, exec, iteration, action, msg)
 			}
 		}
@@ -1293,6 +1310,8 @@ func actionName(a RecoveryAction) string {
 	case RecoveryNone:
 		return "none"
 	case RecoveryRetrySameIteration:
+		return "retry_same_iteration"
+	case RecoveryRetryNextIteration:
 		return "retry_next_iteration"
 	case RecoveryForceComplete:
 		return "force_complete"

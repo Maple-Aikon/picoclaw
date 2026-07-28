@@ -431,10 +431,17 @@ func TestHandleGoalRecovery_PendingMessageInjected(t *testing.T) {
 	}
 }
 
-// TestHandleGoalRecovery_TextOnlySoftRetry_CounterReset verifies that the
-// textOnlySoftRetriesDone counter is reset on handleGoalRecovery entry, so a
-// text-only response on attempt 0 re-fires the soft-retry trigger, allowing
-// attempt 1 to call LLM with the recovery hint injected.
+// TestHandleGoalRecovery_TextOnlySoftRetry_CounterReset (Phase 12.11.1 →
+// Phase 12.27 update): the textOnlySoftRetriesDone counter is reset on
+// handleGoalRecovery entry, so a text-only response on attempt 0 re-fires
+// the soft-retry trigger, allowing attempt 1 to call LLM with the recovery
+// hint injected.
+//
+// Phase 12.27 update: this test is now RESTRICTED to non-Open phases
+// (Set/Checkpoint/Final). At GoalPhaseOpen, the text-only path returns
+// RecoveryRetryNextIteration (carry to next iter), NOT RecoveryRetrySameIteration
+// (handleGoalRecovery). The Open path is covered separately in
+// recovery_goal_phase12_27_test.go (TestTextOnlySoftRetry_Open_ReturnsRetryNextIter_NoCounter).
 //
 // Pre-Phase 12.11.1 fix: the caller-side increment of textOnlySoftRetriesDone
 // (cap=1) was NOT reset on handleGoalRecovery entry → wrapped func re-eval
@@ -467,6 +474,9 @@ func TestHandleGoalRecovery_TextOnlySoftRetry_CounterReset(t *testing.T) {
 	pipeline := NewPipeline(al)
 	ws := t.TempDir()
 	agent.Workspace = ws
+	// Phase 12.27: pin to Checkpoint (ABSOLUTE allowlist) so handleGoalRecovery
+	// is the recovery path. Open phase takes RecoveryRetryNextIteration now.
+	al.SetGoalPhaseForTest(string(GoalPhaseCheckpoint))
 	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
 		turnID:  "turn-1",
 		context: newTurnContext(nil, nil, nil),
