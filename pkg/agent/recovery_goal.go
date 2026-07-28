@@ -52,6 +52,16 @@ const (
 	// an early Checkpoint phase transition and stripped the failing tool
 	// from the allowlist.
 	RecoveryRetrySameIteration
+	// RecoveryRetryNextIteration (Phase 12.27): carry the recovery message
+	// forward to the NEXT iteration via ts.pendingRecoveryMessage, do NOT
+	// retry within the current iteration. Used only for text-only recovery
+	// at GoalPhaseOpen (RELATIVE allowlist — iter-bump naturally escalates
+	// Open → Checkpoint at cap where goal_progress/complete_goal become
+	// visible). NOT used at Set/Checkpoint/Final — those are ABSOLUTE
+	// allowlist phases (Phase 12.21), so iter-bump has no progress signal
+	// (next iter is still in the same restricted phase) — they keep using
+	// RecoveryRetrySameIteration via RecallLLM (Phase 12.26).
+	RecoveryRetryNextIteration
 	// RecoveryForceComplete means strip non-goal tools and force the LLM to
 	// emit complete_goal on the next call. Caller must inject force-complete
 	// prompt and re-run the same iteration.
@@ -72,6 +82,12 @@ type RecoveryContext struct {
 	ToolName      string // for ToolExecError trigger: which tool failed
 	ToolExecError string // for ToolExecError trigger: the error message from the tool executor
 	ProviderError bool   // for ProviderTransient trigger: was this a provider-side transient error
+
+	// PostCompleteGoalReport (Phase 12.27): for text-only triggers at
+	// GoalPhaseFinal — has the post-complete_goal final-report iter already
+	// fired (Phase 12.7)? If true, recovery is silent (RecoveryNone) because
+	// the goal is finalized + report sent; no more action possible.
+	PostCompleteGoalReport bool
 
 	// IsTransient (Phase 12.6.1): for ToolExecError trigger only — was the
 	// failure classified as transient (timeout / rate-limit / network)?
@@ -109,6 +125,14 @@ const (
 	// retry within an iteration. Firm tone: LLM MUST pick one of three
 	// paths or the turn will be archived.
 	TextOnlyHardRetryMessage = "⚠️ Second consecutive text-only response with no tool call. You MUST decide in your next response: (1) call `complete_goal` if the goal is finished; (2) call `complete_goal` + a question for the user if a critical decision needs user approval; (3) call a tool to continue working. If your next response is still text-only, this turn will be archived."
+
+	// TextOnlySoftRetryOpenMessage (Phase 12.27) — first text-only at Open
+	// phase (RELATIVE allowlist). Carries forward to NEXT iteration via
+	// ts.pendingRecoveryMessage — caller at turn_coord.go bumps iter.
+	TextOnlySoftRetryOpenMessage = "Your last response was text-only with no tool call. The goal is still active: continue working with an appropriate tool, or call `complete_goal` if finished. This hint will be injected at the start of the next iteration."
+	// TextOnlyHardRetryOpenMessage (Phase 12.27) — second consecutive
+	// text-only at Open phase. Hints MUST-decide + carry forward to next iter.
+	TextOnlyHardRetryOpenMessage = "⚠️ Two consecutive text-only responses with no tool call. You MUST decide in the next iteration: (1) call `complete_goal` if the goal is finished; (2) call `complete_goal` with a question if a critical decision needs user approval; (3) call a tool to continue working. If the next iteration is still text-only, this turn will be archived."
 
 	// ToolExecErrorRetryMessage tells the LLM that a tool execution failed
 	// and asks it to retry the call (possibly with different args). Phase 12
@@ -238,8 +262,67 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 		return RecoveryArchiveGoal, "Tool execution error retry exhausted for " + ctx.ToolName + "."
 	}
 
-	// Triggers #1 and #2 only apply in Open phase where the LLM has
-	// freedom to call any goal-aware tool. In other phases, these are silent.
+	// Tool call resets counters (defensive) — applies in ALL phases when LLM
+	// is productive. Must happen BEFORE phase-specific dispatch so counters
+	// stay clean across Set/Checkpoint/Final too (not just Open).
+	if ctx.HasToolCalls {
+		ts.textOnlyStreak = 0
+		ts.textOnlySoftRetriesDone = 0
+		ts.textOnlyHardRetriesDone = 0
+	}
+
+	// Triggers #1 (empty) only fires in Open phase. Triggers #2 (text-only)
+	// fires in ALL phases but with different action + counter semantics:
+	//   - Open (RELATIVE allowlist): RecoveryRetryNextIteration (Phase 12.27),
+	//     NO counter increment — iter-bump naturally escalates Open → Checkpoint
+	//     at cap where goal_progress/complete_goal become visible. Carry msg
+	//     forward via ts.pendingRecoveryMessage, inject at next iter's prompt.
+	//   - Set/Checkpoint/Final (ABSOLUTE allowlist, Phase 12.21): RecoveryRetrySameIteration
+	//     with counter increment — caller (pipeline_llm.go:727) wraps via RecallLLM
+	//     (Phase 12.26 canonical helper). Same-iter retry is MANDATORY for
+	//     restricted allowlist — iter-bump has no progress signal here.
+	//   - Final with postCompleteGoalReportSent=true: silent (RecoveryNone)
+	//     — goal is finalized + report already sent, no more action possible.
+	if ctx.Phase != string(GoalPhaseOpen) && !ctx.HasToolCalls && !ctx.TextEmpty {
+		if ctx.Phase == string(GoalPhaseFinal) && ctx.PostCompleteGoalReport {
+			return RecoveryNone, ""
+		}
+		ts.textOnlyStreak++
+		if ts.textOnlySoftRetriesDone < TextOnlySoftRetryCap {
+			ts.textOnlySoftRetriesDone++
+			logger.InfoCF("agent", "Text-only soft retry fired (restricted phase)", map[string]any{
+				"agent_id":  agentIDFromTS(ts),
+				"iteration": ctx.Iteration,
+				"phase":     ctx.Phase,
+				"soft_done": ts.textOnlySoftRetriesDone,
+				"hard_done": ts.textOnlyHardRetriesDone,
+			})
+			return RecoveryRetrySameIteration, TextOnlySoftRetryMessage
+		}
+		if ts.textOnlyHardRetriesDone < TextOnlyHardRetryCap {
+			ts.textOnlyHardRetriesDone++
+			logger.InfoCF("agent", "Text-only hard retry fired (restricted phase)", map[string]any{
+				"agent_id":  agentIDFromTS(ts),
+				"iteration": ctx.Iteration,
+				"phase":     ctx.Phase,
+				"soft_done": ts.textOnlySoftRetriesDone,
+				"hard_done": ts.textOnlyHardRetriesDone,
+			})
+			return RecoveryRetrySameIteration, TextOnlyHardRetryMessage
+		}
+		// Both soft + hard fired this iteration; archive the goal.
+		logger.WarnCF("agent", "Text-only retry cap exhausted — archiving goal (restricted phase)", map[string]any{
+			"agent_id":  agentIDFromTS(ts),
+			"iteration": ctx.Iteration,
+			"phase":     ctx.Phase,
+			"streak":    ts.textOnlyStreak,
+		})
+		return RecoveryArchiveGoal, "Text-only retry cap exhausted (1 soft + 1 hard per iteration, restricted phase)."
+	}
+
+	// Open phase: Triggers #1 (empty) + #2 (text-only) with next-iter carry.
+	// All Triggers #1/#2 only apply at GoalPhaseOpen. Set/Checkpoint/Final
+	// empty/text-only is handled by the restricted-phase block above.
 	if ctx.Phase != string(GoalPhaseOpen) {
 		return RecoveryNone, ""
 	}
@@ -252,53 +335,45 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 		}
 	}
 
-	// Trigger #2: text-only (no tool calls) on consecutive iterations.
-	// Phase 12 redesign: fire soft prompt first, then hard prompt, then
-	// archive. All counters are per-iteration (reset on iteration bump
-	// elsewhere). The cross-iteration textOnlyStreak field still tracks
-	// for observability but is not the gating signal any more.
+	// Trigger #2 (Phase 12.27 Open path): text-only on consecutive iterations.
+	// Phase 12 redesign: fire soft prompt first, then hard prompt, then archive.
+	// At OPEN phase, we use RecoveryRetryNextIteration (NOT RecoveryRetrySameIteration):
+	// carry the message forward via ts.pendingRecoveryMessage, caller at
+	// turn_coord.go bumps iter naturally. NO counter increment — Open has
+	// no per-iter cap because iter-bump is the escalation path.
 	if !ctx.HasToolCalls && !ctx.TextEmpty {
 		ts.textOnlyStreak++
 		// Increment within-iteration escalation counters in order.
 		if ts.textOnlySoftRetriesDone < TextOnlySoftRetryCap {
 			ts.textOnlySoftRetriesDone++
-			var agentID string
-			if ts.agent != nil {
-				agentID = ts.agent.ID
-			}
-			logger.InfoCF("agent", "Text-only soft retry fired", map[string]any{
-				"agent_id": agentID,
+			logger.InfoCF("agent", "Text-only soft retry fired (Open phase, next-iter)", map[string]any{
+				"agent_id":  agentIDFromTS(ts),
 				"iteration": ctx.Iteration,
+				"phase":     ctx.Phase,
 				"soft_done": ts.textOnlySoftRetriesDone,
 				"hard_done": ts.textOnlyHardRetriesDone,
 			})
-			return RecoveryRetrySameIteration, TextOnlySoftRetryMessage
+			return RecoveryRetryNextIteration, TextOnlySoftRetryOpenMessage
 		}
 		if ts.textOnlyHardRetriesDone < TextOnlyHardRetryCap {
 			ts.textOnlyHardRetriesDone++
-			var agentID string
-			if ts.agent != nil {
-				agentID = ts.agent.ID
-			}
-			logger.InfoCF("agent", "Text-only hard retry fired (escalation)", map[string]any{
-				"agent_id": agentID,
+			logger.InfoCF("agent", "Text-only hard retry fired (Open phase, next-iter)", map[string]any{
+				"agent_id":  agentIDFromTS(ts),
 				"iteration": ctx.Iteration,
+				"phase":     ctx.Phase,
 				"soft_done": ts.textOnlySoftRetriesDone,
 				"hard_done": ts.textOnlyHardRetriesDone,
 			})
-			return RecoveryRetrySameIteration, TextOnlyHardRetryMessage
+			return RecoveryRetryNextIteration, TextOnlyHardRetryOpenMessage
 		}
 		// Both soft + hard fired this iteration; archive the goal.
-		var agentID string
-		if ts.agent != nil {
-			agentID = ts.agent.ID
-		}
-		logger.WarnCF("agent", "Text-only retry cap exhausted — archiving goal", map[string]any{
-			"agent_id": agentID,
+		logger.WarnCF("agent", "Text-only retry cap exhausted — archiving goal (Open phase)", map[string]any{
+			"agent_id":  agentIDFromTS(ts),
 			"iteration": ctx.Iteration,
+			"phase":     ctx.Phase,
 			"streak":    ts.textOnlyStreak,
 		})
-		return RecoveryArchiveGoal, "Text-only retry cap exhausted (1 soft + 1 hard per iteration)."
+		return RecoveryArchiveGoal, "Text-only retry cap exhausted (1 soft + 1 hard per iteration, Open phase)."
 	} else if ctx.HasToolCalls {
 		// Reset streak + per-iteration escalation counters when LLM calls
 		// a tool (productive turn). Counters are now useless for the
@@ -311,6 +386,14 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 	}
 
 	return RecoveryNone, ""
+}
+
+// agentIDFromTS returns the agent ID for logging context, or empty if no agent.
+func agentIDFromTS(ts *turnState) string {
+	if ts.agent != nil {
+		return ts.agent.ID
+	}
+	return ""
 }
 
 // emptyResponseRecoverySentCount returns 0 or 1 — we only inject the

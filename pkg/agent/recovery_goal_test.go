@@ -91,13 +91,14 @@ func TestEvaluateRecovery_EmptyText_PhaseLock_NoTrigger(t *testing.T) {
 func TestEvaluateRecovery_TextOnly2x_PhaseOpen_ForceComplete(t *testing.T) {
 	ts := newPhase5TurnState(t)
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: false, HasToolCalls: false}
-	// First text-only: streak becomes 1, soft prompt fires (Phase 12)
+	// First text-only: streak becomes 1, Open-phase soft prompt fires
+	// (Phase 12.27: Open uses RecoveryRetryNextIteration with TextOnlySoftRetryOpenMessage)
 	action1, msg1 := evaluateRecovery(ts, ctx)
-	if action1 != RecoveryRetrySameIteration {
-		t.Fatalf("first text-only should soft retry, got %v", action1)
+	if action1 != RecoveryRetryNextIteration {
+		t.Fatalf("first text-only at Open should return RetryNextIteration, got %v", action1)
 	}
-	if msg1 != TextOnlySoftRetryMessage {
-		t.Fatalf("expected soft prompt message, got %q", msg1)
+	if msg1 != TextOnlySoftRetryOpenMessage {
+		t.Fatalf("expected Open soft prompt message, got %q", msg1)
 	}
 	if ts.textOnlyStreak != 1 {
 		t.Fatalf("expected streak=1 after first text-only, got %d", ts.textOnlyStreak)
@@ -107,11 +108,11 @@ func TestEvaluateRecovery_TextOnly2x_PhaseOpen_ForceComplete(t *testing.T) {
 	}
 	// Second text-only (same iter, immediately after): hard prompt fires
 	action2, msg2 := evaluateRecovery(ts, ctx)
-	if action2 != RecoveryRetrySameIteration {
-		t.Fatalf("second text-only should hard retry, got %v", action2)
+	if action2 != RecoveryRetryNextIteration {
+		t.Fatalf("second text-only at Open should return RetryNextIteration, got %v", action2)
 	}
-	if msg2 != TextOnlyHardRetryMessage {
-		t.Fatalf("expected hard prompt message, got %q", msg2)
+	if msg2 != TextOnlyHardRetryOpenMessage {
+		t.Fatalf("expected Open hard prompt message, got %q", msg2)
 	}
 	if ts.textOnlyStreak != 2 {
 		t.Fatalf("expected streak=2, got %d", ts.textOnlyStreak)
