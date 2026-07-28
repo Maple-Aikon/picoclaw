@@ -35,9 +35,11 @@ type recallTestProvider struct {
 		sync.Mutex
 		callCount int
 	}
-	errors      []error      // optional, per-call transient/non-transient errors
-	responses   []*providers.LLMResponse
-	transientOk bool         // mark injected errors as transient via transientLLMRetryReason
+	errors        []error      // optional, per-call transient/non-transient errors
+	responses     []*providers.LLMResponse
+	transientOk   bool         // mark injected errors as transient via transientLLMRetryReason
+	abortOnCall   *int         // if non-nil and *abortOnCall == idx, request hard abort after returning
+	abortTurnState *turnState  // required when abortOnCall != nil — points to the ts to abort
 }
 
 func (p *recallTestProvider) Chat(
@@ -48,9 +50,14 @@ func (p *recallTestProvider) Chat(
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	idx := p.mu.callCount
 	p.mu.callCount++
+	// Fire hard abort after this call returns, if configured. Done while
+	// holding the lock so the abort fires before RecallLLM's next iteration.
+	if p.abortOnCall != nil && idx == *p.abortOnCall && p.abortTurnState != nil {
+		_ = p.abortTurnState.requestHardAbort()
+	}
+	p.mu.Unlock()
 
 	// Per-call error injection takes precedence
 	if idx < len(p.errors) && p.errors[idx] != nil {
@@ -280,7 +287,7 @@ func TestRecallLLM_TransientRetriesExhausted(t *testing.T) {
 }
 
 // =============================================================================
-// Test 6: smoke test — handleGoalRecovery still works through RecallLLM
+// Helper: build a valid ts+exec for RecallLLM direct tests
 //
 // Integration check: when handleGoalRecovery triggers, the underlying
 // RecallLLM invocation must succeed for the LLM to retry. Verify by
@@ -401,4 +408,168 @@ func setupRecallTestTurnState(t *testing.T, al *AgentLoop, pipeline *Pipeline) (
 	}
 
 	return ts, exec
+}
+
+// =============================================================================
+// Test 8: Hard abort AFTER some attempts (mid-retry abort)
+//
+// RecallLLM checks ts.hardAbortRequested() at every iteration boundary. If
+// a transient retry is in flight and hard abort fires between attempts, the
+// helper must return immediately without calling LLM again.
+func TestRecallLLM_HardAbortMidRetry(t *testing.T) {
+	provider := &recallTestProvider{
+		errors: []error{
+			fmt.Errorf("connection refused: attempt 0 transient"),
+			// attempt 1 must not be reached — hard abort fires before
+		},
+		responses: []*providers.LLMResponse{
+			nil,
+			{Content: "should not reach here", FinishReason: "stop"},
+		},
+	}
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	pipeline := NewPipeline(al)
+	ts, exec := setupRecallTestTurnState(t, al, pipeline)
+
+	// Inject hard abort into the provider's first call: when Chat returns the
+	// first transient error, requestHardAbort flips the flag. RecallLLM then
+	// checks the flag at the next attempt boundary (BEFORE the backoff sleep)
+	// and returns early without calling LLM a 2nd time.
+	abortAfter0 := 0
+	provider.abortOnCall = &abortAfter0   // fire after call index 0
+	provider.abortTurnState = ts          // point to the ts RecallLLM is using
+
+	start := time.Now()
+	resp, err := pipeline.RecallLLM(
+		context.Background(),
+		context.Background(),
+		ts, exec, 1, "test_hard_abort_mid", nil,
+	)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from mid-retry hard abort, got nil")
+	}
+	if !strings.Contains(err.Error(), "hard abort") {
+		t.Fatalf("expected error to mention 'hard abort', got %v", err)
+	}
+	if resp != nil {
+		t.Fatalf("expected nil resp on mid-retry hard abort, got %+v", resp)
+	}
+	// 1 LLM call only — hard abort fires during backoff, prevents attempt 1
+	if provider.callCountN() != 1 {
+		t.Fatalf("expected 1 LLM call (hard abort before attempt 1), got %d", provider.callCountN())
+	}
+	// elapsed ≈ 1s — one backoff sleep happened, then abort check fired
+	// (abort check is AFTER backoff in the loop, not before). This is the
+	// expected ordering: sleep first, then check flag. Verify neither too
+	// fast (no sleep at all, =<500ms) nor too slow (full 2 sleeps, >=2s).
+	if elapsed < 500*time.Millisecond {
+		t.Fatalf("expected ~1s elapsed (1 backoff sleep), got %v — abort may have fired too early", elapsed)
+	}
+	if elapsed > 1500*time.Millisecond {
+		t.Fatalf("expected ~1s elapsed (1 backoff sleep, NOT 2), got %v — abort check may have fired after attempt 1", elapsed)
+	}
+}
+
+// =============================================================================
+// Test 9: Non-transient error at attempt N>0 (transient then fatal)
+//
+// RecallLLM retries transient errors. If attempt 0 returns transient and
+// attempt 1 returns non-transient, the helper must NOT continue retrying —
+// propagate immediately.
+func TestRecallLLM_TransientThenNonTransient(t *testing.T) {
+	provider := &recallTestProvider{
+		errors: []error{
+			fmt.Errorf("timeout exceeded"),          // attempt 0: transient (will retry)
+			fmt.Errorf("invalid API key, fatal"),    // attempt 1: non-transient (must propagate)
+		},
+		responses: []*providers.LLMResponse{
+			nil,
+			nil,
+			{Content: "should not reach here", FinishReason: "stop"},
+		},
+	}
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	pipeline := NewPipeline(al)
+	ts, exec := setupRecallTestTurnState(t, al, pipeline)
+
+	resp, err := pipeline.RecallLLM(
+		context.Background(),
+		context.Background(),
+		ts, exec, 1, "test_transient_then_fatal", nil,
+	)
+	if err == nil {
+		t.Fatal("expected non-transient error to propagate, got nil")
+	}
+	if resp != nil {
+		t.Fatalf("expected nil resp, got %+v", resp)
+	}
+	if !strings.Contains(err.Error(), "invalid API key") {
+		t.Fatalf("expected error from attempt 1, got %v", err)
+	}
+	// 2 calls total: 1 transient (retried) + 1 non-transient (propagated)
+	if provider.callCountN() != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", provider.callCountN())
+	}
+}
+
+// =============================================================================
+// Test 10: Backoff context cancellation (sleep interrupted by ctx.Done)
+//
+// RecallLLM uses sleepWithContext between transient retries. If the supplied
+// ctx is cancelled mid-sleep, the backoff should return ctx.Canceled and the
+// helper should propagate immediately.
+func TestRecallLLM_BackoffContextCancelled(t *testing.T) {
+	provider := &recallTestProvider{
+		errors: []error{
+			fmt.Errorf("connection refused: attempt 0 transient"),
+		},
+		responses: []*providers.LLMResponse{
+			nil,
+			{Content: "should not reach here", FinishReason: "stop"},
+		},
+	}
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	pipeline := NewPipeline(al)
+	ts, exec := setupRecallTestTurnState(t, al, pipeline)
+
+	// Build a cancellable ctx; cancel AFTER RecallLLM starts (async-safe).
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		// Give RecallLLM time to enter the first call + see transient error.
+		// RecallLLM reads exec.messages; the lock + sleep gives us a small
+		// window before the backoff. Use a short delay.
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	resp, err := pipeline.RecallLLM(
+		ctx,
+		context.Background(),
+		ts, exec, 1, "test_ctx_cancel", nil,
+	)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from ctx cancellation, got nil")
+	}
+	if resp != nil {
+		t.Fatalf("expected nil resp on ctx cancel, got %+v", resp)
+	}
+	// elapsed should be < 1s — backoff interrupted, no full 1s sleep
+	if elapsed >= 1*time.Second {
+		t.Fatalf("expected <1s elapsed (backoff interrupted), got %v", elapsed)
+	}
+	// exactly 1 LLM call — backoff interrupted before attempt 1
+	if provider.callCountN() != 1 {
+		t.Fatalf("expected 1 LLM call (ctx cancelled before attempt 1), got %d", provider.callCountN())
+	}
 }
