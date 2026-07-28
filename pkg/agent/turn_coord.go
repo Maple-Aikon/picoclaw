@@ -119,6 +119,18 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		return turnResult{}, err
 	}
 
+	// Phase 12.25: cross-turn archive-and-reset pre-loop hook.
+	// Enforces per-turn goal scope: archive any unarchived prior-turn
+	// active goal (durable side-effect), then reset in-memory turn-state
+	// goal flags so the new turn starts with a clean slate regardless of
+	// whether the prior turn finished or was interrupted. Replaces the
+	// Phase 12.9 cross-turn final-report-iter mechanism with explicit
+	// per-turn scope. Order: archive FIRST → reset SECOND (see
+	// archiveAndResetPriorTurnGoal doc for rationale).
+	if err := archiveAndResetPriorTurnGoal(al, ts); err != nil {
+		// archiveAndResetPriorTurnGoal already logs; continue regardless.
+	}
+
 	// Convenience references to exec fields used throughout the turn loop.
 	messages := exec.messages
 	pendingMessages := exec.pendingMessages
@@ -395,6 +407,24 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 							currentPhase == GoalPhaseCheckpoint ||
 							currentPhase == GoalPhaseFinal
 						if isRestricted {
+							// Phase 12.25 §X2: skip same-iter BoundedRetry
+							// when graceful interrupt is active. The user
+							// has signaled END turn — retrying just wastes
+							// an LLM call before the graceful interrupt
+							// path takes over. Continue to the next iter
+							// (or exit if pendingMessages empty + cap hit),
+							// letting the existing graceful-interrupt
+							// handling pick up the abort.
+							if ts.gracefulInterrupt || ts.gracefulTerminalUsed {
+								logger.InfoCF("agent", "Phase 12.25 §X2: skipping retryLLMForBlockedTool due to graceful interrupt",
+									map[string]any{
+										"agent_id":            ts.agent.ID,
+										"phase":               string(currentPhase),
+										"graceful_interrupt":  ts.gracefulInterrupt,
+										"graceful_term_used":  ts.gracefulTerminalUsed,
+									})
+								continue
+							}
 							// Same-iter BoundedRetry wrap. The blocked tool
 							// call produced an error result — strip the
 							// blocked tool call from the LLM's last
