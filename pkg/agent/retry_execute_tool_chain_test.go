@@ -170,6 +170,37 @@ var _ toolExecutor = (*fakeExecutor)(nil)
 //  1. *Pipeline satisfies toolExecutor (compile-time, checked in retry_execute_tool_chain.go)
 //  2. *fakeExecutor satisfies toolExecutor (compile-time, just above)
 //  3. fakeExecutor.ExecuteTools captures arguments (runtime)
+// =============================================================================
+// Test for Task 3 (Phase 12.28.1 Step 3 wiring): Pipeline exposes SetToolExecutor
+// to inject a custom toolExecutor. Default self-binding returns *Pipeline itself.
+// Verify:
+//  1. After SetToolExecutor(fake), toolExecLazy() returns the fake
+//  2. Without SetToolExecutor, toolExecLazy() returns *Pipeline (self-binding)
+//  3. *Pipeline satisfies toolExecutor via existing ExecuteTools method
+func TestRetryExecuteToolChain_SetToolExecutor_Injection(t *testing.T) {
+	provider := &recordingProvider{}
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	p := NewPipeline(al)
+	fake := &fakeExecutor{returnControl: ToolControlContinue}
+
+	// Before injection: toolExecLazy returns p itself
+	got := p.toolExecLazy()
+	if got != p {
+		t.Errorf("expected default self-binding (==p), got %T", got)
+	}
+
+	// After injection: toolExecLazy returns fake
+	p.SetToolExecutor(fake)
+	got = p.toolExecLazy()
+	if got != toolExecutor(fake) {
+		t.Errorf("expected fake after SetToolExecutor, got %T", got)
+	}
+	if got.(*fakeExecutor).callCount != 0 {
+		t.Errorf("expected callCount=0 after just setting, got %d", got.(*fakeExecutor).callCount)
+	}
+}
+
 func TestRetryExecuteToolChain_ToolExecutorInterface_Contract(t *testing.T) {
 	fake := &fakeExecutor{returnControl: ToolControlContinue}
 	var iface toolExecutor = fake
