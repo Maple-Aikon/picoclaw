@@ -659,6 +659,92 @@ func (f *fakeSequenceExecutor) ExecuteTools(
 // Compile-time check that fakeSequenceExecutor satisfies toolExecutor.
 var _ toolExecutor = (*fakeSequenceExecutor)(nil)
 
+// =============================================================================
+// Test for Phase 12.28.1 Task 8 (Path 2 → recallAndCheckTool extraction):
+//
+// Verifies that retryLLMForBlockedTool now delegates Steps 1+2 to the
+// shared recallAndCheckTool primitive (also used by retryExecuteToolChain
+// Path 4). The Path 2 wrapper must:
+//   - Re-prompt with recoveryMsg when LLM picks a wrong tool (not break)
+//   - Succeed with ControlToolLoop when LLM picks an allowed tool
+//   - Set exec.response to the latest response (Phase 12.26 contract)
+//   - Archive on cap exhaustion (3 attempts) with phase-stuck reason
+//
+// Compile-time check: Pipeline must expose retryLLMForBlockedTool with the
+// pre-Task 8 signature (turn_coord.go:434 caller is unaffected by the
+// refactor). If signature changes, this test fails to compile.
+// =============================================================================
+func TestRetryLLMForBlockedTool_UsesSharedHelper(t *testing.T) {
+	// 3-attempt scripted provider: attempt 0 returns blocked tool
+	// (read_file at Checkpoint phase), attempt 1 also blocked (web_search),
+	// attempt 2 picks the lifecycle tool (goal_progress).
+	provider := &threeAttemptProvider{
+		tools: []string{"read_file", "web_search", "goal_progress"},
+	}
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	p := NewPipeline(al)
+
+	ts, exec := setupRetryChainTestTurnState(t, al, p)
+	// setupRetryChainTestTurnState pins phase to Open; re-pin to Checkpoint
+	// so ts.currentGoalPhase() returns Checkpoint and runtime resolver
+	// returns lifecycle allowlist ([goal_progress, complete_goal]).
+	al.SetGoalPhaseForTest(string(GoalPhaseCheckpoint))
+
+	ctrl, err := p.retryLLMForBlockedTool(
+		context.Background(), context.Background(), ts, exec, 2,
+		"RECOVERY_HINT: pick goal_progress or complete_goal")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// Provider returns goal_progress on attempt 2 → resolved allowlist
+	// contains it → Path 2 returns RetryDecisionDone → ControlToolLoop.
+	if ctrl != ControlToolLoop {
+		t.Errorf("expected ControlToolLoop (LLM picked goal_progress on attempt 2), got %v", ctrl)
+	}
+	// Recovery succeeded → no archive.
+	if ts.goalArchiveRequested {
+		t.Errorf("expected goalArchiveRequested=false (recovered), got true")
+	}
+	// exec.response must reflect the latest LLM call (goal_progress).
+	if exec.response == nil {
+		t.Fatal("expected exec.response to be set by shared helper")
+	}
+	if len(exec.response.ToolCalls) == 0 || exec.response.ToolCalls[0].Name != "goal_progress" {
+		t.Errorf("expected first tool=goal_progress in exec.response, got %v", exec.response.ToolCalls)
+	}
+}
+
+// threeAttemptProvider returns different tools across N attempts so we can
+// verify Path 2's retry-and-pick-correct-tool flow.
+type threeAttemptProvider struct {
+	tools []string
+	calls int
+}
+
+func (p *threeAttemptProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	options map[string]any,
+) (*providers.LLMResponse, error) {
+	idx := p.calls
+	if idx >= len(p.tools) {
+		idx = len(p.tools) - 1
+	}
+	p.calls++
+	return &providers.LLMResponse{
+		Content:      "",
+		ToolCalls:    []providers.ToolCall{{Name: p.tools[idx], Arguments: map[string]any{}}},
+		FinishReason: "stop",
+	}, nil
+}
+
+func (p *threeAttemptProvider) GetDefaultModel() string {
+	return "test-model"
+}
+
 // Test 6: tool execution errored (fake appends tool message with
 // IsError=true and a "Tool execution failed:" prefix that
 // checkToolExecErrorRecovery recognizes) → retry path fires →

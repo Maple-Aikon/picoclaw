@@ -1397,54 +1397,72 @@ func (p *Pipeline) retryLLMForBlockedTool(
 			logger.InfoCF("agent", "Goal recovery exhausted in same iter (blocked tool), archiving with phase-stuck reason", logFields)
 		},
 	}, func(attemptCtx context.Context, rc RetryContext) (RetryDecision, error) {
-		// Phase 12.26 (Q5A): RecallLLM wraps callLLMCore with transient
-		// retry semantics. setupFunc absorbs the 4-counter reset + initial
-		// recovery hint injection that previously lived OUTSIDE BoundedRetry
-		// at lines 1335-1352 — prevents sibling-counter asymmetry bug class
-		// of Phase 12.11 and centralizes per-call one-time init.
-		resp, callErr := p.RecallLLM(attemptCtx, turnCtx, ts, exec, iteration, "retryLLMForBlockedTool", func() {
-			// Reset 4 sibling counters on entry (Phase 12.11.1 lesson).
-			ts.emptyResponseRecoverySent = false
-			ts.textOnlySoftRetriesDone = 0
-			ts.textOnlyHardRetriesDone = 0
-			ts.toolExecRecoveryAttempts = map[string]int{}
+		// Phase 12.11.1 lesson: reset 4 sibling counters on entry to
+		// prevent counter-storm across same-iter attempts. Inline here
+		// (NOT in RecallLLM's setupFunc) because Path 2 must reset on
+		// entry while Path 4 must NOT — the asymmetry is intentional
+		// (Phase 12.28 memory note: toolExecRecoveryAttempts must
+		// survive across attempts in Path 4 to drive archive detection).
+		ts.emptyResponseRecoverySent = false
+		ts.textOnlySoftRetriesDone = 0
+		ts.textOnlyHardRetriesDone = 0
+		ts.toolExecRecoveryAttempts = map[string]int{}
 
-			// Inject the recovery hint as a user message so LLM sees it in
-			// the same iter. The last message in exec.messages is the tool
-			// error from the blocked execution — callLLMCore will see that
-			// + the user hint, and LLM can choose a different tool.
-			exec.messages = append(exec.messages, providers.Message{
-				Role:    "user",
-				Content: recoveryMsg,
-			})
-			exec.callMessages = exec.messages
-		})
-		if callErr != nil {
-			return RetryDecisionAbort, callErr
-		}
-		if resp != nil {
-			exec.response = resp
-		}
-		if exec.response == nil {
-			// No response — abort (caller treats as fatal).
-			return RetryDecisionAbort, nil
-		}
-		// Evaluate the new response. If LLM emitted a tool call that
-		// the runtime allowlist would block again, retry. If it
-		// emitted a text-only response or an allowed tool, we're done.
-		if len(exec.response.ToolCalls) == 0 {
-			// Text-only response — caller continues with text path.
-			return RetryDecisionDone, nil
-		}
-		// Has tool calls. Check the first tool name against the
-		// runtime allowlist for the current phase by calling the
-		// resolver from pkg/agent/tool_allowlist_phase.go.
-		firstTool := exec.response.ToolCalls[0].Name
+		// Phase 12.26 (Q5A): RecallLLM wraps callLLMCore with transient
+		// retry semantics. Phase 12.28.1 Task 8: Steps 1+2 are delegated
+		// to the shared recallAndCheckTool primitive (also used by
+		// retryExecuteToolChain Path 4). Path 2's wrong-tool policy
+		// differs from Path 4: we re-prompt the LLM with a stronger hint
+		// instead of breaking — at restricted phases the LLM must pick
+		// a lifecycle tool to escape the block.
+		//
+		// Resolve runtime allowlist for the current phase BEFORE calling
+		// the helper so it can decide success-vs-wrong-tool correctly.
+		// Pass allowedTools=nil semantics by resolving inline first.
 		phaseForRetry := ts.currentGoalPhase()
 		var resolvedRetry []string
 		if ts.agent != nil {
 			resolvedRetry = resolveAgentToolAllowlistWithPhase(ts.agent.Definition, phaseForRetry)
 		}
+		// Empty allowlist = all tools allowed (Open phase default —
+		// base frontmatter missing). Convert to a sentinel "allow
+		// anything" by passing a single wildcard? No — the existing
+		// pre-Task 8 logic treats len==0 as "allow all". Pass nil
+		// and let the helper short-circuit empty→allow-all for Path 2.
+		//
+		// Wait: the helper's allowlistContains returns false for empty
+		// allowedTools, which would make every tool look blocked. So
+		// we need a separate code path for "allow all" semantics.
+		// Simplest: pre-check in caller; if allow-all, mark firstTool
+		// as allowed regardless. Pass nil to the helper for the
+		// "allow all" case and handle in onWrongTool.
+		allowAll := len(resolvedRetry) == 0
+		ctrl, firstTool, callErr := p.recallAndCheckTool(
+			attemptCtx, turnCtx, ts, exec, iteration,
+			"retryLLMForBlockedTool", recoveryMsg, resolvedRetry,
+			func(firstToolArg string) Control {
+				if firstToolArg == "" {
+					// Text-only or malformed tool call → preserve
+					// original Path 2 behavior (RetryDecisionDone).
+					// Original code returned RetryDecisionDone for
+					// both text-only and malformed (empty name).
+					return ControlToolLoop
+				}
+				if allowAll {
+					// Allow-all phase (Open default) + real tool —
+					// treat as success.
+					return ControlToolLoop
+				}
+				// Wrong tool at restricted phase. Re-prompt with the
+				// original recoveryMsg.
+				exec.messages = append(exec.messages, providers.Message{
+					Role:    "user",
+					Content: recoveryMsg,
+				})
+				exec.callMessages = exec.messages
+				return ControlContinue
+			},
+		)
 		logger.InfoCF("agent", "Phase 12.22 retry evaluate", map[string]any{
 			"agent_id":  ts.agent.ID,
 			"attempt":   rc.Attempt,
@@ -1452,31 +1470,17 @@ func (p *Pipeline) retryLLMForBlockedTool(
 			"phase":     string(phaseForRetry),
 			"resolved":  fmt.Sprintf("%v", resolvedRetry),
 		})
-		if firstTool == "" {
-			// Malformed tool call — retry.
-			return RetryDecisionRetry, nil
+		if callErr != nil {
+			return RetryDecisionAbort, callErr
 		}
-		if len(resolvedRetry) == 0 {
-			// Empty allowlist = all tools allowed (Open phase
-			// default — base frontmatter missing).
+
+		if ctrl == ControlToolLoop {
+			// Success: LLM picked a valid tool or text-only. Map to
+			// RetryDecisionDone so BoundedRetry exits.
 			return RetryDecisionDone, nil
 		}
-		allowed := false
-		for _, name := range resolvedRetry {
-			if name == firstTool {
-				allowed = true
-				break
-			}
-		}
-		if allowed {
-			return RetryDecisionDone, nil
-		}
-		// Tool still blocked — append another recovery hint and retry.
-		exec.messages = append(exec.messages, providers.Message{
-			Role:    "user",
-			Content: recoveryMsg,
-		})
-		exec.callMessages = exec.messages
+		// ctrl == ControlContinue — wrong/no tool, we appended the
+		// recovery hint. Retry.
 		return RetryDecisionRetry, nil
 	})
 	if err != nil {

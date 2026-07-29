@@ -166,6 +166,10 @@ func (p *Pipeline) retryExecuteToolChain(
 // wrapper above so the per-attempt semantics stay readable and testable in
 // isolation (Task 4 tests target this entry point). Returns the same Control
 // semantics that the outer helper exposes to Path 2 / Path 4 callers.
+//
+// Phase 12.28.1 Task 8: Steps 1+2 are extracted to recallAndCheckTool so
+// retryLLMForBlockedTool (Path 2) can compose the same primitive. The
+// path-specific behavior on wrong-tool is delegated to onWrongTool.
 func (p *Pipeline) retryExecuteToolChainOnce(
 	ctx context.Context,
 	turnCtx context.Context,
@@ -176,60 +180,28 @@ func (p *Pipeline) retryExecuteToolChainOnce(
 	allowedTools []string,
 	phase string,
 ) (Control, error) {
-	// Step 1: recall LLM with hint. RecallLLM only invokes callLLMCore;
-	// it does NOT re-build exec.callMessages from ts.pendingRecoveryMessage
-	// the way CallLLM does (that consumption lives in pipeline_llm.go
-	// line 108 inside CallLLM, which we are bypassing). We therefore
-	// inject the hint directly into exec.callMessages AND arm the
-	// pendingRecoveryMessage field for any observer. The hook order
-	// in pipeline_llm.go's CallLLM (interruptHintMessage +
-	// pendingRecoveryMessage) is mirrored here.
-	hint := recoveryHint
-	setupFunc := func() {
-		ts.pendingRecoveryMessage = hint
-		if hint == "" {
-			return
-		}
-		base := exec.messages
-		if base == nil {
-			base = exec.callMessages
-		}
-		exec.callMessages = append([]providers.Message{}, base...)
-		exec.callMessages = append(exec.callMessages, providers.Message{
-			Role:    "user",
-			Content: hint,
-		})
+	// Step 1+2: shared recall-and-check primitive. Path 4's wrong-tool
+	// policy is "build phase-aware recovery hint and break" — the LLM
+	// already saw the original recoveryHint and still picked wrong,
+	// so we accept the failure rather than re-prompting.
+	ctrl, _, err := p.recallAndCheckTool(
+		ctx, turnCtx, ts, exec, iteration,
+		"retryExecuteToolChain",
+		recoveryHint, allowedTools,
+		func(firstTool string) Control {
+			hint := buildRecoveryHint(firstTool, allowedTools, phase)
+			ts.pendingRecoveryMessage = hint
+			retryExecuteToolChainWrongToolHits++
+			return ControlBreak
+		},
+	)
+	if err != nil {
+		return ctrl, err
 	}
-	resp, err := p.RecallLLM(ctx, turnCtx, ts, exec, iteration,
-		"retryExecuteToolChain", setupFunc)
-	if err != nil || resp == nil {
-		// LLM unavailable — archive the goal so the caller finalizes
-		// it cleanly, and break out of the loop.
-		ts.goalArchiveRequested = true
-		return ControlBreak, err
-	}
-
-	// RecallLLM does NOT mutate exec.response internally — Phase 12.26
-	// design contract. Caller MUST assign the returned value to
-	// exec.response so subsequent Step 2/Step 3 logic can read the
-	// tool call set. Without this assignment, exec.response stays nil
-	// from the prior call and the entire retry chain silently aborts.
-	exec.response = resp
-
-	// Step 2: check first tool selection against the phase allowlist.
-	firstTool := ""
-	if exec.response != nil && len(exec.response.ToolCalls) > 0 {
-		firstTool = exec.response.ToolCalls[0].Name
-	}
-	if firstTool == "" || !allowlistContains(allowedTools, firstTool) {
-		// Wrong or no tool selected. Re-arm the recovery hint with a
-		// fresh, phase-aware message so the caller (Path 4 / Path 3)
-		// sees a useful pendingRecoveryMessage on the next turn.
-		hint = buildRecoveryHint(firstTool, allowedTools, phase)
-		ts.pendingRecoveryMessage = hint
-		retryExecuteToolChainWrongToolHits++
+	if ctrl == ControlBreak {
 		return ControlBreak, nil
 	}
+	// ctrl == ControlToolLoop — LLM picked a valid tool. Proceed to Step 3+4.
 
 	// Step 3 (Tasks 4-7 wiring): call ExecuteTools via toolExecLazy().
 	// Production self-binding uses p.ExecuteTools; tests inject *fakeExecutor
@@ -295,6 +267,80 @@ func allowlistContains(allowlist []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// recallAndCheckTool (Phase 12.28.1 Task 8) is the shared Step 1+2 between
+// retryLLMForBlockedTool (Path 2, no ExecuteTools) and retryExecuteToolChain
+// (Path 4, executes tool). Extracts the LLM-recall + first-tool allowlist
+// check loop so both paths compose the same primitive.
+//
+// Contract:
+//   - Always invokes p.RecallLLM with the supplied hint (setupFunc arms
+//     ts.pendingRecoveryMessage and appends the hint to exec.callMessages).
+//   - Always assigns the returned *providers.LLMResponse to exec.response so
+//     downstream callers see the fresh response (Phase 12.26 contract).
+//   - Examines exec.response.ToolCalls[0].Name:
+//     * tool name == "" OR not in allowedTools → calls onWrongTool(firstTool)
+//       which decides what to do (re-prompt / break / etc.). This callback is
+//       path-specific — Path 2 re-prompts with stronger hint; Path 4 just
+//       builds a fresh phase-aware recovery message and breaks.
+//     * tool name in allowedTools → returns (ControlToolLoop, firstTool, nil)
+//       so the caller can proceed (Path 4 → ExecuteTools, Path 2 → return to
+//       caller which executes externally).
+//   - LLM call fatal error → returns (ControlBreak, "", err) so caller can
+//     abort the BoundedRetry loop.
+//
+// This helper does NOT decide retry-vs-break semantics; it owns the LLM
+// recall and tool selection check, and delegates the wrong-tool policy to
+// onWrongTool. The duplication between Path 2 (re-prompt) and Path 4
+// (break) is preserved by design — the two paths intentionally differ on
+// this point (Phase 12.22 lesson: re-prompt at blocked phases, break on
+// already-correct-pick error).
+func (p *Pipeline) recallAndCheckTool(
+	ctx, turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	iteration int,
+	helperName string,
+	recoveryHint string,
+	allowedTools []string,
+	onWrongTool func(firstTool string) (control Control),
+) (Control, string, error) {
+	hint := recoveryHint
+	setupFunc := func() {
+		ts.pendingRecoveryMessage = hint
+		if hint == "" {
+			return
+		}
+		base := exec.messages
+		if base == nil {
+			base = exec.callMessages
+		}
+		exec.callMessages = append([]providers.Message{}, base...)
+		exec.callMessages = append(exec.callMessages, providers.Message{
+			Role:    "user",
+			Content: hint,
+		})
+	}
+	resp, err := p.RecallLLM(ctx, turnCtx, ts, exec, iteration, helperName, setupFunc)
+	if err != nil || resp == nil {
+		ts.goalArchiveRequested = true
+		return ControlBreak, "", err
+	}
+
+	// RecallLLM does NOT mutate exec.response internally — Phase 12.26
+	// design contract. Caller MUST assign the returned value so downstream
+	// Step 2/Step 3 logic can read the tool call set.
+	exec.response = resp
+
+	firstTool := ""
+	if exec.response != nil && len(exec.response.ToolCalls) > 0 {
+		firstTool = exec.response.ToolCalls[0].Name
+	}
+	if firstTool == "" || !allowlistContains(allowedTools, firstTool) {
+		return onWrongTool(firstTool), firstTool, nil
+	}
+	return ControlToolLoop, firstTool, nil
 }
 
 // buildRecoveryHint constructs a phase-aware recovery message. When the LLM
