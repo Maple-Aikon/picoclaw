@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
@@ -968,5 +969,188 @@ func TestGoalProgressTool_NoExtend_WhenExtenderAbsent(t *testing.T) {
 	})
 	if res.IsError {
 		t.Fatalf("unexpected error: %v", res.Err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 12.28.3: Fix A — UTF-8 rune counting on complete_goal summary
+// ---------------------------------------------------------------------------
+
+// vnRunes builds a string of n Vietnamese runes (multi-byte UTF-8 chars).
+// "Phòng" is 5 runes but 7 bytes (Ph=2, ò=2, ng=2, g=1) — i.e. byte count > rune count.
+func vnRunes(n int) string {
+	const vn = "Phòng "
+	var b strings.Builder
+	for utf8.RuneCountInString(b.String()) < n {
+		b.WriteString(vn)
+	}
+	s := b.String()
+	// Trim if we overshot
+	for utf8.RuneCountInString(s) > n {
+		_, size := utf8.DecodeLastRuneInString(s)
+		s = s[:len(s)-size]
+	}
+	return s
+}
+
+// T-A1: 500-rune VN summary (700+ bytes) — must SUCCEED.
+func TestCompleteGoalTool_AcceptsVN_SummaryAtRuneLimit(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-A", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+	summary := vnRunes(500)
+	if utf8.RuneCountInString(summary) != 500 {
+		t.Fatalf("test setup error: vnRunes(500) produced %d runes", utf8.RuneCountInString(summary))
+	}
+	if len(summary) <= 500 {
+		t.Fatalf("test setup error: VN runes should be multi-byte; got %d bytes for 500 runes", len(summary))
+	}
+
+	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
+		"summary": summary,
+	})
+	if res.IsError {
+		t.Fatalf("500-rune VN summary should succeed (len=%d bytes, runes=%d); got isErr=true err_kind=%q msg=%q",
+			len(summary), utf8.RuneCountInString(summary), res.ErrKind, res.ForLLM)
+	}
+}
+
+// T-A2: 501-rune VN summary — must REJECT with clear error.
+func TestCompleteGoalTool_RejectsVN_SummaryOverRuneLimit(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-B", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+	summary := vnRunes(501)
+
+	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
+		"summary": summary,
+	})
+	if !res.IsError || res.ErrKind != toolshared.ErrInvalidInput {
+		t.Errorf("501-rune VN summary should reject; got isErr=%v kind=%q msg=%q",
+			res.IsError, res.ErrKind, res.ForLLM)
+	}
+}
+
+// T-A3: 500-byte ASCII summary — must SUCCEED (regression: byte count was correct here).
+func TestCompleteGoalTool_AcceptsASCII_SummaryAtByteLimit(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-C", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+	summary := strings.Repeat("a", 500)
+
+	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
+		"summary": summary,
+	})
+	if res.IsError {
+		t.Fatalf("500-char ASCII summary should succeed; got isErr=true err_kind=%q msg=%q", res.ErrKind, res.ForLLM)
+	}
+}
+
+// T-A4: 500-rune emoji summary (multi-byte, non-VN) — must SUCCEED.
+func TestCompleteGoalTool_AcceptsEmoji_SummaryAtRuneLimit(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-D", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+	summary := strings.Repeat("🦞", 500)
+
+	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
+		"summary": summary,
+	})
+	if res.IsError {
+		t.Fatalf("500-rune emoji summary should succeed; got isErr=true err_kind=%q msg=%q", res.ErrKind, res.ForLLM)
+	}
+}
+
+// T-A5: 500-rune mixed VN/EN/emoji, boundary check.
+func TestCompleteGoalTool_AcceptsMixed_500RunesNoRejection(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-E", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+	var b strings.Builder
+	for utf8.RuneCountInString(b.String()) < 500 {
+		switch b.Len() % 3 {
+		case 0:
+			b.WriteString("a")
+		case 1:
+			b.WriteString("Phòng ")
+		case 2:
+			b.WriteString("🦞")
+		}
+	}
+	// Trim if we overshot
+	s := b.String()
+	for utf8.RuneCountInString(s) > 500 {
+		_, n := utf8.DecodeLastRuneInString(s)
+		s = s[:len(s)-n]
+	}
+	summary := s
+	if utf8.RuneCountInString(summary) != 500 {
+		t.Fatalf("test setup error: expected 500 runes, got %d", utf8.RuneCountInString(summary))
+	}
+
+	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
+		"summary": summary,
+	})
+	if res.IsError {
+		t.Fatalf("mixed 500-rune summary should succeed; got isErr=true err_kind=%q msg=%q", res.ErrKind, res.ForLLM)
+	}
+}
+
+// T-A6: 501-byte ASCII summary — must REJECT (rune count must mean BOTH byte and rune cap).
+func TestCompleteGoalTool_RejectsASCII_SummaryAt501Bytes(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-F", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+	summary := strings.Repeat("a", 501)
+
+	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
+		"summary": summary,
+	})
+	if !res.IsError || res.ErrKind != toolshared.ErrInvalidInput {
+		t.Errorf("501-byte ASCII summary should reject; got isErr=%v kind=%q msg=%q",
+			res.IsError, res.ErrKind, res.ForLLM)
+	}
+}
+
+// T-A7: empty summary — separate code path (validation runs before rune count check).
+func TestCompleteGoalTool_EmptySummary_StillAccepted(t *testing.T) {
+	ws := tempWorkspace(t)
+	ctx := ctxWithSession("sess-G", "agent")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+
+	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
+		"summary": "",
+	})
+	if !res.IsError || res.ErrKind != toolshared.ErrInvalidInput {
+		t.Errorf("empty summary should hit required-field check (ErrInvalidInput), got isErr=%v kind=%q",
+			res.IsError, res.ErrKind)
 	}
 }

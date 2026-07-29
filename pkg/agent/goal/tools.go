@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
@@ -640,8 +641,8 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, args map[string]any) *to
 	if summary == "" {
 		return invalidInputForLLM("complete_goal: `summary` is required (1-500 chars). Provide your final user-facing reply.")
 	}
-	if len(summary) > 500 {
-		return invalidInputForLLM("complete_goal: `summary` exceeds 500 chars; shorten your final reply.")
+	if utf8.RuneCountInString(summary) > 500 {
+		return invalidInputForLLM("complete_goal: `summary` exceeds 500 characters (Unicode); shorten your final reply.")
 	}
 	store := newStoreFromCtx(ctx, t.workspace)
 	// Use ReadAny so a second call (after Archive moved the active file)
