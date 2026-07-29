@@ -273,6 +273,16 @@ func (p *Pipeline) retryExecuteToolChainOnce(
 	// No error detected — proceed with the tool loop normally. The caller
 	// will either continue iterating (ControlToolLoop returned above is
 	// already handled) or exit when the iteration cap is hit.
+	//
+	// Phase 12.28 Task 7: clear pendingRecoveryMessage so the outer
+	// BoundedRetry recognizes this attempt as "no retry needed" and
+	// returns RetryDecisionDone instead of burning the retry budget.
+	// Without this clear, the original recoveryHint stays armed
+	// forever and BoundedRetry exhausts 3 attempts on an
+	// already-passing chain (regression test for Task 6's design).
+	if ts.pendingRecoveryMessage != "" {
+		ts.pendingRecoveryMessage = ""
+	}
 	return ControlToolLoop, nil
 }
 

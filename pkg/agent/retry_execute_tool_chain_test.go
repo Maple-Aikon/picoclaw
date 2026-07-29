@@ -137,6 +137,12 @@ func TestRetryExecuteToolChain_TurnCtxIsContextContext(t *testing.T) {
 
 // fakeExecutor is the test-injected toolExecutor (Phase 12.28.1 Task 2). It
 // captures the last call arguments for assertion in subsequent test steps.
+//
+// Phase 12.28.1 Task 7 (Step 4-5 retry-on-error tests): the executor can
+// also append a tool-role message to exec.messages after running, so the
+// helper's Step 4 (checkToolExecErrorRecovery) has something to inspect.
+// Without this the helper always sees empty exec.messages and never reaches
+// the retry path.
 type fakeExecutor struct {
 	lastCtx       context.Context
 	lastTurnCtx   context.Context
@@ -146,6 +152,16 @@ type fakeExecutor struct {
 	callCount     int
 	returnControl ToolControl
 	returnErr     error
+
+	// Task 7 extensions — when non-empty, the executor appends a tool
+	// message to exec.messages after each ExecuteTools call:
+	//   appendContent: tool result text. Empty = don't append.
+	//   appendIsError: marks the appended message as an executor error.
+	//   appendToolName: sets ToolCallID so checkToolExecErrorRecovery can
+	//     extract a tool name. Defaults to "t1" when empty.
+	appendContent string
+	appendIsError bool
+	appendToolName string
 }
 
 func (f *fakeExecutor) ExecuteTools(
@@ -161,6 +177,17 @@ func (f *fakeExecutor) ExecuteTools(
 	f.lastExec = exec
 	f.lastIteration = iteration
 	f.callCount++
+	if f.appendContent != "" && exec != nil {
+		toolName := f.appendToolName
+		if toolName == "" {
+			toolName = "t1"
+		}
+		exec.messages = append(exec.messages, providers.Message{
+			Role:       "tool",
+			ToolCallID: toolName,
+			Content:    f.appendContent,
+		})
+	}
 	return f.returnControl
 }
 
@@ -495,5 +522,193 @@ func TestRetryExecuteToolChain_Step3_ToolControlBreak_Propagates(t *testing.T) {
 	}
 	if fake.callCount != 1 {
 		t.Errorf("expected ExecuteTools called once, got callCount=%d", fake.callCount)
+	}
+}
+
+// =============================================================================
+// Tests for Phase 12.28.1 Task 7 (Step 4-5 retry-on-error paths):
+//   Test 5: tool result success → Step 4 sees no error → return ControlToolLoop
+//   Test 6: tool result error → Step 4 sees executor error → re-arm hint,
+//           BoundedRetry continues to next attempt, second attempt succeeds
+// =============================================================================
+
+// Test 5: tool execution succeeded (fake appends tool message with
+// IsError=false) → checkToolExecErrorRecovery returns ("", "") →
+// helper returns ControlToolLoop, no further LLM call needed.
+func TestRetryExecuteToolChain_ToolResultSuccess_ReturnsControlToolLoop(t *testing.T) {
+	provider := &simpleValidToolProvider{
+		toolName: "complete_goal",
+		toolArgs: map[string]any{"summary": "done"},
+	}
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	p := NewPipeline(al)
+	fake := &fakeExecutor{
+		returnControl:  ToolControlContinue,
+		appendContent:  "OK",
+		appendIsError:  false,
+		appendToolName: "t1",
+	}
+	p.SetToolExecutor(fake)
+	ts, exec := setupRetryChainTestTurnState(t, al, p)
+
+	ctrl, err := p.retryExecuteToolChain(
+		context.Background(), context.Background(), ts, exec, 1,
+		"hint", []string{"goal_progress", "complete_goal"}, "checkpoint")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// Tool succeeded → helper returns ControlToolLoop so the caller
+	// continues its outer agent loop normally.
+	if ctrl != ControlToolLoop {
+		t.Errorf("expected ControlToolLoop (success), got %v", ctrl)
+	}
+	// BoundedRetry must exit after attempt 0 (success path):
+	// ts.pendingRecoveryMessage is "" so inner returns RetryDecisionDone.
+	if fake.callCount != 1 {
+		t.Errorf("expected exactly 1 ExecuteTools call (no retry), got %d", fake.callCount)
+	}
+	// Step 4 saw no error → goalArchiveRequested must remain false.
+	if ts.goalArchiveRequested {
+		t.Errorf("expected goalArchiveRequested=false (success), got true")
+	}
+}
+
+// =============================================================================
+// Helper types for Phase 12.28.1 Task 7 (Step 4-5 retry-on-error tests)
+// =============================================================================
+
+// twoAttemptProvider returns different tool calls on attempt 0 vs attempt 1,
+// so we can verify BoundedRetry re-calls the LLM after a tool exec error.
+type twoAttemptProvider struct {
+	attempt0Tool string
+	attempt0Args map[string]any
+	attempt1Tool string
+	attempt1Args map[string]any
+	calls        int
+}
+
+func (p *twoAttemptProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	options map[string]any,
+) (*providers.LLMResponse, error) {
+	p.calls++
+	if p.calls == 1 {
+		return &providers.LLMResponse{
+			Content:      "",
+			ToolCalls:    []providers.ToolCall{{Name: p.attempt0Tool, Arguments: p.attempt0Args}},
+			FinishReason: "stop",
+		}, nil
+	}
+	return &providers.LLMResponse{
+		Content:      "",
+		ToolCalls:    []providers.ToolCall{{Name: p.attempt1Tool, Arguments: p.attempt1Args}},
+		FinishReason: "stop",
+	}, nil
+}
+
+func (p *twoAttemptProvider) GetDefaultModel() string {
+	return "test-model"
+}
+
+// fakeExecutorStep configures one ExecuteTools invocation. Each call
+// advances to the next step; when steps are exhausted, the last step
+// repeats (test must size steps correctly).
+type fakeExecutorStep struct {
+	returnControl  ToolControl
+	appendContent  string
+	appendIsError  bool
+	appendToolName string
+}
+
+type fakeSequenceExecutor struct {
+	steps     []fakeExecutorStep
+	callCount int
+}
+
+func (f *fakeSequenceExecutor) ExecuteTools(
+	ctx context.Context,
+	turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	iteration int,
+) ToolControl {
+	stepIdx := f.callCount
+	if stepIdx >= len(f.steps) {
+		stepIdx = len(f.steps) - 1
+	}
+	step := f.steps[stepIdx]
+	f.callCount++
+	if step.appendContent != "" && exec != nil {
+		toolName := step.appendToolName
+		if toolName == "" {
+			toolName = "t1"
+		}
+		exec.messages = append(exec.messages, providers.Message{
+			Role:       "tool",
+			ToolCallID: toolName,
+			Content:    step.appendContent,
+		})
+	}
+	return step.returnControl
+}
+
+// Compile-time check that fakeSequenceExecutor satisfies toolExecutor.
+var _ toolExecutor = (*fakeSequenceExecutor)(nil)
+
+// Test 6: tool execution errored (fake appends tool message with
+// IsError=true and a "Tool execution failed:" prefix that
+// checkToolExecErrorRecovery recognizes) → retry path fires →
+// BoundedRetry continues to attempt 1 where the LLM picks a
+// different tool that succeeds.
+func TestRetryExecuteToolChain_ToolResultError_RetriesWithNewHint(t *testing.T) {
+	provider := &twoAttemptProvider{
+		attempt0Tool:  "goal_progress",
+		attempt0Args:  map[string]any{"completed_steps": []string{"a"}, "remaining_steps": []string{"b"}},
+		attempt1Tool:  "goal_progress",
+		attempt1Args:  map[string]any{"completed_steps": []string{"a", "b"}, "remaining_steps": []string{"c"}},
+	}
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	p := NewPipeline(al)
+	// First call: tool errors. Second call: tool succeeds.
+	// We append different tool messages based on callCount.
+	fake := &fakeSequenceExecutor{
+		steps: []fakeExecutorStep{
+			{
+				returnControl:  ToolControlContinue,
+				appendContent:  "Tool execution failed: validation error",
+				appendIsError:  true,
+				appendToolName: "t1",
+			},
+			{
+				returnControl:  ToolControlContinue,
+				appendContent:  "OK",
+				appendIsError:  false,
+				appendToolName: "t2",
+			},
+		},
+	}
+	p.SetToolExecutor(fake)
+	ts, exec := setupRetryChainTestTurnState(t, al, p)
+
+	ctrl, err := p.retryExecuteToolChain(
+		context.Background(), context.Background(), ts, exec, 1,
+		"first hint", []string{"goal_progress", "complete_goal"}, "checkpoint")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// Two attempts: error → retry → success → ControlToolLoop.
+	if ctrl != ControlToolLoop {
+		t.Errorf("expected ControlToolLoop after recovery, got %v", ctrl)
+	}
+	if fake.callCount != 2 {
+		t.Errorf("expected 2 ExecuteTools calls (error + retry), got %d", fake.callCount)
+	}
+	if ts.goalArchiveRequested {
+		t.Errorf("expected goalArchiveRequested=false (recovered), got true")
 	}
 }
