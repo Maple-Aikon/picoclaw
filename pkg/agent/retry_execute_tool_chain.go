@@ -114,7 +114,7 @@ func (p *Pipeline) retryExecuteToolChain(
 					"phase":      phase,
 				})
 		},
-	}, func(ctx context.Context, rc RetryContext) (RetryDecision, error) {
+		}, func(ctx context.Context, rc RetryContext) (RetryDecision, error) {
 		ctrl, err := p.retryExecuteToolChainOnce(ctx, turnCtx, ts, exec, iteration,
 			recoveryHint, allowedTools, phase)
 		innerResult = ctrl
@@ -125,6 +125,18 @@ func (p *Pipeline) retryExecuteToolChain(
 			return RetryDecisionDone, nil
 		}
 		// ctrl == ControlToolLoop → caller-loop or retry-on-error.
+		// Phase 12.28 Task 6 contract: BoundedRetry should only continue
+		// when the LLM/timing warrants another attempt. The
+		// distinguishing signal is ts.pendingRecoveryMessage:
+		//   - empty: success path. Propagate ControlToolLoop to caller
+		//     (the caller-loop is OUTSIDE this helper) and exit
+		//     BoundedRetry immediately so we don't burn retry budget.
+		//   - non-empty: a retry was triggered (Step 2 wrong-tool or
+		//     Step 4 tool-exec transient). Continue BoundedRetry until
+		//     retryMsg is cleared or the cap is hit.
+		if ts.pendingRecoveryMessage == "" {
+			return RetryDecisionDone, nil
+		}
 		return RetryDecisionRetry, nil
 	})
 	if err != nil {
@@ -196,6 +208,13 @@ func (p *Pipeline) retryExecuteToolChainOnce(
 		ts.goalArchiveRequested = true
 		return ControlBreak, err
 	}
+
+	// RecallLLM does NOT mutate exec.response internally — Phase 12.26
+	// design contract. Caller MUST assign the returned value to
+	// exec.response so subsequent Step 2/Step 3 logic can read the
+	// tool call set. Without this assignment, exec.response stays nil
+	// from the prior call and the entire retry chain silently aborts.
+	exec.response = resp
 
 	// Step 2: check first tool selection against the phase allowlist.
 	firstTool := ""

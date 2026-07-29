@@ -31,6 +31,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 // =============================================================================
@@ -381,5 +383,117 @@ func TestRetryExecuteToolChain_LLMCalledWithHint(t *testing.T) {
 		if !strings.Contains(ts.pendingRecoveryMessage, phaseName) {
 			t.Fatalf("expected phase %q in re-armed hint, got %q", phaseName, ts.pendingRecoveryMessage)
 		}
+	}
+}
+
+// =============================================================================
+// Tests for Task 6 (Phase 12.28.1 Step 3 wiring): helper calls ExecuteTools
+// after Step 2 selects a valid tool (firstTool in allowedTools).
+//
+// What Task 6 verifies:
+//   1. valid tool selection (firstTool in allowlist) → helper invokes
+//      ExecuteTools via the toolExecutor interface
+//   2. ExecuteTools return value (ToolControl) propagates to outer Control:
+//        - ToolControlContinue → ControlToolLoop (caller continues tool loop)
+//        - ToolControlBreak    → ControlBreak (caller breaks)
+//   3. goalArchiveRequested stays false when no tool error fires
+//
+// recordingProvider has no scripted tool_calls by default — we manually
+// pre-seed exec.response to simulate LLM having returned a valid tool.
+// Full Step 3 runtime coverage (production ExecuteTools with real
+// tool_registry dispatch) lands in Task 7's Path 4 migration.
+// simpleValidToolProvider emits a single valid tool call (set_goal) per
+// call and records every invocation. Used by Task 6 Step 3 tests where
+// we need a deterministic "valid tool selection" path that survives
+// Step 1's callLLMCore overwriting exec.response.
+type simpleValidToolProvider struct {
+	mu       struct{ calls int }
+	toolName string
+	toolArgs map[string]any
+	response string
+}
+
+func (s *simpleValidToolProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	options map[string]any,
+) (*providers.LLMResponse, error) {
+	s.mu.calls++
+	return &providers.LLMResponse{
+		Content:      s.response,
+		ToolCalls:    []providers.ToolCall{{Name: s.toolName, Arguments: s.toolArgs}},
+		FinishReason: "stop",
+	}, nil
+}
+
+func (s *simpleValidToolProvider) GetDefaultModel() string {
+	return "test-model"
+}
+
+func TestRetryExecuteToolChain_Step3_ValidTool_InvokesExecuteTools(t *testing.T) {
+	// recoveryHint=="" exercises the success path: setupFunc arms
+	// pendingRecoveryMessage="" → BoundedRetry inner immediately returns
+	// RetryDecisionDone on ControlToolLoop (no retry budget burned),
+	// outer exits after exactly one ExecuteTools call.
+	provider := &simpleValidToolProvider{
+		toolName: "set_goal",
+		toolArgs: map[string]any{"name": "test", "objective": "o", "success_criteria": []string{"s"}},
+	}
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	p := NewPipeline(al)
+	fake := &fakeExecutor{returnControl: ToolControlContinue}
+	p.SetToolExecutor(fake)
+	ts, exec := setupRetryChainTestTurnState(t, al, p)
+
+	ctrl, err := p.retryExecuteToolChain(
+		context.Background(), context.Background(), ts, exec, 1,
+		"", []string{"set_goal", "complete_goal"}, "checkpoint")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// fake returned ToolControlContinue → outer should propagate as
+	// ControlToolLoop (continue tool loop).
+	if ctrl != ControlToolLoop {
+		t.Errorf("expected ControlToolLoop (valid tool + ToolControlContinue), got %v", ctrl)
+	}
+	// ExecuteTools MUST have been called exactly once (success path
+	// does not spend any retry attempts).
+	if fake.callCount != 1 {
+		t.Errorf("expected ExecuteTools called once, got callCount=%d", fake.callCount)
+	}
+	// Step 4 must NOT have fired — fake didn't append a tool error.
+	if ts.goalArchiveRequested {
+		t.Errorf("expected goalArchiveRequested=false (Step 4 not triggered), got true")
+	}
+}
+
+func TestRetryExecuteToolChain_Step3_ToolControlBreak_Propagates(t *testing.T) {
+	provider := &simpleValidToolProvider{
+		toolName: "complete_goal",
+		toolArgs: map[string]any{"summary": "done"},
+	}
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	p := NewPipeline(al)
+	// Fake returns ToolControlBreak to simulate "handled all responses"
+	// (Phase 6 flow where the tool itself sends to user and ends the turn).
+	fake := &fakeExecutor{returnControl: ToolControlBreak}
+	p.SetToolExecutor(fake)
+	ts, exec := setupRetryChainTestTurnState(t, al, p)
+
+	ctrl, err := p.retryExecuteToolChain(
+		context.Background(), context.Background(), ts, exec, 1,
+		"hint", []string{"complete_goal"}, "final")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if ctrl != ControlBreak {
+		t.Errorf("expected ControlBreak (tool responded → break), got %v", ctrl)
+	}
+	if fake.callCount != 1 {
+		t.Errorf("expected ExecuteTools called once, got callCount=%d", fake.callCount)
 	}
 }
