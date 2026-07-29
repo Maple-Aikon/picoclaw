@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -127,10 +128,48 @@ func (p *Pipeline) retryExecuteToolChain(
 		return ControlBreak, nil
 	}
 
-	// Step 3-5: Tasks 6-7 implement ExecuteTools + result check + retry.
-	// For the Task 3 compile-only stub, returning ControlToolLoop signals
-	// "the LLM produced a tool selection that is in the allowlist; the
-	// caller may proceed".
+	// Step 3 (Tasks 4-7 wiring): call ExecuteTools via toolExecLazy().
+	// Production self-binding uses p.ExecuteTools; tests inject *fakeExecutor
+	// via SetToolExecutor (Task 3). The tool results land in exec.messages
+	// (last entries with Role="tool"); checkToolExecErrorRecovery inspects
+	// them after this call.
+	toolCtrl := p.toolExecLazy().ExecuteTools(ctx, turnCtx, ts, exec, iteration)
+	if toolCtrl == ToolControlBreak {
+		// Executor broke early (e.g. approval rejected, hard abort). Mirror
+		// the caller-side handling: return ControlBreak so the coordinator
+		// exits the loop without re-trying in the same iteration.
+		return ControlBreak, nil
+	}
+
+	// Step 4 (Task 4 — this commit): inspect the tool results for executor
+	// errors that warrant same-iter retry (Phase 12.22 retryLLMForBlockedTool
+	// pattern). checkToolExecErrorRecovery returns (toolName, msg):
+	//   - toolName != "" → counter exhausted → archive goal + break
+	//   - toolName == "" && msg != "" → counter not exhausted → retry
+	//   - both "" → no error detected → continue normally
+	archiveTool, retryMsg := checkToolExecErrorRecovery(ts, exec)
+	if archiveTool != "" {
+		ts.goalArchiveRequested = true
+		logger.InfoCF("agent", "retryExecuteToolChain: tool-exec retries exhausted",
+			map[string]any{
+				"agent_id": ts.agent.ID,
+				"tool":     archiveTool,
+				"message":  retryMsg,
+			})
+		return ControlBreak, nil
+	}
+	if retryMsg != "" {
+		// Same-iter retry. Re-arm the recovery hint with the executor's
+		// retry message and return ControlToolLoop so the caller may
+		// loop back into Step 1 of the next attempt. (BoundedRetry
+		// wrapping lands in Task 5.)
+		ts.pendingRecoveryMessage = retryMsg
+		return ControlToolLoop, nil
+	}
+
+	// No error detected — proceed with the tool loop normally. The caller
+	// will either continue iterating (ControlToolLoop returned above is
+	// already handled) or exit when the iteration cap is hit.
 	return ControlToolLoop, nil
 }
 

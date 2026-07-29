@@ -177,6 +177,46 @@ var _ toolExecutor = (*fakeExecutor)(nil)
 //  1. After SetToolExecutor(fake), toolExecLazy() returns the fake
 //  2. Without SetToolExecutor, toolExecLazy() returns *Pipeline (self-binding)
 //  3. *Pipeline satisfies toolExecutor via existing ExecuteTools method
+// =============================================================================
+// Tests for Task 4 (Phase 12.28.1 Step 4 wiring): helper calls ExecuteTools
+// then checks exec.messages for tool errors.
+//
+// Test note: Step 4 only fires when Step 2 selects a VALID tool (i.e.,
+// the LLM picks set_goal when set_goal is in the allowlist). recordingProvider
+// returns 0 tool_calls by default, so it hits Step 2's wrong-tool branch first.
+// Full Step 4 runtime coverage lands in Task 7 (Path 2/4 migration) with
+// scripted providers that return valid tool selections.
+//
+// What Task 4 verifies here is wiring-correctness: the helper compiles,
+// imports checkToolExecErrorRecovery, and the no-tool-selected path returns
+// ControlBreak BEFORE Step 3 (proving the gate order is right).
+func TestRetryExecuteToolChain_Step4_NoToolSelected_StopsAtStep2(t *testing.T) {
+	provider := &recordingProvider{} // no tool_calls → Step 2 wrong-tool branch
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	p := NewPipeline(al)
+	fake := &fakeExecutor{returnControl: ToolControlContinue}
+	p.SetToolExecutor(fake)
+	ts, exec := setupRetryChainTestTurnState(t, al, p)
+
+	ctrl, err := p.retryExecuteToolChain(
+		context.Background(), context.Background(), ts, exec, 1,
+		"hint", []string{"set_goal"}, "checkpoint")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if ctrl != ControlBreak {
+		t.Errorf("expected ControlBreak (Step 2 wrong-tool gate), got %v", ctrl)
+	}
+	// ExecuteTools MUST NOT have been called (Step 2 short-circuits).
+	if fake.callCount != 0 {
+		t.Errorf("expected ExecuteTools NOT called (Step 2 gated), got callCount=%d", fake.callCount)
+	}
+	if ts.pendingRecoveryMessage == "" {
+		t.Errorf("expected ts.pendingRecoveryMessage re-armed with phase-aware hint")
+	}
+}
+
 func TestRetryExecuteToolChain_SetToolExecutor_Injection(t *testing.T) {
 	provider := &recordingProvider{}
 	al, _, cleanup := newTurnCoordTestLoop(t, provider)
