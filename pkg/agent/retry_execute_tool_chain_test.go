@@ -126,8 +126,73 @@ func TestRetryExecuteToolChain_TurnCtxIsContextContext(t *testing.T) {
 //   - Steps 3-5: TODO Tasks 6-7 (return ControlToolLoop placeholder)
 //   - Step 6: archive + break  ✅ exercised below (wrong-tool branch)
 //
-// recordingProvider is used so we can verify Step 1: the LLM was
-// actually called with the recovery hint present in its message list.
+// Compile-time assertion: *Pipeline must satisfy toolExecutor. The interface
+// is defined in retry_execute_tool_chain.go (Phase 12.28.1 Task 2). If this
+// file compiles, the contract holds.
+//
+// To verify: change toolExecutor.ExecuteTools signature in retry_execute_tool_chain.go
+// (e.g. add a parameter) and this file fails to compile, surfacing the drift.
+
+// fakeExecutor is the test-injected toolExecutor (Phase 12.28.1 Task 2). It
+// captures the last call arguments for assertion in subsequent test steps.
+type fakeExecutor struct {
+	lastCtx       context.Context
+	lastTurnCtx   context.Context
+	lastTs        *turnState
+	lastExec      *turnExecution
+	lastIteration int
+	callCount     int
+	returnControl ToolControl
+	returnErr     error
+}
+
+func (f *fakeExecutor) ExecuteTools(
+	ctx context.Context,
+	turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	iteration int,
+) ToolControl {
+	f.lastCtx = ctx
+	f.lastTurnCtx = turnCtx
+	f.lastTs = ts
+	f.lastExec = exec
+	f.lastIteration = iteration
+	f.callCount++
+	return f.returnControl
+}
+
+// Compile-time check: fakeExecutor must satisfy toolExecutor. Inverted
+// assertion — proves the test injection path matches the interface.
+var _ toolExecutor = (*fakeExecutor)(nil)
+
+// Test for Task 2: toolExecutor interface contract verified via:
+//  1. *Pipeline satisfies toolExecutor (compile-time, checked in retry_execute_tool_chain.go)
+//  2. *fakeExecutor satisfies toolExecutor (compile-time, just above)
+//  3. fakeExecutor.ExecuteTools captures arguments (runtime)
+func TestRetryExecuteToolChain_ToolExecutorInterface_Contract(t *testing.T) {
+	fake := &fakeExecutor{returnControl: ToolControlContinue}
+	var iface toolExecutor = fake
+	ts := &turnState{turnCtx: &TurnContext{}}
+	exec := &turnExecution{}
+	ctrl := iface.ExecuteTools(context.Background(), context.Background(), ts, exec, 5)
+	if ctrl != ToolControlContinue {
+		t.Errorf("expected ControlContinue, got %v", ctrl)
+	}
+	if fake.callCount != 1 {
+		t.Errorf("expected callCount=1, got %d", fake.callCount)
+	}
+	if fake.lastIteration != 5 {
+		t.Errorf("expected lastIteration=5, got %d", fake.lastIteration)
+	}
+	if fake.lastTs != ts {
+		t.Errorf("expected ts to be captured")
+	}
+	if fake.lastExec != exec {
+		t.Errorf("expected exec to be captured")
+	}
+}
+
 func TestRetryExecuteToolChain_LLMCalledWithHint(t *testing.T) {
 	provider := &recordingProvider{}
 	al, _, cleanup := newTurnCoordTestLoop(t, provider)

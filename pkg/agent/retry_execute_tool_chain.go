@@ -41,6 +41,33 @@ func ResetRetryExecuteToolChainTestCounters() {
 //
 // Task 3 ships only the stub (Step 1 + Step 2 branch + Step 3-6 stubs
 // for compile-only). Tasks 6-7 fill in Step 3-5.
+
+// toolExecutor is the swappable ExecuteTools dependency (Phase 12.28.1 Task 2).
+// Path 2 (retryLLMForBlockedTool) and Path 4 (turn_coord.go:373+) use this to
+// inject a fake in tests, avoiding the cost of full Pipeline.ExecuteTools
+// which depends on AgentLoop + tool registry + session storage.
+//
+// Interface contract matches Pipeline.ExecuteTools signature verbatim:
+//
+//	ExecuteTools(ctx, turnCtx context.Context, ts *turnState,
+//	            exec *turnExecution, iteration int) ToolControl
+//
+// Breaking changes to Pipeline.ExecuteTools require a deliberate interface
+// update — the compile-time assertion below will catch any drift.
+type toolExecutor interface {
+	ExecuteTools(
+		ctx context.Context,
+		turnCtx context.Context,
+		ts *turnState,
+		exec *turnExecution,
+		iteration int,
+	) ToolControl
+}
+
+// Compile-time check: *Pipeline must satisfy toolExecutor. Silent breakage
+// forces a compile error here, surfacing the contract drift.
+var _ toolExecutor = (*Pipeline)(nil)
+
 func (p *Pipeline) retryExecuteToolChain(
 	ctx context.Context,
 	turnCtx context.Context,
