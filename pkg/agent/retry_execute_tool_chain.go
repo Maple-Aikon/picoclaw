@@ -1,0 +1,120 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/sipeed/picoclaw/pkg/providers"
+)
+
+// retryExecuteToolChain unifies the same-iteration retry chain used by
+// goal-recovery (handleGoalRecovery), tool-exec-recovery (Path 4),
+// and tool-block recovery (retryLLMForBlockedTool).
+//
+// Phase 12.28 contract (plan §3.1):
+//   - Step 1: recall LLM with hint
+//   - Step 2: check first tool against allowedTools
+//   - Step 3: if selected tool is in allowlist → execute it
+//   - Step 4: check tool result
+//   - Step 5: if error → new hint + retry (up to ToolExecErrorRetryCap)
+//   - Step 6: on success → ControlToolLoop; on exhaustion → ControlBreak + archive
+//
+// Task 3 ships only the stub (Step 1 + Step 2 branch + Step 3-6 stubs
+// for compile-only). Tasks 6-7 fill in Step 3-5.
+func (p *Pipeline) retryExecuteToolChain(
+	ctx context.Context,
+	turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	iteration int,
+	recoveryHint string,
+	allowedTools []string,
+	phase string,
+) (Control, error) {
+	// Step 1: recall LLM with hint. RecallLLM only invokes callLLMCore;
+	// it does NOT re-build exec.callMessages from ts.pendingRecoveryMessage
+	// the way CallLLM does (that consumption lives in pipeline_llm.go
+	// line 108 inside CallLLM, which we are bypassing). We therefore
+	// inject the hint directly into exec.callMessages AND arm the
+	// pendingRecoveryMessage field for any observer. The hook order
+	// in pipeline_llm.go's CallLLM (interruptHintMessage +
+	// pendingRecoveryMessage) is mirrored here.
+	hint := recoveryHint
+	setupFunc := func() {
+		ts.pendingRecoveryMessage = hint
+		if hint == "" {
+			return
+		}
+		base := exec.messages
+		if base == nil {
+			base = exec.callMessages
+		}
+		exec.callMessages = append([]providers.Message{}, base...)
+		exec.callMessages = append(exec.callMessages, providers.Message{
+			Role:    "user",
+			Content: hint,
+		})
+	}
+	resp, err := p.RecallLLM(ctx, turnCtx, ts, exec, iteration,
+		"retryExecuteToolChain", setupFunc)
+	if err != nil || resp == nil {
+		// LLM unavailable — archive the goal so the caller finalizes
+		// it cleanly, and break out of the loop.
+		ts.goalArchiveRequested = true
+		return ControlBreak, err
+	}
+
+	// Step 2: check first tool selection against the phase allowlist.
+	firstTool := ""
+	if exec.response != nil && len(exec.response.ToolCalls) > 0 {
+		firstTool = exec.response.ToolCalls[0].Name
+	}
+	if firstTool == "" || !allowlistContains(allowedTools, firstTool) {
+		// Wrong or no tool selected. Re-arm the recovery hint with a
+		// fresh, phase-aware message so the caller (Path 4 / Path 3)
+		// sees a useful pendingRecoveryMessage on the next turn.
+		hint = buildRecoveryHint(firstTool, allowedTools, phase)
+		ts.pendingRecoveryMessage = hint
+		return ControlBreak, nil
+	}
+
+	// Step 3-5: Tasks 6-7 implement ExecuteTools + result check + retry.
+	// For the Task 3 compile-only stub, returning ControlToolLoop signals
+	// "the LLM produced a tool selection that is in the allowlist; the
+	// caller may proceed".
+	return ControlToolLoop, nil
+}
+
+// allowlistContains reports whether name appears in allowlist. Equivalent to
+// slices.Contains but kept local to avoid an extra import in this small file.
+func allowlistContains(allowlist []string, name string) bool {
+	for _, t := range allowlist {
+		if t == name {
+			return true
+		}
+	}
+	return false
+}
+
+// buildRecoveryHint constructs a phase-aware recovery message. When the LLM
+// picked the wrong tool (wrongTool != ""), we name it explicitly; otherwise
+// we just list the allowed tools. The trailing "Pick one of these or call
+// complete_goal" gives the LLM an unambiguous next action.
+func buildRecoveryHint(wrongTool string, allowedTools []string, phase string) string {
+	var b strings.Builder
+	if wrongTool != "" {
+		fmt.Fprintf(&b, "Tool %q is not available in current phase (%s). ", wrongTool, phase)
+	} else {
+		fmt.Fprintf(&b, "No tool selected; current phase is %s. ", phase)
+	}
+	b.WriteString("Allowed tools: ")
+	for i, t := range allowedTools {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(t)
+	}
+	b.WriteString(". Pick one of these or call complete_goal.")
+	return b.String()
+}
