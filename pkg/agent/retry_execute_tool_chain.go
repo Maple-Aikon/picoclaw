@@ -80,6 +80,90 @@ func (p *Pipeline) retryExecuteToolChain(
 	phase string,
 ) (Control, error) {
 	retryExecuteToolChainCallCount++
+
+	// Step 5 (Task 5 — this commit): wrap Steps 1-4 in
+	// BoundedRetry(MaxAttempts=ToolExecErrorRetryCap=3) so transient
+	// tool-execution errors get same-iter retry budget (Phase 12.22
+	// retryLLMForBlockedTool pattern + Phase 12.11 BoundedRetry shape).
+	//
+	// Mapping from inner Control to BoundedRetry decision:
+	//   ControlToolLoop  → RetryDecisionRetry (caller-loop OR retry-on-error)
+	//   ControlBreak    → RetryDecisionDone  (terminal: wrong tool / archive / LLM down)
+	//
+	// After BoundedRetry exits we check the exhausted flag (set by
+	// OnExhausted) because BoundedRetry returns RetryDecisionRetry on
+	// exhaustion — NOT RetryDecisionAbort (Phase 12.22 lesson). Without
+	// the flag we'd never distinguish "caller broke loop naturally" from
+	// "we burned all attempts".
+	// Inner result preserved across the BoundedRetry loop so the outer
+	// caller sees the same Control enum Path 2 / Path 4 originally
+	// expected. Without this, ControlBreak from Step 2/Step 4 would be
+	// collapsed into ControlToolLoop on the way out.
+	var innerResult Control
+	exhausted := false
+	_, err := BoundedRetry(ctx, RetryConfig{
+		Name:        "retryExecuteToolChain",
+		MaxAttempts: ToolExecErrorRetryCap,
+		OnExhausted: func(rc RetryContext) {
+			exhausted = true
+			logger.InfoCF("agent", "retryExecuteToolChain: attempts exhausted",
+				map[string]any{
+					"agent_id":   ts.agent.ID,
+					"max":        rc.MaxAttempts,
+					"elapsed_ms": rc.Elapsed.Milliseconds(),
+					"phase":      phase,
+				})
+		},
+	}, func(ctx context.Context, rc RetryContext) (RetryDecision, error) {
+		ctrl, err := p.retryExecuteToolChainOnce(ctx, turnCtx, ts, exec, iteration,
+			recoveryHint, allowedTools, phase)
+		innerResult = ctrl
+		if err != nil {
+			return RetryDecisionDone, err
+		}
+		if ctrl == ControlBreak {
+			return RetryDecisionDone, nil
+		}
+		// ctrl == ControlToolLoop → caller-loop or retry-on-error.
+		return RetryDecisionRetry, nil
+	})
+	if err != nil {
+		ts.goalArchiveRequested = true
+		return ControlBreak, err
+	}
+	if exhausted {
+		// Cap hit while still retrying. Mirror the canonical
+		// handleGoalRecovery OnExhausted (pipeline_llm.go:1173): archive
+		// the goal so the caller finalizes cleanly, then break out.
+		ts.goalArchiveRequested = true
+		logger.InfoCF("agent", "retryExecuteToolChain: archive after exhaustion",
+			map[string]any{
+				"agent_id": ts.agent.ID,
+				"phase":    phase,
+			})
+		return ControlBreak, nil
+	}
+	// Return whatever the inner step produced. If Step 2/Step 4 hit
+	// a terminal condition (wrong tool / archive) the inner returned
+	// ControlBreak and BoundedRetry exited via Done — propagate that
+	// to the caller instead of flattening it to ControlToolLoop.
+	return innerResult, nil
+}
+
+// retryExecuteToolChainOnce runs Steps 1-4 ONCE. Split out from the BoundedRetry
+// wrapper above so the per-attempt semantics stay readable and testable in
+// isolation (Task 4 tests target this entry point). Returns the same Control
+// semantics that the outer helper exposes to Path 2 / Path 4 callers.
+func (p *Pipeline) retryExecuteToolChainOnce(
+	ctx context.Context,
+	turnCtx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	iteration int,
+	recoveryHint string,
+	allowedTools []string,
+	phase string,
+) (Control, error) {
 	// Step 1: recall LLM with hint. RecallLLM only invokes callLLMCore;
 	// it does NOT re-build exec.callMessages from ts.pendingRecoveryMessage
 	// the way CallLLM does (that consumption lives in pipeline_llm.go

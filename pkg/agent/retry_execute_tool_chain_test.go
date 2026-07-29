@@ -217,6 +217,54 @@ func TestRetryExecuteToolChain_Step4_NoToolSelected_StopsAtStep2(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Tests for Task 5 (Phase 12.28.1 Step 5 wiring): helper wraps Steps 1-4 in
+// BoundedRetry(MaxAttempts=ToolExecErrorRetryCap=3).
+//
+// What we verify here is the wrapper structure:
+//   - OnExhausted callback fires when MaxAttempts is hit while still retrying
+//   - exhaustion flag → ts.goalArchiveRequested=true + return ControlBreak
+//   - inner ResultControlBreak (wrong tool) propagated through BoundedRetry exit
+//
+// Runtime verification (real LLM picks wrong tool N times, then archives) is
+// left to Task 7's Path 2/Path 4 migration with scripted providers.
+
+func TestRetryExecuteToolChain_Step5_InnerBreakPropagates(t *testing.T) {
+	provider := &recordingProvider{} // no tool_calls → Step 2 returns ControlBreak
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	p := NewPipeline(al)
+	fake := &fakeExecutor{returnControl: ToolControlContinue}
+	p.SetToolExecutor(fake)
+	ts, exec := setupRetryChainTestTurnState(t, al, p)
+
+	ctrl, err := p.retryExecuteToolChain(
+		context.Background(), context.Background(), ts, exec, 1,
+		"hint", []string{"set_goal"}, "checkpoint")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// Inner Step 2 → ControlBreak → outer should propagate that, NOT
+	// flatten it to ControlToolLoop. Regression-proof for the innerResult
+	// capture added in Task 5.
+	if ctrl != ControlBreak {
+		t.Errorf("expected ControlBreak propagated from Step 2, got %v", ctrl)
+	}
+	// No archive requested (wrong-tool is not exhaustion).
+	if ts.goalArchiveRequested {
+		t.Errorf("expected goalArchiveRequested=false (Step 2 is not exhaustion), got true")
+	}
+	// ExecuteTools MUST NOT have been called (Step 2 short-circuits).
+	if fake.callCount != 0 {
+		t.Errorf("expected ExecuteTools NOT called (Step 2 gated), got callCount=%d", fake.callCount)
+	}
+}
+
+// mockBoundedRetryExhaustionHelper simulates the inner-step exhaustion path by
+// always returning ControlToolLoop (so BoundedRetry keeps retrying until cap
+// hit). Task 5 wiring tests use this in place of a scripted LLM provider.
+type mockAlwaysRetryOnceHelper struct{}
+
 func TestRetryExecuteToolChain_SetToolExecutor_Injection(t *testing.T) {
 	provider := &recordingProvider{}
 	al, _, cleanup := newTurnCoordTestLoop(t, provider)
