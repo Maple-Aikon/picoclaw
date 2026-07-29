@@ -162,3 +162,48 @@ func TestGoalPhaseHint_AllThreeAreLayerSeparated(t *testing.T) {
 		t.Errorf("expected 3 distinct Source.IDs, got %v", ids)
 	}
 }
+
+// Phase 12.29 — TestGoalPhaseCheckpointHint_DoesNotSuggestToolDiscovery
+// Regression-proof: lock that the Checkpoint hint does NOT mention tool
+// discovery as available — this combined with the new phase-aware tool
+// discovery rule (formatToolDiscoveryRule) prevents LLM from reasoning
+// "tool_search_tool_bm25 is hidden, let me search".
+func TestGoalPhaseCheckpointHint_DoesNotSuggestToolDiscovery(t *testing.T) {
+	req := PromptBuildRequest{GoalPhase: string(GoalPhaseCheckpoint), Iteration: 25}
+	got := goalPhaseCheckpointHintContributor(req)
+	if got == nil {
+		t.Fatal("expected non-nil hint at Checkpoint")
+	}
+	forbidden := []string{
+		"tool_search_tool_bm25",
+		"tool_search_tool_regex",
+		"you MUST search",
+		"search using",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(got.Content, f) {
+			t.Errorf("Checkpoint hint should NOT mention %q as available, got: %q", f, got.Content)
+		}
+	}
+}
+
+// Phase 12.29 — TestGoalPhaseFinalHint_DoesNotSuggestToolDiscovery
+// Same regression-proof for Final phase.
+func TestGoalPhaseFinalHint_DoesNotSuggestToolDiscovery(t *testing.T) {
+	req := PromptBuildRequest{GoalPhase: string(GoalPhaseFinal), Iteration: 30}
+	got := goalPhaseFinalHintContributor(req)
+	if got == nil {
+		t.Fatal("expected non-nil hint at Final")
+	}
+	forbidden := []string{
+		"tool_search_tool_bm25",
+		"tool_search_tool_regex",
+		"you MUST search",
+		"search using",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(got.Content, f) {
+			t.Errorf("Final hint should NOT mention %q as available, got: %q", f, got.Content)
+		}
+	}
+}

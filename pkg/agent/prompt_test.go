@@ -447,3 +447,59 @@ func TestContextBuilder_CollectsRegisteredPromptContributors(t *testing.T) {
 		t.Fatalf("system prompt missing contributor content: %q", messages[0].Content)
 	}
 }
+
+// Phase 12.29 — TestContextBuilder_MCPServerDeferredAvailability_PhaseAware
+// Verifies the MCP server deferred availability text is phase-aware so the
+// prompt does not claim "hidden behind tool discovery until unlocked" at
+// Checkpoint/Final phases where the discovery tool is gated.
+func TestContextBuilder_MCPServerDeferredAvailability_PhaseAware(t *testing.T) {
+	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
+	tests := []struct {
+		name             string
+		phase            GoalPhase
+		wantContains     []string
+		wantNotContains  []string
+	}{
+		{"Open_default_text", GoalPhaseOpen,
+			[]string{"hidden behind tool discovery until unlocked"}, nil},
+		{"Set_phaseAware", GoalPhaseSet,
+			[]string{"will unlock at next iter", "OPEN phase"},
+			[]string{"until unlocked"}},
+		{"Checkpoint_phaseAware", GoalPhaseCheckpoint,
+			[]string{"locked at this phase", "next turn"},
+			[]string{"until unlocked"}},
+		{"Final_terminal", GoalPhaseFinal,
+			[]string{"terminal phase", "will not unlock"},
+			[]string{"until unlocked"}},
+		{"Empty_fallsThroughToOpen", "",
+			[]string{"hidden behind tool discovery until unlocked"}, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cb := NewContextBuilder(t.TempDir())
+			err := cb.RegisterPromptContributor(mcpServerPromptContributor{
+				serverName: "Test Server",
+				toolCount:  3,
+				deferred:   true,
+			})
+			if err != nil {
+				t.Fatalf("RegisterPromptContributor() error = %v", err)
+			}
+			messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+				CurrentMessage: "hello",
+				GoalPhase:      string(tc.phase),
+			})
+			full := messages[0].Content
+			for _, want := range tc.wantContains {
+				if !strings.Contains(full, want) {
+					t.Errorf("expected MCP content to contain %q, got: %q", want, full)
+				}
+			}
+			for _, notWant := range tc.wantNotContains {
+				if strings.Contains(full, notWant) {
+					t.Errorf("expected MCP content NOT to contain %q, got: %q", notWant, full)
+				}
+			}
+		})
+	}
+}

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"testing"
+	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
@@ -346,4 +347,49 @@ func TestSanitizeHistoryForProvider_PartialToolResultsInMiddle(t *testing.T) {
 		t.Fatalf("expected 9 messages, got %d: %+v", len(result), roles(result))
 	}
 	assertRoles(t, result, "user", "assistant", "tool", "assistant", "user", "user", "assistant", "tool", "assistant")
+}
+
+// Phase 12.29 — TestFormatToolDiscoveryRule_PhaseAware
+// Verifies the tool discovery rule emits phase-aware text so LLM at restricted
+// phases (Set/Checkpoint/Final) does not waste iteration trying to call
+// tool_search_tool_bm25 (which is correctly gated by Phase 12.18 execution gate).
+func TestFormatToolDiscoveryRule_PhaseAware(t *testing.T) {
+	type expect struct {
+		positiveContains []string
+		negativeContains []string
+	}
+	tests := []struct {
+		name              string
+		useBM25, useRegex bool
+		phase             GoalPhase
+		expect            expect
+	}{
+		{"Open_unconditional_bm25", true, false, GoalPhaseOpen,
+			expect{positiveContains: []string{"MUST search using", "tool_search_tool_bm25"}}},
+		{"Set_locked_says_only_set_goal", true, false, GoalPhaseSet,
+			expect{positiveContains: []string{"locked", "set_goal"}, negativeContains: []string{"MUST search using"}}},
+		{"Checkpoint_locked_bm25_only", true, false, GoalPhaseCheckpoint,
+			expect{positiveContains: []string{"locked", "goal_progress", "complete_goal"}, negativeContains: []string{"MUST search using"}}},
+		{"Checkpoint_locked_both_tools", true, true, GoalPhaseCheckpoint,
+			expect{positiveContains: []string{"Do not search", "tool_search_tool_bm25", "tool_search_tool_regex"}, negativeContains: []string{"MUST search using"}}},
+		{"Final_locked_only_complete_goal", true, false, GoalPhaseFinal,
+			expect{positiveContains: []string{"locked", "complete_goal"}, negativeContains: []string{"MUST search using"}}},
+		{"Empty_phase_falls_through_to_open_behavior", true, false, "",
+			expect{positiveContains: []string{"MUST search using"}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatToolDiscoveryRule(tc.useBM25, tc.useRegex, tc.phase)
+			for _, want := range tc.expect.positiveContains {
+				if !strings.Contains(got, want) {
+					t.Errorf("expected rule to contain %q, got: %q", want, got)
+				}
+			}
+			for _, notWant := range tc.expect.negativeContains {
+				if strings.Contains(got, notWant) {
+					t.Errorf("expected rule NOT to contain %q, got: %q", notWant, got)
+				}
+			}
+		})
+	}
 }

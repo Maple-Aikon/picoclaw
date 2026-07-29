@@ -35,7 +35,7 @@ func (c toolDiscoveryPromptContributor) ContributePrompt(
 	if !useBM25 && !useRegex {
 		return nil, nil
 	}
-	content := formatToolDiscoveryRule(useBM25, useRegex)
+	content := formatToolDiscoveryRule(useBM25, useRegex, GoalPhase(req.GoalPhase))
 	if strings.TrimSpace(content) == "" {
 		return nil, nil
 	}
@@ -88,7 +88,23 @@ func (c mcpServerPromptContributor) ContributePrompt(
 
 	availability := "available as native tools"
 	if c.deferred {
-		availability = "hidden behind tool discovery until unlocked"
+		// Phase 12.29: phase-aware availability text matching the tool
+		// discovery rule emitted by toolDiscoveryPromptContributor. Without
+		// this switch, the LLM at Checkpoint/Final sees "hidden behind
+		// tool discovery until unlocked" — implying unlock via discovery,
+		// but discovery is gated by Phase 12.18 execution gate.
+		// `GoalPhaseLock` is the same constant value as `GoalPhaseSet`
+		// (per tool_allowlist_phase.go:50), so it falls through to Set.
+		switch GoalPhase(req.GoalPhase) {
+		case GoalPhaseSet:
+			availability = "hidden behind tool discovery; will unlock at next iter in OPEN phase"
+		case GoalPhaseCheckpoint:
+			availability = "locked at this phase; will unlock at next turn's OPEN phase"
+		case GoalPhaseFinal:
+			availability = "locked at this terminal phase; will not unlock this turn"
+		default:
+			availability = "hidden behind tool discovery until unlocked"
+		}
 	}
 
 	return []PromptPart{

@@ -203,9 +203,28 @@ Your workspace is at: %s
 	)
 }
 
-func formatToolDiscoveryRule(useBM25, useRegex bool) string {
+// Phase 12.29: signature gained `phase GoalPhase` so the emitted rule text
+// reflects whether the discovery tool is actually available at the current
+// phase. At Open phase (or empty phase for test fixtures) the rule reads as
+// before — INVITE the LLM to discover hidden tools. At Set/Checkpoint/Final
+// the rule explains that discovery is LOCKED so the LLM does not waste
+// iteration calling tool_search_tool_bm25 (which the Phase 12.18 execution
+// gate would reject anyway).
+func formatToolDiscoveryRule(useBM25, useRegex bool, phase GoalPhase) string {
 	if !useBM25 && !useRegex {
 		return ""
+	}
+
+	// Phase 12.29: phase-aware rule text. Empty phase (test fixtures) and
+	// Open phase fall through to the original "MUST search" wording to
+	// preserve Phase 12.5 / 12.18.1 behavior.
+	switch phase {
+	case GoalPhaseSet:
+		return `5. **Tool Discovery** - At SET phase (iter 1), tool_search_tool_bm25 and tool_search_tool_regex are locked. Do not search; only call "set_goal" to seed your turn. Discovery will unlock at iter 2's OPEN phase.`
+	case GoalPhaseCheckpoint:
+		return `5. **Tool Discovery** - At CHECKPOINT phase, tool_search_tool_bm25 and tool_search_tool_regex are locked. Do not search; only call "goal_progress" or "complete_goal" (the only 2 visible tools). Discovery will unlock at your next turn's OPEN phase.`
+	case GoalPhaseFinal:
+		return `5. **Tool Discovery** - At FINAL phase, tool_search_tool_bm25 and tool_search_tool_regex are locked. Do not search; only call "complete_goal" (the only visible tool). Discovery will not unlock this turn.`
 	}
 
 	var toolNames []string
