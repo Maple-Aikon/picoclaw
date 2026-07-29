@@ -798,3 +798,70 @@ func TestRetryExecuteToolChain_ToolResultError_RetriesWithNewHint(t *testing.T) 
 		t.Errorf("expected goalArchiveRequested=false (recovered), got true")
 	}
 }
+
+// =============================================================================
+// Phase 12.28.1 regression test: when retryLLMForBlockedTool's
+// recallAndCheckTool helper returns ControlToolLoop with a valid firstTool,
+// exec.normalizedToolCalls MUST be populated — otherwise the caller's
+// ExecuteTools (turn_coord.go:488) silently drops the tool because it
+// reads exec.normalizedToolCalls (not exec.response.ToolCalls).
+//
+// Bug history (Phase 12.28 live failure 2026-07-29 16:43:01 ICT,
+// main-turn-3 Horus protocol): retryLLMForBlockedTool's helper extracted
+// RecallLLM + firstTool check but forgot to populate normalizedToolCalls.
+// Result: complete_goal (correct tool for Checkpoint phase) was emitted
+// by LLM, exec.response.ToolCalls=[complete_goal], exec.normalizedToolCalls=nil.
+// Pipeline.ExecuteTools iterated 0 items, complete_goal silently dropped,
+// turn fell through to toolLimitResponse fallback.
+//
+// This test asserts the fix: after recallAndCheckTool returns with a
+// valid tool in exec.response.ToolCalls, normalizedToolCalls must also be
+// populated (so ExecuteTools can dispatch it).
+// =============================================================================
+func TestRecallAndCheckTool_PopulatesNormalizedToolCalls(t *testing.T) {
+	al, _, cleanup := newTurnCoordTestLoop(t, &sequenceProvider{
+		responses: []*providers.LLMResponse{
+			// Attempt 0: LLM picks complete_goal (correct tool for Checkpoint).
+			{
+				Content: "OK, archiving goal.",
+				ToolCalls: []providers.ToolCall{
+					{
+						Name: "complete_goal",
+						Arguments: map[string]any{"summary": "goal done"},
+					},
+				},
+			},
+		},
+	})
+	defer cleanup()
+
+	pipeline := NewPipeline(al)
+	ts, exec := setupRetryChainTestTurnState(t, al, pipeline)
+	// Force Checkpoint phase so allowlist = [goal_progress, complete_goal].
+	al.SetGoalPhaseForTest(string(GoalPhaseCheckpoint))
+
+	ctrl, firstTool, err := pipeline.recallAndCheckTool(
+		context.Background(), context.Background(), ts, exec, 3,
+		"recovery helper test", "Phase 12.28.1",
+		[]string{"goal_progress", "complete_goal"},
+		func(_ string) Control { return ControlContinue },
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if ctrl != ControlToolLoop {
+		t.Errorf("expected ControlToolLoop (correct tool picked), got %v", ctrl)
+	}
+	if firstTool != "complete_goal" {
+		t.Errorf("expected firstTool=complete_goal, got %q", firstTool)
+	}
+
+	// THE REGRESSION ASSERTION: normalizedToolCalls must be populated so
+	// Pipeline.ExecuteTools can dispatch complete_goal at turn_coord.go:488.
+	if len(exec.normalizedToolCalls) != 1 {
+		t.Errorf("expected exec.normalizedToolCalls=1 (complete_goal), got %d — this is the Phase 12.28 wire bug where complete_goal is silently dropped", len(exec.normalizedToolCalls))
+	}
+	if len(exec.normalizedToolCalls) > 0 && exec.normalizedToolCalls[0].Name != "complete_goal" {
+		t.Errorf("expected normalizedToolCalls[0].Name=complete_goal, got %q", exec.normalizedToolCalls[0].Name)
+	}
+}

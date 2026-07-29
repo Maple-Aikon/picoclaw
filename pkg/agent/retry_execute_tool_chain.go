@@ -333,6 +333,24 @@ func (p *Pipeline) recallAndCheckTool(
 	// Step 2/Step 3 logic can read the tool call set.
 	exec.response = resp
 
+	// Phase 12.28.1 fix: also populate exec.normalizedToolCalls.
+	// Pipeline.ExecuteTools (pkg/agent/pipeline_execute.go:121) iterates
+	// exec.normalizedToolCalls (NOT exec.response.ToolCalls) to dispatch
+	// tools. Without this, the just-emitted tool call from recovery LLM
+	// is silently dropped — exec.response.ToolCalls is populated but
+	// ExecuteTools sees 0 items. Symptom: complete_goal picked at
+	// GoalPhaseCheckpoint recovery → toolLimitResponse fallback instead of
+	// goal.Summary. proceedPastLLM normally populates this field (line
+	// 796) but recovery helpers don't call proceedPastLLM, so we do it
+	// here. Bug closed in Phase 12.28.1 (anh Maple confirmed 2026-07-29
+	// via Horus-protocol live failure on main-turn-3, 16:43:01 ICT).
+	if exec.response != nil {
+		exec.normalizedToolCalls = make([]providers.ToolCall, 0, len(exec.response.ToolCalls))
+		for _, tc := range exec.response.ToolCalls {
+			exec.normalizedToolCalls = append(exec.normalizedToolCalls, providers.NormalizeToolCall(tc))
+		}
+	}
+
 	firstTool := ""
 	if exec.response != nil && len(exec.response.ToolCalls) > 0 {
 		firstTool = exec.response.ToolCalls[0].Name
