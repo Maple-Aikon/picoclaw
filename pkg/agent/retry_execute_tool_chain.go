@@ -8,6 +8,25 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
+// retryExecuteToolChainCallCount is a package-level counter incremented
+// every time retryExecuteToolChain is entered. Used by tests to verify
+// that Path 1 (handleGoalRecovery) and Path 2 (retryLLMForBlockedTool)
+// delegate to retryExecuteToolChain as required by Phase 12.28.
+// This is test instrumentation only; production callers ignore it.
+var (
+	retryExecuteToolChainCallCount     int
+	retryExecuteToolChainWrongToolHits int
+)
+
+// ResetRetryExecuteToolChainTestCounters resets the package-level test
+// instrumentation counters to zero. Tests that exercise retryExecuteToolChain
+// should call this at the start to ensure they observe only the calls made
+// during their own execution.
+func ResetRetryExecuteToolChainTestCounters() {
+	retryExecuteToolChainCallCount = 0
+	retryExecuteToolChainWrongToolHits = 0
+}
+
 // retryExecuteToolChain unifies the same-iteration retry chain used by
 // goal-recovery (handleGoalRecovery), tool-exec-recovery (Path 4),
 // and tool-block recovery (retryLLMForBlockedTool).
@@ -32,6 +51,7 @@ func (p *Pipeline) retryExecuteToolChain(
 	allowedTools []string,
 	phase string,
 ) (Control, error) {
+	retryExecuteToolChainCallCount++
 	// Step 1: recall LLM with hint. RecallLLM only invokes callLLMCore;
 	// it does NOT re-build exec.callMessages from ts.pendingRecoveryMessage
 	// the way CallLLM does (that consumption lives in pipeline_llm.go
@@ -76,6 +96,7 @@ func (p *Pipeline) retryExecuteToolChain(
 		// sees a useful pendingRecoveryMessage on the next turn.
 		hint = buildRecoveryHint(firstTool, allowedTools, phase)
 		ts.pendingRecoveryMessage = hint
+		retryExecuteToolChainWrongToolHits++
 		return ControlBreak, nil
 	}
 

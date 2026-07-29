@@ -462,10 +462,31 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 								turnStatus = TurnEndStatusError
 								return turnResult{}, fmt.Errorf("goal archive requested after tool-exec recovery exhaustion at %s", currentPhase)
 							case ControlContinue, ControlToolLoop:
-								// Same-iter retry succeeded — re-read exec
-								// messages (callLLMCore may have added more
-								// entries), drop into the post-tool-exec
-								// continuation path below.
+								// Same-iter retry succeeded — re-call LLM
+								// already produced a fresh tool_call (or text).
+								// Two cases to handle:
+								//   - tool_call: must execute the tool
+								//     before continuing the loop body,
+								//     otherwise at iter == iterationCap the
+								//     iter-bump on next loop pass would
+								//     exit before ExecuteTools ever runs —
+								//     Phase 12.28 B1 ("dropped tool
+								//     execution at recovery retry success").
+								//   - text-only: just consume the new
+								//     content as the assistant message.
+								// In both cases, re-read exec.messages so
+								// the post-tool-exec continuation path
+								// below sees the fresh tool result.
+								if len(exec.response.ToolCalls) > 0 && ts.currentIteration() < ts.iterationCap {
+									// Phase 12.28: execute the freshly-picked
+									// tool before continuing. If ExecuteTools
+									// returns ToolControlContinue we fall
+									// through to the messages re-read; if it
+									// returns ToolControlBreak the deferred
+									// closure case below (e.g. hard abort)
+									// takes over.
+									pipeline.ExecuteTools(ctx, turnCtx, ts, exec, iteration)
+								}
 								messages = exec.messages
 								if ts.pendingFinalReportIter {
 									ts.postCompleteGoalReportSent = true
