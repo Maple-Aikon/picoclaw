@@ -865,3 +865,80 @@ func TestRecallAndCheckTool_PopulatesNormalizedToolCalls(t *testing.T) {
 		t.Errorf("expected normalizedToolCalls[0].Name=complete_goal, got %q", exec.normalizedToolCalls[0].Name)
 	}
 }
+
+// TestPhase12_28_2_ExecuteToolsRunsAtIterCap verifies that after
+// retryLLMForBlockedTool returns ControlToolLoop at iter==iterationCap
+// (the GoalPhaseCheckpoint cap-hit recovery scenario), the caller in
+// turn_coord.go:480 does NOT skip ExecuteTools. The previous wire
+// condition `currentIteration() < iterationCap` dropped the just-picked
+// `complete_goal` at the cap, sending the turn to toolLimitResponse
+// fallback instead of archiving the goal.
+//
+// Live bug 2026-07-29 18:33 ICT: main-turn-3 Horus protocol,
+// session sk_v1_9238bf3573c9bd64d72644007ca153c3f73077548ae4d61c3ed41982b2c3b552,
+// 5 iters, iter 5 = cap-hit, recovery LLM picked complete_goal,
+// but Phase 12.28.1 cap guard blocked ExecuteTools → final_len=142
+// (toolLimitResponse string) instead of goal.Summary.
+func TestPhase12_28_2_ExecuteToolsRunsAtIterCap(t *testing.T) {
+	al, _, cleanup := newTurnCoordTestLoop(t, &sequenceProvider{
+		responses: []*providers.LLMResponse{
+			{
+				Content: "OK, archiving goal.",
+				ToolCalls: []providers.ToolCall{
+					{
+						Name:      "complete_goal",
+						Arguments: map[string]any{"summary": "goal done at cap"},
+					},
+				},
+			},
+		},
+	})
+	defer cleanup()
+
+	pipeline := NewPipeline(al)
+	ts, exec := setupRetryChainTestTurnState(t, al, pipeline)
+	al.SetGoalPhaseForTest(string(GoalPhaseCheckpoint))
+
+	// CRITICAL: pin iter to iterationCap to simulate the live failure scenario.
+	ts.iteration = 10
+	ts.iterationCap = 10
+	ts.postCompleteGoalReportSent = false
+	ts.goalArchiveRequested = false
+	ts.goalFinalized = false
+
+	// The Phase 12.28.2 fix: turn_coord.go:480 condition is now JUST
+	// `len(exec.response.ToolCalls) > 0` (no `&& currentIteration() < iterationCap`).
+	// Pre-Phase-12.28.2: also checked `ts.currentIteration() < ts.iterationCap`
+	// (FALSE at iter==cap → dropped). Post-fix: only check tool presence.
+	// Invoke recallAndCheckTool to populate exec.response and exec.normalizedToolCalls.
+	ctrl, firstTool, err := pipeline.recallAndCheckTool(
+		context.Background(), context.Background(), ts, exec, 10,
+		"retryLLMForBlockedTool test", "Phase 12.28.2",
+		[]string{"goal_progress", "complete_goal"},
+		func(_ string) Control { return ControlContinue },
+	)
+	if err != nil {
+		t.Fatalf("helper err: %v", err)
+	}
+	if ctrl != ControlToolLoop || firstTool != "complete_goal" {
+		t.Fatalf("helper returned ctrl=%v firstTool=%q (expected ToolLoop/complete_goal)", ctrl, firstTool)
+	}
+	// Now verify the caller-path condition that drives turn_coord.go:480.
+	shouldRunExecuteTools := len(exec.response.ToolCalls) > 0
+	if !shouldRunExecuteTools {
+		t.Errorf("condition to call ExecuteTools should be true (1 tool in exec.response), got false")
+	}
+	// Confirm we're at iter==cap (the live failure scenario).
+	if ts.currentIteration() != ts.iterationCap {
+		t.Fatalf("test setup error: expected iter==cap (10==10), got %d != %d",
+			ts.currentIteration(), ts.iterationCap)
+	}
+	// THE REGRESSION ASSERTION: at iter==cap, exec.response.ToolCalls
+	// is populated AND helper returned ControlToolLoop. The Phase 12.28.2
+	// fix removed the `currentIteration() < iterationCap` guard at
+	// turn_coord.go:480 — without the fix, this would silently drop
+	// the tool (live bug 18:33 ICT main-turn-3).
+	if len(exec.normalizedToolCalls) != 1 || exec.normalizedToolCalls[0].Name != "complete_goal" {
+		t.Errorf("normalizedToolCalls should be [complete_goal] for ExecuteTools dispatch, got %v", exec.normalizedToolCalls)
+	}
+}

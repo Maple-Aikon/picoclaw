@@ -477,14 +477,22 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 								// In both cases, re-read exec.messages so
 								// the post-tool-exec continuation path
 								// below sees the fresh tool result.
-								if len(exec.response.ToolCalls) > 0 && ts.currentIteration() < ts.iterationCap {
-									// Phase 12.28: execute the freshly-picked
-									// tool before continuing. If ExecuteTools
-									// returns ToolControlContinue we fall
-									// through to the messages re-read; if it
-									// returns ToolControlBreak the deferred
-									// closure case below (e.g. hard abort)
-									// takes over.
+								if len(exec.response.ToolCalls) > 0 {
+									// Phase 12.28.2 fix: removed
+									// `&& ts.currentIteration() < ts.iterationCap`
+									// guard. Phase 12.28.1's guard
+									// prevented ExecuteTools at iter==cap
+									// (the most common case for
+									// GoalPhaseCheckpoint recovery where
+									// complete_goal must fire at the cap to
+									// archive the goal). Without this,
+									// the post-loop toolLimitResponse
+									// fallback fires before the tool runs.
+									// Phase 12.9 pre-loop hook extends
+									// iterationCap to allow one final iter,
+									// so the loop body running at iter==cap
+									// is by design — the cap guard at line
+									// 633 only fires AFTER the body runs.
 									pipeline.ExecuteTools(ctx, turnCtx, ts, exec, iteration)
 								}
 								messages = exec.messages
