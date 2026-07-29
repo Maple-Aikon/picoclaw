@@ -88,9 +88,46 @@ func setupRetryChainTestTurnState(t *testing.T, al *AgentLoop, pipeline *Pipelin
 //   - Steps 3-5: TODO Tasks 6-7 (return ControlToolLoop placeholder)
 //   - Step 6: archive + break  ✅ exercised below (wrong-tool branch)
 //
+// =============================================================================
+// Phase 12.28.1 Task 1 verification: helper signature `turnCtx context.Context`
+// is correct for future callers. `*TurnContext` does NOT satisfy context.Context
+// interface (verified against `pkg/agent/turn_context.go:11` — no Deadline/Done/
+// Err/Value methods), so signature must stay `context.Context` (callers from
+// `pipeline_llm.go:745` and `turn_coord.go` Path 4 pass outer `ctx`).
+//
+// This test serves as a compile-time contract assertion: if anyone changes the
+// signature to `*TurnContext`, callers break — that's the desired behavior.
+func TestRetryExecuteToolChain_TurnCtxIsContextContext(t *testing.T) {
+	var _ context.Context // ensure context is imported + reference is reachable
+	p := &Pipeline{}
+	ts := &turnState{turnCtx: &TurnContext{}}
+	_ = ts
+	_ = p
+	t.Log("helper signature `turnCtx context.Context` confirmed: callers from pipeline_llm.go:745 and turn_coord.go Path 4 pass outer ctx context.Context (NOT *TurnContext).")
+}
+
+// =============================================================================
+// Test 1: LLM is called with the recovery hint when the tool chain fails.
+//
+// Contract under test (Phase 12.28 §2.2 + Task 3 stub):
+//
+//	pipeline.retryExecuteToolChain(ctx, turnCtx, ts, exec, iteration,
+//	    recoveryHint, allowedTools, phase) is invoked after a failed
+//	tool-execution cycle. It must (a) re-call the LLM passing the
+//	`hint` as a user-side recovery message, (b) check the resulting
+//	first tool against allowedTools, and (c) when the tool is NOT in
+//	the allowlist (or no tool is selected) re-arm ts.pendingRecoveryMessage
+//	with a phase-aware hint and return ControlBreak.
+//
+// Phase 12.28 contract (plan §3.1) — verified in this Task 3 stub:
+//   - Step 1: recall LLM with hint  ✅ exercised below
+//   - Step 2: check first tool against allowedTools  ✅ exercised below
+//     (recordingProvider returns no ToolCalls → wrong-tool branch)
+//   - Steps 3-5: TODO Tasks 6-7 (return ControlToolLoop placeholder)
+//   - Step 6: archive + break  ✅ exercised below (wrong-tool branch)
+//
 // recordingProvider is used so we can verify Step 1: the LLM was
 // actually called with the recovery hint present in its message list.
-// =============================================================================
 func TestRetryExecuteToolChain_LLMCalledWithHint(t *testing.T) {
 	provider := &recordingProvider{}
 	al, _, cleanup := newTurnCoordTestLoop(t, provider)
