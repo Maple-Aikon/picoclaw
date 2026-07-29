@@ -359,12 +359,18 @@ toolLoop:
 					// phase semantics — it just blocks).
 					if hookResult.IsError &&
 						hookResult.ErrKind == "" &&
-						strings.Contains(hookResult.ForLLM, "is not available in the current phase") {
-						phase := ts.currentGoalPhase()
-						if phase == GoalPhaseSet || phase == GoalPhaseCheckpoint || phase == GoalPhaseFinal {
-							ts.recordPhaseStuckToolAllowedBlock(toolName, toolErrorSummary(hookResult))
-						}
+						strings.Contains(toolErrorSummary(hookResult), "is not available in the current phase") {
+						ts.recordPhaseStuckToolAllowedBlock(toolName, toolErrorSummary(hookResult))
 					}
+
+					// Phase 12.28.3 — Fix B-side-channel: stash the most recent
+					// tool result on turnState so checkToolExecErrorRecovery
+					// (recovery_goal.go:435) can read hookResult.ErrKind without
+					// having to extend the providers.Message JSON contract.
+					// The field is reset to nil at iteration boundary
+					// (turn_coord.go:200) so stale results from prior iters
+					// don't leak into the current iter's recovery decision.
+					ts.lastToolResult = hookResult
 
 					messages = append(messages, toolResultMsg)
 					if !ts.opts.NoHistory {
@@ -795,6 +801,15 @@ toolLoop:
 			toolErrorSummary(toolResult),
 			inferSkillNamesFromToolCall(ts, toolName, toolArgs),
 		)
+		// Phase 12.28.3 — Fix B-side-channel: stash the most recent
+		// tool result on turnState so checkToolExecErrorRecovery
+		// (recovery_goal.go:435) can read toolResult.ErrKind without
+		// having to extend the providers.Message JSON contract.
+		// Companion wire to the HookActionRespond side-channel at
+		// pipeline_execute.go:365. Reset to nil at iteration boundary
+		// (turn_coord.go:200) so stale results from prior iters don't
+		// leak into the current iter's recovery decision.
+		ts.lastToolResult = toolResult
 		messages = append(messages, toolResultMsg)
 		if !ts.opts.NoHistory {
 			ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)

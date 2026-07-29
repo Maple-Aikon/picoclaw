@@ -193,6 +193,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		// recovery to silently skip after the first fire in a turn.
 		ts.emptyResponseRecoverySent = false
 		ts.toolExecRecoveryAttempts = nil
+		ts.lastToolResult = nil // Phase 12.28.3: clear stale tool result from previous iter so checkToolExecErrorRecovery sees only this iter's result.
 		// Phase 12.13: reset phase-stuck counters at iteration boundary so
 		// a fresh iteration gets a clean slate. Same lifecycle as the
 		// sibling counters above (reset on iter bump).

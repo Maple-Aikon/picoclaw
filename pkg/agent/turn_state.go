@@ -282,6 +282,15 @@ type turnState struct {
 	pendingRecoveryMessage  string // message to inject before next LLM call (empty = no injection)
 	goalArchiveRequested    bool   // if true, caller must call finalizeGoalOnTurnEnd (Phase 6 hook)
 
+	// Phase 12.28.3: last tool execution result, populated at pipeline_execute.go
+	// tool-exec-end (when `hookResult *tools.ToolResult` is in scope). Read by
+	// checkToolExecErrorRecovery to determine ErrKind-based recovery gate. nil
+	// means no tool has executed yet this iteration OR a legacy test fixture
+	// that doesn't populate this field — recovery falls back to prefix heuristic
+	// in those cases. Always reset at iter boundary via the per-iter reset block
+	// at turn_coord.go:163-164 (alongside the other recovery counters).
+	lastToolResult *tools.ToolResult
+
 	startedAt             time.Time
 	finalContent          string
 

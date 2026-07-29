@@ -26,6 +26,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/tools"
+	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
 
 // RecoveryAction is the hint returned by recovery triggers. The caller
@@ -441,20 +442,47 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 	if last.Role != "tool" {
 		return "", ""
 	}
-	// Heuristic: detect either executor error format.
+
+	// Phase 12.28.3 Fix B: typed ErrKind gate is the PRIMARY classifier.
+	// Tool handlers call `toolshared.ErrorResult(...).WithErrorKind(...)`
+	// which the executor threads into ts.lastToolResult — recover it
+	// here so validation errors (Phase 12.20 complete_goal byte-count
+	// check, Phase 12.x set_goal regex, etc.) trigger recovery even
+	// when the error string doesn't match the legacy prefix.
 	//
-	// (a) Legacy: toolErrorSummary() format prefixed with
-	//     "Tool execution failed:" — used by post-execution error
-	//     wrapping in pipeline_execute.go.
+	// Recoverable kinds: ErrInvalidInput (validation), ErrTransient
+	// (retry), ErrTimeout (retry). Non-recoverable kinds: ErrFatal,
+	// ErrDependencyDown (permanent) — do not retry, return early.
 	//
-	// (b) Phase 12.3: execution gate rejection in pkg/tools/registry.go
-	//     with "tool %q is not available..." (also matches "tool %q not
-	//     found" from the same registry).
+	// ts.lastToolResult is nil in legacy fixtures and any code path that
+	// hasn't yet threaded it through pipeline_execute.go — fall back to
+	// prefix heuristic (Phase 12.18 path) so we don't regress old tests.
+	tsToolErrKind := toolshared.ErrorKind("")
+	if ts != nil && ts.lastToolResult != nil {
+		tsToolErrKind = ts.lastToolResult.ErrKind
+	}
 	const executorErrPrefix = "Tool execution failed:"
 	const executionGatePrefix = `tool "`
 	isExecutorErr := len(last.Content) >= len(executorErrPrefix) && last.Content[:len(executorErrPrefix)] == executorErrPrefix
 	isExecutionGateErr := len(last.Content) >= len(executionGatePrefix) && last.Content[:len(executionGatePrefix)] == executionGatePrefix
-	if !isExecutorErr && !isExecutionGateErr {
+
+	recoverable := false
+	switch {
+	case tsToolErrKind != "":
+		switch tsToolErrKind {
+		case toolshared.ErrInvalidInput, toolshared.ErrTransient, toolshared.ErrTimeout:
+			recoverable = true
+		default:
+			return "", "" // non-recoverable typed error
+		}
+	default:
+		// Legacy / prefix fallback. Two shapes still seen in the wild:
+		// (a) "Tool execution failed:" — legacy executor error wrap.
+		// (b) "tool \"" — Phase 12.3 execution gate rejection
+		//     (registry doesn't stamp ErrKind for these).
+		recoverable = isExecutorErr || isExecutionGateErr
+	}
+	if !recoverable {
 		return "", ""
 	}
 	// Phase 12.18: extract tool name from the message when execution
@@ -464,7 +492,7 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 	// error uses %q'd tool name in different positions, so
 	// last.ToolCallID is the safer fallback there).
 	toolName := last.ToolCallID
-	if isExecutionGateErr && toolName == "" {
+	if isExecutionGateErr && tsToolErrKind == "" && toolName == "" {
 		// Strip `tool "` prefix and read until next `"`.
 		rest := last.Content[len(executionGatePrefix):]
 		if idx := strings.Index(rest, `"`); idx > 0 {
@@ -481,17 +509,12 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 		HasToolCalls:  true,
 		ToolName:      toolName,
 		ToolExecError: last.Content,
-		// Phase 12.6.1: classify transient vs permanent by scanning error
-		// text for known transient markers. Heuristic only — a false
-		// transient classification just appends the transient-hint
-		// suffix; LLM still gets the standard retry prompt either way.
-		//
-		// Phase 12.18: execution gate rejections (tool not in allowlist)
-		// are PERMANENT (arg changes can't help — the tool is blocked
-		// by phase policy). Mark as non-transient so the standard
-		// retry prompt asks the LLM to "invoke a different tool or
-		// call complete_goal" rather than waiting and retrying.
-		IsTransient:   !isExecutionGateErr && isTransientErrorText(last.Content),
+		// Phase 12.28.3 Fix B: typed ErrKind wins over prefix heuristic.
+		// ErrTransient / ErrTimeout → IsTransient=true (auto-retry hint).
+		// ErrInvalidInput / unknown typed → IsTransient=false (arg-shape fix).
+		// Empty ErrKind (legacy / execution gate) → fall back to prefix
+		// heuristic (Phase 12.6.1 + 12.18 behavior).
+		IsTransient:   isTransientFromErrKind(tsToolErrKind, last.Content, isExecutionGateErr),
 		MaxIterations: ts.iterationCap,
 	})
 	if action == RecoveryArchiveGoal {
@@ -619,4 +642,32 @@ func isTransientErrorText(errMsg string) bool {
 		}
 	}
 	return false
+}
+
+// isTransientFromErrKind combines the typed ErrKind classifier with the
+// legacy prefix heuristic for transient-error detection. Used by
+// checkToolExecErrorRecovery to populate RecoveryContext.IsTransient.
+//
+// Rules (Phase 12.28.3):
+//  1. Typed transient kinds (ErrTransient, ErrTimeout) → true regardless
+//     of message content. LLM should "wait and retry".
+//  2. Typed non-transient kinds (ErrInvalidInput, ErrFatal,
+//     ErrDependencyDown, unknown) → false. LLM should "fix args or use
+//     a different tool".
+//  3. Empty ErrKind (legacy executor / execution-gate-rejected path)
+//     → fall back to the Phase 12.6.1 prefix heuristic.
+//     Execution-gate rejections are always non-transient (Phase 12.18:
+//     arg changes can't help — the tool is blocked by phase policy).
+func isTransientFromErrKind(kind toolshared.ErrorKind, content string, isExecutionGateErr bool) bool {
+	switch kind {
+	case toolshared.ErrTransient, toolshared.ErrTimeout:
+		return true
+	case toolshared.ErrInvalidInput, toolshared.ErrDependencyDown:
+		return false
+	}
+	// Empty / unknown typed kind — prefix heuristic.
+	if isExecutionGateErr {
+		return false
+	}
+	return isTransientErrorText(content)
 }

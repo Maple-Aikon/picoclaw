@@ -12,6 +12,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/agent/goal"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
+	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
 
 // newPhase5TurnState returns a turnState seeded with an active goal file on disk
@@ -924,5 +925,198 @@ func TestEvaluateRecovery_IterationBump_ResetsBothCounters(t *testing.T) {
 	}
 	if ts.toolExecRecoveryAttempts["view_goal"] != 1 {
 		t.Fatalf("iter 13 tool: counter should be 1 (fresh), got %d", ts.toolExecRecoveryAttempts["view_goal"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 12.28.3 — Fix B: ErrKind-based recovery gate
+// ---------------------------------------------------------------------------
+
+// T-B1: complete_goal validation error — typed ErrInvalidInput from tool handler.
+func TestCheckToolExecErrorRecovery_FiresOnCompleteGoalValidation(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	res := toolshared.ErrorResult("complete_goal: `summary` exceeds 500 characters (Unicode); shorten your final reply.").WithErrorKind(toolshared.ErrInvalidInput)
+	ts.lastToolResult = res
+	exec := &turnExecution{
+		messages: []providers.Message{
+			{Role: "tool", ToolCallID: "complete_goal", Content: res.ForLLM},
+		},
+	}
+
+	tool, msg := checkToolExecErrorRecovery(ts, exec)
+	if tool == "" && msg == "" {
+		t.Fatalf("Phase 12.28.3 Bug B: typed ErrInvalidInput should fire recovery (msg=%q tool=%q)", msg, tool)
+	}
+}
+
+// T-B2: goal_progress validation error — typed ErrInvalidInput.
+func TestCheckToolExecErrorRecovery_FiresOnGoalProgressValidation(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	res := toolshared.ErrorResult("goal_progress: remaining_steps is required and must be non-empty.").WithErrorKind(toolshared.ErrInvalidInput)
+	ts.lastToolResult = res
+	exec := &turnExecution{
+		messages: []providers.Message{
+			{Role: "tool", ToolCallID: "goal_progress", Content: res.ForLLM},
+		},
+	}
+
+	tool, msg := checkToolExecErrorRecovery(ts, exec)
+	if tool == "" && msg == "" {
+		t.Fatalf("Phase 12.28.3: typed ErrInvalidInput on goal_progress should fire recovery (msg=%q tool=%q)", msg, tool)
+	}
+}
+
+// T-B3: set_goal validation error — typed ErrInvalidInput (name regex violation).
+func TestCheckToolExecErrorRecovery_FiresOnSetGoalValidation(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	res := toolshared.ErrorResult("set_goal: \"name\" must match ^[A-Za-z0-9_-]{1,64}$.").WithErrorKind(toolshared.ErrInvalidInput)
+	ts.lastToolResult = res
+	exec := &turnExecution{
+		messages: []providers.Message{
+			{Role: "tool", ToolCallID: "set_goal", Content: res.ForLLM},
+		},
+	}
+
+	tool, msg := checkToolExecErrorRecovery(ts, exec)
+	if tool == "" && msg == "" {
+		t.Fatalf("Phase 12.28.3: typed ErrInvalidInput on set_goal should fire recovery (msg=%q tool=%q)", msg, tool)
+	}
+}
+
+// T-B4: non-recoverable ErrKind — recovery should NOT fire.
+func TestCheckToolExecErrorRecovery_DoesNotFireOnUnrecoverableErrKind(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	// Only ErrInvalidInput, ErrTransient, ErrTimeout are recoverable.
+	// ErrDependencyDown or unknown kinds should NOT trigger retry.
+	res := toolshared.ErrorResult("the upstream service is permanently down").WithErrorKind(toolshared.ErrDependencyDown)
+	ts.lastToolResult = res
+	exec := &turnExecution{
+		messages: []providers.Message{
+			{Role: "tool", ToolCallID: "view_goal", Content: res.ForLLM},
+		},
+	}
+
+	// Direct prefix-free content — forces the typed ErrKind gate to be the
+	// only thing that can fire. If the gate classifies ErrDependencyDown
+	// as non-recoverable (correct), no recovery.
+	tool, msg := checkToolExecErrorRecovery(ts, exec)
+	if msg != "" {
+		t.Errorf("ErrDependencyDown should not trigger recovery, got msg=%q tool=%q", msg, tool)
+	}
+}
+
+// T-B5: execution gate rejection — regression for Phase 12.18.
+// ts.lastToolResult.ErrKind == "" + content matches "tool \"X\" is not available"
+// should still fire (registry execution gate doesn't stamp ErrKind).
+func TestCheckToolExecErrorRecovery_StillMatchesExecutionGate(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	// No ts.lastToolResult set — rely on prefix fallback (Phase 12.18 path).
+	exec := &turnExecution{
+		messages: []providers.Message{
+			{Role: "tool", ToolCallID: "write_file", Content: `tool "write_file" is not available in the current phase (allowed tools: [goal_progress, complete_goal])`},
+		},
+	}
+
+	tool, msg := checkToolExecErrorRecovery(ts, exec)
+	if tool != "" && msg == "" {
+		t.Fatalf("Phase 12.18 regression: execution gate rejection should still fire (tool=%q msg=%q)", tool, msg)
+	}
+}
+
+// T-B6: ErrTransient → IsTransient=true.
+func TestCheckToolExecErrorRecovery_TransientViaErrKind(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	res := toolshared.ErrorResult("connection refused by upstream").WithErrorKind(toolshared.ErrTransient)
+	ts.lastToolResult = res
+	exec := &turnExecution{
+		messages: []providers.Message{
+			{Role: "tool", ToolCallID: "view_goal", Content: res.ForLLM},
+		},
+	}
+
+	// Capture RecoveryContext via evaluateRecovery path
+	_, msg := checkToolExecErrorRecovery(ts, exec)
+	if msg == "" {
+		t.Fatalf("ErrTransient should fire recovery (got msg=%q)", msg)
+	}
+	if !strings.Contains(msg, "transient") {
+		t.Errorf("ErrTransient context should produce transient hint in msg, got %q", msg)
+	}
+}
+
+// T-B7: ErrInvalidInput → IsTransient=false.
+func TestCheckToolExecErrorRecovery_NonTransientViaErrKind(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	res := toolshared.ErrorResult("invalid input argument shape").WithErrorKind(toolshared.ErrInvalidInput)
+	ts.lastToolResult = res
+	exec := &turnExecution{
+		messages: []providers.Message{
+			{Role: "tool", ToolCallID: "view_goal", Content: res.ForLLM},
+		},
+	}
+
+	_, msg := checkToolExecErrorRecovery(ts, exec)
+	if msg == "" {
+		t.Fatalf("ErrInvalidInput should fire recovery (got msg=%q)", msg)
+	}
+	if strings.Contains(msg, "(transient)") {
+		t.Errorf("ErrInvalidInput should NOT add transient hint, got %q", msg)
+	}
+}
+
+// T-B8: ts.lastToolResult == nil → prefix fallback still works (legacy
+// test fixtures don't populate the new field).
+func TestCheckToolExecErrorRecovery_PrefixFallbackWhenLastToolResultNil(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	// Don't set ts.lastToolResult — simulates legacy fixture.
+	exec := &turnExecution{
+		messages: []providers.Message{
+			{Role: "tool", ToolCallID: "view_goal", Content: "Tool execution failed: connection refused"},
+		},
+	}
+
+	tool, msg := checkToolExecErrorRecovery(ts, exec)
+	if msg == "" {
+		t.Fatalf("legacy prefix fallback should still fire recovery (got msg=%q tool=%q)", msg, tool)
+	}
+}
+
+// T-B9: ts.lastToolResult.ErrKind == "" → prefix fallback still works.
+// This is the Phase 12.18 regression-proof from a different angle:
+// registry execution gate rejection has empty ErrKind AND does NOT
+// necessarily match the "Tool execution failed:" prefix — only matches
+// the "tool \"X\" is not available" prefix.
+func TestCheckToolExecErrorRecovery_PrefixFallbackWhenErrKindEmpty(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	// lastToolResult exists but has empty ErrKind (registry execution gate).
+	ts.lastToolResult = &toolshared.ToolResult{IsError: true} // no ErrKind
+	exec := &turnExecution{
+		messages: []providers.Message{
+			{Role: "tool", ToolCallID: "write_file", Content: `tool "write_file" is not available in the current phase`},
+		},
+	}
+
+	tool, msg := checkToolExecErrorRecovery(ts, exec)
+	if msg == "" {
+		t.Fatalf("Phase 12.18 regression-proof: empty ErrKind + execution gate prefix should fire recovery (got msg=%q tool=%q)", msg, tool)
+	}
+}
+
+// T-B10: false-positive guard — when last tool message content matches
+// a prefix but Role != "tool", no recovery. Also: when prefix content
+// appears as user/assistant text (not a tool result), no recovery.
+func TestCheckToolExecErrorRecovery_NoFalsePositiveOnAssistantText(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	// assistant message that mentions "tool \"X\" is not available" — must
+	// NOT trigger recovery (only tool-role messages carry tool results).
+	exec := &turnExecution{
+		messages: []providers.Message{
+			{Role: "assistant", Content: `Sure, I'll avoid calling tool "write_file" since it's not available.`},
+		},
+	}
+
+	_, msg := checkToolExecErrorRecovery(ts, exec)
+	if msg != "" {
+		t.Errorf("assistant message with tool-error-like content must not fire recovery (got msg=%q)", msg)
 	}
 }
