@@ -446,6 +446,58 @@ func TestBuildToolExecErrorRetryMessage_CheckpointPhase(t *testing.T) {
 	}
 }
 
+// TestBuildToolExecErrorRetryMessage_OpenPhaseLifecycleBlock (Phase 12.32):
+// The OPEN-phase hint must fire ONLY when the failing tool is a lifecycle
+// tool (set_goal / goal_progress). Open phase is RELATIVE — only 2 of 83
+// visible tools are blocked by the lifecycle gate. Always-append (like
+// Set/Checkpoint/Final) would mislead the LLM when a generic tool like
+// read_file errors at OPEN (read_file works fine at OPEN; the error has
+// nothing to do with the lifecycle gate).
+func TestBuildToolExecErrorRetryMessage_OpenPhaseLifecycleBlock(t *testing.T) {
+	// Case 1 — positive: goal_progress at OPEN → OPEN hint appended
+	got1 := buildToolExecErrorRetryMessage(
+		"goal_progress", "lifecycle gate blocked", false, nil, string(GoalPhaseOpen),
+	)
+	if !strings.Contains(got1, ToolExecErrorOpenPhaseHint) {
+		t.Fatalf("case 1: expected OPEN hint for goal_progress at OPEN, got: %s", got1)
+	}
+
+	// Case 2 — positive: set_goal at OPEN → OPEN hint appended
+	got2 := buildToolExecErrorRetryMessage(
+		"set_goal", "lifecycle gate blocked", false, nil, string(GoalPhaseOpen),
+	)
+	if !strings.Contains(got2, ToolExecErrorOpenPhaseHint) {
+		t.Fatalf("case 2: expected OPEN hint for set_goal at OPEN, got: %s", got2)
+	}
+
+	// Case 3 — negative: read_file at OPEN → NO OPEN hint (relative phase)
+	got3 := buildToolExecErrorRetryMessage(
+		"read_file", "permission denied", false, nil, string(GoalPhaseOpen),
+	)
+	if strings.Contains(got3, ToolExecErrorOpenPhaseHint) {
+		t.Fatalf("case 3: expected NO OPEN hint for read_file (non-lifecycle) at OPEN, got: %s", got3)
+	}
+
+	// Case 4 — negative: goal_progress at CHECKPOINT → CHECKPOINT hint, NOT OPEN hint
+	got4 := buildToolExecErrorRetryMessage(
+		"goal_progress", "lifecycle gate blocked", false, nil, string(GoalPhaseCheckpoint),
+	)
+	if strings.Contains(got4, ToolExecErrorOpenPhaseHint) {
+		t.Fatalf("case 4: expected NO OPEN hint at CHECKPOINT phase, got: %s", got4)
+	}
+	if !strings.Contains(got4, "goal_progress") {
+		t.Fatalf("case 4: expected Checkpoint hint mentioning goal_progress, got: %s", got4)
+	}
+
+	// Case 5 — negative: goal_progress at SET → SET hint, NOT OPEN hint
+	got5 := buildToolExecErrorRetryMessage(
+		"goal_progress", "lifecycle gate blocked", false, nil, string(GoalPhaseSet),
+	)
+	if strings.Contains(got5, ToolExecErrorOpenPhaseHint) {
+		t.Fatalf("case 5: expected NO OPEN hint at SET phase, got: %s", got5)
+	}
+}
+
 func TestBuildToolExecErrorRetryMessage_NoRegistry_BaseOnly(t *testing.T) {
 	// Phase 12.6.1: signature gained `isTransient bool` arg between
 	// ToolExecErrorError and registry. nil registry + isTransient=false →

@@ -66,6 +66,7 @@ const (
 	PromptSourceInterrupt      PromptSourceID = "turn:interrupt"
 	PromptSourceRecovery        PromptSourceID = "turn:recovery"
 	PromptSourceGoalPhaseSetHint       PromptSourceID = "capability:goal_phase_set_hint"
+	PromptSourceGoalPhaseOpenHint      PromptSourceID = "capability:goal_phase_open_hint" // Phase 12.32
 	PromptSourceGoalPhaseCheckpointHint PromptSourceID = "capability:goal_phase_checkpoint_hint"
 	PromptSourceGoalPhaseFinalHint      PromptSourceID = "capability:goal_phase_final_hint"
 	PromptSourceGoalCompleteReportHint  PromptSourceID = "capability:goal_complete_report_hint"
@@ -278,6 +279,13 @@ func builtinPromptSources() []PromptSourceDescriptor {
 			ID:              PromptSourceGoalPhaseSetHint,
 			Owner:           "agent",
 			Description:     "Goal-phase SET hint: explains iter-1 tool lockdown and 2 forward paths (set_goal OR no-tool reply)",
+			Allowed:         []PromptPlacement{{Layer: PromptLayerCapability, Slot: PromptSlotTooling}},
+			StableByDefault: false,
+		},
+		{
+			ID:              PromptSourceGoalPhaseOpenHint,
+			Owner:           "agent",
+			Description:     "Goal-phase OPEN hint (Phase 12.32): explains lifecycle tool restrictions at OPEN (set_goal LOCKED, goal_progress CHECKPOINT-only, complete_goal available)",
 			Allowed:         []PromptPlacement{{Layer: PromptLayerCapability, Slot: PromptSlotTooling}},
 			StableByDefault: false,
 		},

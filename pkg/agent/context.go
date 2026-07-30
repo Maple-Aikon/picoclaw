@@ -417,6 +417,18 @@ Each part separated by the marker will be sent as an independent message.`,
 		add(*hintPart)
 	}
 
+	// Phase 12.32 — GoalPhaseOpen hint. Fires ONLY at OPEN phase
+	// (iter 2..MaxIter-1). Educates the LLM about lifecycle tool
+	// restrictions (set_goal LOCKED, goal_progress CHECKPOINT-only,
+	// complete_goal available) so it doesn't waste iterations calling
+	// blocked tools. Reactive counterpart in recovery_goal.go appends a
+	// shorter hint when a lifecycle tool call IS rejected at OPEN phase.
+	// Placement: between Set (above) and Checkpoint (below) to match
+	// goal lifecycle order Set → Open → Checkpoint → Final.
+	if hintPart := goalPhaseOpenHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase}); hintPart != nil {
+		add(*hintPart)
+	}
+
 	// Phase 12.21 — GoalPhaseCheckpoint hint. Fires ONLY when the per-turn
 	// loop has hit the iteration cap AND iter < max_iterations_cap (i.e.
 	// GoalPhaseCheckpoint, not GoalPhaseFinal). Tool allowlist is reduced

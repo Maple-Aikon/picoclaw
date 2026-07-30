@@ -184,6 +184,14 @@ const (
 	// spot that ended the turn with a canned "max_tool_iterations" string.
 	// Telegram user feedback 2026-07-26: main-turn-4 hit this at iter 25.
 	ToolExecErrorCheckpointPhaseHint = " This is the final iteration (goal phase: checkpoint). Only `goal_progress` (to extend with another step — remaining_steps MUST be non-empty) and `complete_goal` (to wrap up the goal or wait for user approval/decision via the summary field) are available. Every other tool call is blocked. If your current work is incomplete and you still have concrete next steps, call `goal_progress` with non-empty `remaining_steps` to extend the turn; otherwise call `complete_goal` with a non-empty `summary` (1-500 chars) — the summary may describe a wait-state such as 'Waiting for Maple review' if you need user approval before proceeding."
+
+	// Phase 12.32: ToolExecErrorOpenPhaseHint is appended ONLY when a
+	// lifecycle tool (set_goal / goal_progress) is rejected at OPEN phase.
+	// Open is a RELATIVE phase — only 2 of 83 visible tools are blocked by
+	// the lifecycle gate, so always-append (like Set/Checkpoint/Final)
+	// would mislead. The hint directs the LLM to pivot to complete_goal
+	// rather than retry the blocked lifecycle tool.
+	ToolExecErrorOpenPhaseHint = " `set_goal` is LOCKED at OPEN phase (it only fires at the SET phase / iter 1). `goal_progress` is CHECKPOINT-only (it only fires at iter = max_tool_iterations). At OPEN, only `view_goal` and `complete_goal` are available for lifecycle operations. Pivot to `complete_goal` with a non-empty `summary` (1-500 chars) when the work is done, or call other non-lifecycle tools. Do NOT retry the same blocked lifecycle tool."
 )
 
 // Caps for each trigger. Per §5.2 + §5.3 — these are sub-attempt counts
@@ -594,6 +602,16 @@ func buildToolExecErrorRetryMessage(toolName, errMsg string, isTransient bool, r
 		base += ToolExecErrorFinalPhaseHint
 	case string(GoalPhaseCheckpoint):
 		base += ToolExecErrorCheckpointPhaseHint
+	case string(GoalPhaseOpen):
+		// Phase 12.32: Open phase is RELATIVE — only lifecycle tools
+		// (set_goal / goal_progress) are blocked. Append the OPEN hint
+		// ONLY when the failing tool is one of those — appending to
+		// read_file/exec/etc. errors would mislead (those tools work
+		// fine at OPEN; the error is unrelated to the lifecycle gate).
+		switch toolName {
+		case "set_goal", "goal_progress":
+			base += ToolExecErrorOpenPhaseHint
+		}
 	}
 	if registry == nil {
 		return base
