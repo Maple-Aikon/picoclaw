@@ -1366,3 +1366,152 @@ func TestToolRegistry_SetAllowlistFiltersToProviderDefs_DiscoveryBypass(t *testi
 		}
 	}
 }
+
+// --- Phase 12.31: lifecycle tool phase gate ---
+
+func TestIsLifecycleToolAllowed_EmptyPhase_ReturnsTrue(t *testing.T) {
+	// Empty phase = gate disabled (backward compat for SetAllowlist-only callers).
+	for _, tool := range []string{"set_goal", "view_goal", "goal_progress", "complete_goal", "any_other_tool"} {
+		if !isLifecycleToolAllowed(tool, "") {
+			t.Errorf("isLifecycleToolAllowed(%q, \"\") = false; want true (gate disabled)", tool)
+		}
+	}
+}
+
+func TestIsLifecycleToolAllowed_Matrix(t *testing.T) {
+	// 4 × 4 matrix: each lifecycle tool × each non-empty phase.
+	matrix := []struct {
+		tool  string
+		phase string
+		want  bool
+	}{
+		// set_goal: only at SET
+		{"set_goal", "set", true},
+		{"set_goal", "open", false},
+		{"set_goal", "checkpoint", false},
+		{"set_goal", "final", false},
+		// goal_progress: only at CHECKPOINT
+		{"goal_progress", "set", false},
+		{"goal_progress", "open", false},
+		{"goal_progress", "checkpoint", true},
+		{"goal_progress", "final", false},
+		// view_goal: only at OPEN
+		{"view_goal", "set", false},
+		{"view_goal", "open", true},
+		{"view_goal", "checkpoint", false},
+		{"view_goal", "final", false},
+		// complete_goal: any non-empty phase
+		{"complete_goal", "set", true},
+		{"complete_goal", "open", true},
+		{"complete_goal", "checkpoint", true},
+		{"complete_goal", "final", true},
+	}
+	for _, tc := range matrix {
+		got := isLifecycleToolAllowed(tc.tool, tc.phase)
+		if got != tc.want {
+			t.Errorf("isLifecycleToolAllowed(%q, %q) = %v; want %v", tc.tool, tc.phase, got, tc.want)
+		}
+	}
+}
+
+func TestIsLifecycleToolAllowed_CaseAndWhitespaceTolerance(t *testing.T) {
+	// Tool name is normalized (ToLower + TrimSpace) to match the allowlist
+	// storage convention. Phase is the typed GoalPhase enum value (lowercase)
+	// so case-mismatched phase is a programming bug, not a tolerance case.
+	cases := []struct {
+		tool, phase string
+		want        bool
+	}{
+		{"  SET_GOAL  ", "set", true},
+		{"View_Goal", "open", true},
+		{"Goal_Progress", "checkpoint", true},
+		{"complete_goal", "final", true},       // phase already lowercase
+		{"set_goal", "Open", false},            // case mismatch on phase rejected (programmer bug)
+		{"  set_goal  ", "  open  ", false},    // phase is trimmed + lowercase-compared; spaces on phase input are also trimmed
+	}
+	for _, tc := range cases {
+		got := isLifecycleToolAllowed(tc.tool, tc.phase)
+		if got != tc.want {
+			t.Errorf("isLifecycleToolAllowed(%q, %q) = %v; want %v", tc.tool, tc.phase, got, tc.want)
+		}
+	}
+}
+
+func TestToolAllowedLocked_LifecycleGate_FiresForNilAllowlist(t *testing.T) {
+	// The bug: no-`tools:` agent → SetAllowlist(nil) → all 85 tools visible at OPEN,
+	// including set_goal and goal_progress. The lifecycle gate must block these
+	// regardless of allowlist state.
+	r := NewToolRegistry()
+	r.Register(newMockTool("set_goal", "set goal"))
+	r.Register(newMockTool("goal_progress", "checkpoint progress"))
+	r.Register(newMockTool("view_goal", "view goal"))
+	r.Register(newMockTool("complete_goal", "complete goal"))
+	r.Register(newMockTool("some_other_tool", "regular tool"))
+
+	// Phase OPEN, no allowlist → lifecycle gate MUST block set_goal and goal_progress.
+	r.SetAllowlist(nil)
+	r.SetPhase("open")
+
+	blocked := []string{"set_goal", "goal_progress"}
+	for _, name := range blocked {
+		if r.IsAllowed(name) {
+			t.Errorf("OPEN phase: IsAllowed(%q) = true; want false (lifecycle gate)", name)
+		}
+	}
+
+	// These MUST be allowed at OPEN.
+	allowed := []string{"view_goal", "complete_goal", "some_other_tool"}
+	for _, name := range allowed {
+		if !r.IsAllowed(name) {
+			t.Errorf("OPEN phase: IsAllowed(%q) = false; want true", name)
+		}
+	}
+
+	// Phase CHECKPOINT: goal_progress now allowed.
+	r.SetPhase("checkpoint")
+	if !r.IsAllowed("goal_progress") {
+		t.Error("CHECKPOINT: IsAllowed(goal_progress) = false; want true")
+	}
+	if r.IsAllowed("set_goal") {
+		t.Error("CHECKPOINT: IsAllowed(set_goal) = true; want false")
+	}
+
+	// Phase SET: set_goal allowed, goal_progress still blocked.
+	r.SetPhase("set")
+	if !r.IsAllowed("set_goal") {
+		t.Error("SET: IsAllowed(set_goal) = false; want true")
+	}
+	if r.IsAllowed("goal_progress") {
+		t.Error("SET: IsAllowed(goal_progress) = true; want false")
+	}
+
+	// Phase FINAL: complete_goal allowed; set_goal + goal_progress blocked.
+	r.SetPhase("final")
+	if !r.IsAllowed("complete_goal") {
+		t.Error("FINAL: IsAllowed(complete_goal) = false; want true")
+	}
+	if r.IsAllowed("set_goal") {
+		t.Error("FINAL: IsAllowed(set_goal) = true; want false")
+	}
+	if r.IsAllowed("goal_progress") {
+		t.Error("FINAL: IsAllowed(goal_progress) = true; want false")
+	}
+}
+
+func TestToolAllowedLocked_LifecycleGate_DoesNotAffectNonLifecycleTools(t *testing.T) {
+	// Non-lifecycle tools should always pass through the gate unchanged.
+	r := NewToolRegistry()
+	r.Register(newMockTool("web_search", "search"))
+	r.Register(newMockTool("file_read", "read"))
+	r.SetAllowlist(nil)
+
+	phases := []string{"", "set", "open", "checkpoint", "final"}
+	for _, phase := range phases {
+		r.SetPhase(phase)
+		for _, tool := range []string{"web_search", "file_read"} {
+			if !r.IsAllowed(tool) {
+				t.Errorf("phase=%q: IsAllowed(%q) = false; want true (non-lifecycle tool)", phase, tool)
+			}
+		}
+	}
+}

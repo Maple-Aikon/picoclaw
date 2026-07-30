@@ -100,7 +100,7 @@ func currentGoalPhase(workspace, sessionKey string, iteration, iterationCap int,
 	if g.Status != goal.StatusActive {
 		return GoalPhaseLock
 	}
-	if maxIterationsCap > 0 && iterationCap >= maxIterationsCap {
+	if maxIterationsCap > 0 && iteration >= maxIterationsCap {
 		return GoalPhaseFinal
 	}
 	if iterationCap > 0 && iteration >= iterationCap {
@@ -122,9 +122,18 @@ func currentGoalPhase(workspace, sessionKey string, iteration, iterationCap int,
 //	GoalPhaseOpen       — iter in [2, iterationCap-1] AND goal active AND goalFinalized=false
 //	GoalPhaseCheckpoint — iter >= iterationCap AND iterationCap < maxIterationsCap
 //	                      AND goal active AND goalFinalized=false
-//	GoalPhaseFinal      — iterationCap >= maxIterationsCap (>0)
-//	                      OR iter > maxIterationsCap (>0)
+//	GoalPhaseFinal      — iter >= maxIterationsCap (>0)
 //	                      OR goalFinalized=true
+//
+// Phase 12.30 bug fix: the FINAL-phase predicate used to compare
+// `iterationCap >= maxIterationsCap` (the cap variable, which is
+// mutable via goal_progress self-extend). That made FINAL fire too
+// early when goal_progress extended iterationCap to the absolute
+// ceiling, then the very next iter saw cap==ceiling and jumped to
+// FINAL prematurely. Compare the iteration INDEX (`iter`) instead —
+// that reflects the runtime position, not the user-config ceiling.
+// See picoclaw-phase12.30 plan §6 for the live-verify that motivated
+// the fix.
 func ResolveGoalPhase(
 	hasActiveGoal bool,
 	iter int,
@@ -138,7 +147,7 @@ func ResolveGoalPhase(
 	switch {
 	case !hasActiveGoal || iter <= 1:
 		return GoalPhaseSet
-	case maxIterationsCap > 0 && iterationCap >= maxIterationsCap:
+	case maxIterationsCap > 0 && iter >= maxIterationsCap:
 		return GoalPhaseFinal
 	case maxIterationsCap > 0 && iter > maxIterationsCap:
 		return GoalPhaseFinal

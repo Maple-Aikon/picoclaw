@@ -85,7 +85,10 @@ func (ts *turnState) iterationCapFinalized() bool {
 //   - no agent / no workspace / no sessionKey → GoalPhaseSet (fail-closed)
 //   - hasGoal == false → GoalPhaseSet (LLM must seed per-turn goal)
 //   - goalFinalized flag set → GoalPhaseFinal
-//   - iterationCap >= MaxIterationsCap → GoalPhaseFinal
+//   - iter >= MaxIterationsCap → GoalPhaseFinal (Phase 12.30: was
+//     `iterationCap >= MaxIterationsCap` — the cap variable is mutable
+//     via goal_progress self-extend, comparing it makes FINAL fire too
+//     early. Compare the iter index instead.)
 //   - iter >= iterationCap (but iterCap < ceiling) → GoalPhaseCheckpoint
 //   - otherwise → GoalPhaseOpen
 func (ts *turnState) currentGoalPhase() GoalPhase {

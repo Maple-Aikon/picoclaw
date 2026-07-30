@@ -41,6 +41,14 @@ const (
 	// EnvGatewayHost overrides the host address for the gateway server.
 	// Default: "localhost"
 	EnvGatewayHost = "PICOCLAW_GATEWAY_HOST"
+
+	// EnvAgentDebug toggles the per-iteration agent-loop DEBUG logger.
+	// When set to "1" / "true" / "yes", the agent logs every LLM call,
+	// tool execution, retry attempt, and goal-phase transition to the
+	// gateway log under component "agent_debug". Use for live-verify of
+	// multi-iter turns when the existing structured gateway events are
+	// insufficient. Default: off (production hot-path cost is zero).
+	EnvAgentDebug = "PICOCLAW_AGENT_DEBUG"
 )
 
 func GetHome() string {

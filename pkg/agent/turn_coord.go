@@ -78,6 +78,13 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				finalSuccessfulPath = append([]string(nil), attemptedSkills...)
 			}
 		}
+		// Phase 12.30: log turn-end marker. Captures final iter count and
+		// outcome summary so live-verify over agent_debug.log can scan for
+		// end-of-turn without grepping KindAgentTurnEnd events. Fires before
+		// emitEvent so the order is: agent_debug=turn_end → gateway=turn.end.
+		if IsAgentDebugEnabled() {
+			AgentDebugTurnEnd(ts.turnID, ts.sessionKey, ts.currentIteration(), string(turnStatus), ts.goalFinalized)
+		}
 		al.emitEvent(
 			runtimeevents.KindAgentTurnEnd,
 			ts.eventMeta("runTurn", "turn.end"),
@@ -326,6 +333,25 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				"iteration": iteration,
 				"max":         ts.iterationCap,
 			})
+
+		// Phase 12.30: log per-iter phase + tools-visible snapshot for
+		// live-verify of multi-iter turns. Disabled by default — set
+		// PICOCLAW_AGENT_DEBUG=1 to enable. The currentGoalPhase()
+		// call here also primes the allowlist gate for the upcoming
+		// LLM call (via ts.applyPhaseAllowlist inside ts.setPhase).
+		//
+		// tools_total here is the full registered registry count
+		// (unfiltered). The actual count the LLM sees — after
+		// SetAllowlist + ToProviderDefs projection in
+		// Pipeline.setupLLMRequest — is logged separately on the
+		// llm_call event so live-verify can compare the two and
+		// detect regressions like the Phase 12.3.1 SetAllowlist(nil)
+		// wire bug.
+		if IsAgentDebugEnabled() {
+			currentPhase := ts.currentGoalPhase()
+			toolsTotal := len(ts.agent.Tools.ToProviderDefs())
+			AgentDebugPhaseStart(ts.turnID, ts.sessionKey, iteration, currentPhase, toolsTotal, ts.goalFinalized)
+		}
 
 		// Execute LLM call via Pipeline
 		ts.setPhase(TurnPhaseRunning)

@@ -225,6 +225,7 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 	if ctx.Phase == "" || ts.postCompleteGoalReportSent {
 		return RecoveryNone, ""
 	}
+	_ = ctx // keep unused-import guard satisfied
 
 	// Provider transient (Trigger #5): always retry up to cap. Independent
 	// of goal phase. The existing callLLMCore retry already runs 3 times;
@@ -332,6 +333,12 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 	if ctx.TextEmpty && !ctx.HasToolCalls && !ts.emptyResponseRecoverySent {
 		if countWouldExceed(ts.emptyResponseRecoverySentCount(), EmptyResponseRecoveryCap) {
 			ts.emptyResponseRecoverySent = true
+			// Phase 12.30: recovery trigger fire. attempt is the
+			// same-iter boolean (0=not-yet, 1=just-set); use 1 for
+			// the fired-now state.
+			if IsAgentDebugEnabled() {
+				AgentDebugRecovery(ts.turnID, ts.sessionKey, ctx.Iteration, GoalPhase(ctx.Phase), "EmptyResponse", 1)
+			}
 			return RecoveryRetrySameIteration, EmptyResponseRecoveryMessage
 		}
 	}

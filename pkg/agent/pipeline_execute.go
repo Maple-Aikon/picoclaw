@@ -627,6 +627,18 @@ toolLoop:
 		// Phase 11: also surface the turn state itself so complete_goal
 		// can call ts.MarkGoalFinalized() and break the per-turn loop.
 		execCtx = goalpkg.WithTurnState(execCtx, ts)
+		// Phase 12.30: log tool exec start. `attempt=0` because
+		// ExecuteTools itself is single-attempt per call — same-iter
+		// retry is owned by retryExecuteToolChain (Phase 12.28), which
+		// re-invokes CallLLM, not this loop. When a retry path here
+		// does re-call (e.g. via executeToolWithRetry below), the
+		// attempt index propagates through the closure.
+		if IsAgentDebugEnabled() {
+			AgentDebugToolExec(
+				ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(),
+				toolName, toolArgs, 0,
+			)
+		}
 		toolResult := ts.agent.Tools.ExecuteWithContext(
 			execCtx,
 			toolName,
@@ -636,6 +648,19 @@ toolLoop:
 			asyncCallback,
 		)
 		toolDuration := time.Since(toolStart)
+		// Phase 12.30: log tool exec end.
+		if IsAgentDebugEnabled() {
+			isErr := false
+			forLLMLen := 0
+			if toolResult != nil {
+				isErr = toolResult.IsError
+				forLLMLen = len(toolResult.ForLLM)
+			}
+			AgentDebugToolExecEnd(
+				ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(),
+				toolName, isErr, forLLMLen, int(toolDuration.Milliseconds()), 0,
+			)
+		}
 		// Phase 6 Hook 4 — tool panic safety net. If a tool implementation
 		// panics inside ExecuteWithContext, the framework's own defer/recover
 		// in tools/registry.go catches it and returns a synthetic error

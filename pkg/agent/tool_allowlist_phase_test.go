@@ -304,3 +304,173 @@ func TestResolveAgentToolAllowlistWithPhase_NoToolsField_PreservesLifecycleOverr
 		}
 	})
 }
+
+// --- Phase 12.30 tests ---
+
+// TestResolveGoalPhase_FinalUsesIterIndexNotCap covers the bug fixed in
+// Phase 12.30. Previously, the FINAL-phase predicate compared
+// `iterationCap >= maxIterationsCap` — but iterationCap is the user-
+// config cap (mutable via goal_progress self-extend). When user set
+// max_tool_iterations=25 > max_iterations_cap=15, FINAL fired from
+// iter 1 because iterationCap (25) already exceeded maxIterationsCap
+// (15). The fix compares `iter >= maxIterationsCap` so FINAL only
+// fires when the iteration index actually reaches the absolute
+// ceiling.
+//
+// All four scenarios from the original bug report (Horus Protocol
+// 2026-07-30):
+//   1. iter < iterationCap < maxIterationsCap → GOAL-OPEN
+//   2. iter == iterationCap (within maxIterationsCap) → GOAL-CHECKPOINT
+//   3. iter == iterationCap == maxIterationsCap → GOAL-CHECKPOINT
+//      (NOT FINAL — cap variable equality alone is not enough)
+//   4. iter >= maxIterationsCap → GOAL-FINAL
+func TestResolveGoalPhase_FinalUsesIterIndexNotCap(t *testing.T) {
+	cases := []struct {
+		name             string
+		hasActiveGoal    bool
+		iter             int
+		iterationCap     int
+		maxIterationsCap int
+		goalFinalized    bool
+		want             GoalPhase
+	}{
+		// Pin rule: iter <= 1 always → SET, regardless of cap values.
+		{
+			name:             "iter=1 pin rule wins over cap mismatch",
+			hasActiveGoal:    true,
+			iter:             1,
+			iterationCap:     25,
+			maxIterationsCap: 15,
+			goalFinalized:    false,
+			want:             GoalPhaseSet,
+		},
+		// Open-phase: iter well below both caps.
+		{
+			name:             "iter=3 cap=15 ceiling=15 → OPEN",
+			hasActiveGoal:    true,
+			iter:             3,
+			iterationCap:     15,
+			maxIterationsCap: 15,
+			goalFinalized:    false,
+			want:             GoalPhaseOpen,
+		},
+		// Checkpoint: iter hits the per-turn cap, but iter is still
+		// below the absolute ceiling.
+		{
+			name:             "iter=5 cap=5 ceiling=15 → CHECKPOINT",
+			hasActiveGoal:    true,
+			iter:             5,
+			iterationCap:     5,
+			maxIterationsCap: 15,
+			goalFinalized:    false,
+			want:             GoalPhaseCheckpoint,
+		},
+		// Original Horus bug: iterationCap clamped to maxIterationsCap
+		// via goal_progress self-extend. Old code returned FINAL here
+		// because iterationCap (15) >= maxIterationsCap (15). New code
+		// compares iter (10) against ceiling (15) — not yet FINAL, but
+		// iter (10) >= iterationCap (10) → CHECKPOINT.
+		{
+			name:             "iter=10 cap=10 ceiling=15 → CHECKPOINT (Phase 12.30 fix)",
+			hasActiveGoal:    true,
+			iter:             10,
+			iterationCap:     10,
+			maxIterationsCap: 15,
+			goalFinalized:    false,
+			want:             GoalPhaseCheckpoint,
+		},
+		// Second original bug: user config has
+		// max_tool_iterations (25) > max_iterations_cap (15). Old code
+		// returned FINAL because iterationCap (25) >= ceiling (15) at
+		// iter 1. New code returns CHECKPOINT at iter 24 (still below
+		// iter ceiling 15? No, 24 >= 15) → FINAL. The right answer is
+		// FINAl because iter (24) >= ceiling (15).
+		{
+			name:             "iter=24 cap=25 ceiling=15 → FINAL",
+			hasActiveGoal:    true,
+			iter:             24,
+			iterationCap:     25,
+			maxIterationsCap: 15,
+			goalFinalized:    false,
+			want:             GoalPhaseFinal,
+		},
+		// Iter index at the ceiling.
+		{
+			name:             "iter=15 cap=15 ceiling=15 → FINAL",
+			hasActiveGoal:    true,
+			iter:             15,
+			iterationCap:     15,
+			maxIterationsCap: 15,
+			goalFinalized:    false,
+			want:             GoalPhaseFinal,
+		},
+		// goalFinalized flag overrides everything else.
+		{
+			name:             "goalFinalized=true → FINAL even at iter=1",
+			hasActiveGoal:    true,
+			iter:             1,
+			iterationCap:     25,
+			maxIterationsCap: 15,
+			goalFinalized:    true,
+			want:             GoalPhaseFinal,
+		},
+		// hasActiveGoal=false pin rule (even at iter=5).
+		{
+			name:             "no active goal → SET regardless of iter",
+			hasActiveGoal:    false,
+			iter:             5,
+			iterationCap:     5,
+			maxIterationsCap: 15,
+			goalFinalized:    false,
+			want:             GoalPhaseSet,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ResolveGoalPhase(c.hasActiveGoal, c.iter, c.iterationCap, c.maxIterationsCap, c.goalFinalized)
+			if got != c.want {
+				t.Errorf("ResolveGoalPhase(%v, iter=%d, iterCap=%d, maxCap=%d, finalized=%v) = %s, want %s",
+					c.hasActiveGoal, c.iter, c.iterationCap, c.maxIterationsCap, c.goalFinalized, got, c.want)
+			}
+		})
+	}
+}
+
+// TestResolveGoalPhase_MaxIterationsCapZero verifies that
+// maxIterationsCap=0 disables the FINAL-phase cap. This is the
+// "extensions disabled" config — the agent should never hit FINAL via
+// the ceiling predicate.
+func TestResolveGoalPhase_MaxIterationsCapZero(t *testing.T) {
+	// maxIterationsCap=0 → ceiling check is disabled → at iter=100 with
+	// iterationCap=100, Open phase should still hold (since iter <
+	// iterationCap).
+	got := ResolveGoalPhase(true, 100, 100, 0, false)
+	if got != GoalPhaseCheckpoint {
+		t.Errorf("with ceiling=0: got %s, want %s", got, GoalPhaseCheckpoint)
+	}
+
+	// Even at iter=1000, ceiling=0 means no FINAL via cap.
+	got = ResolveGoalPhase(true, 1000, 1000, 0, false)
+	if got != GoalPhaseCheckpoint {
+		t.Errorf("with ceiling=0 at high iter: got %s, want %s", got, GoalPhaseCheckpoint)
+	}
+}
+
+// TestResolveGoalPhase_PinRuleStrict verifies the iter<=1 pin rule
+// from Phase 12.15.7 — even with an active goal file present, iter=1
+// always classifies as SET to prevent the LLM from bypassing
+// set_goal.
+func TestResolveGoalPhase_PinRuleStrict(t *testing.T) {
+	// Both hasActiveGoal=true and iter=1 → SET (pin wins).
+	if got := ResolveGoalPhase(true, 1, 25, 15, false); got != GoalPhaseSet {
+		t.Errorf("hasActiveGoal=true iter=1: got %s, want %s", got, GoalPhaseSet)
+	}
+	// hasActiveGoal=false also → SET.
+	if got := ResolveGoalPhase(false, 1, 25, 15, false); got != GoalPhaseSet {
+		t.Errorf("hasActiveGoal=false iter=1: got %s, want %s", got, GoalPhaseSet)
+	}
+	// iter=2 with active goal → OPEN (pin rule no longer applies).
+	if got := ResolveGoalPhase(true, 2, 25, 15, false); got != GoalPhaseOpen {
+		t.Errorf("hasActiveGoal=true iter=2: got %s, want %s", got, GoalPhaseOpen)
+	}
+}

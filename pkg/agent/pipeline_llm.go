@@ -208,8 +208,33 @@ func (p *Pipeline) CallLLM(
 		backoffSecs = 2
 	}
 	for retry := 0; retry <= maxRetries; retry++ {
+		// Phase 12.30: log LLM call start. Combined with the
+		// transient-retry loop below to expose attempt index for
+		// provider-side retry classification.
+		//
+		// tools_visible here is the count the LLM actually sees,
+		// after SetAllowlist + ToProviderDefs projection in
+		// Pipeline.setupLLMRequest. Compare against tools_total
+		// (logged on phase_start) — when they diverge, the
+		// phase allowlist gate is suppressing tools.
+		if IsAgentDebugEnabled() {
+			AgentDebugLLMCall(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), len(exec.providerToolDefs))
+		}
 		exec.response, err = p.callLLMCore(ctx, turnCtx, ts, exec, exec.callMessages, exec.providerToolDefs, iteration)
 		if err == nil {
+			// Phase 12.30: log LLM response with tool call summary.
+			if IsAgentDebugEnabled() {
+				toolSummaries := make([]AgentDebugToolCall, 0)
+				if exec.response != nil {
+					for _, tc := range exec.response.ToolCalls {
+						toolSummaries = append(toolSummaries, AgentDebugToolCall{
+							Name:        tc.Name,
+							ArgsSummary: summarizeArgs(tc.Arguments),
+						})
+					}
+				}
+				AgentDebugLLMResponse(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), toolSummaries)
+			}
 			break
 		}
 		if ts.hardAbortRequested() && errors.Is(err, context.Canceled) {
@@ -976,6 +1001,10 @@ func (p *Pipeline) handleHookReplay(
 					ElapsedMs: rc.Elapsed.Milliseconds(),
 				},
 			)
+			// Phase 12.30: log retry attempt.
+			if IsAgentDebugEnabled() {
+				AgentDebugRetryAttempt(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), rc.Attempt+1, "HookReplay")
+			}
 			logger.DebugCF("agent", "Replaying LLM (same iteration)", map[string]any{
 				"agent_id":  ts.agent.ID,
 				"iteration": iteration,
@@ -1169,6 +1198,10 @@ func (p *Pipeline) handleGoalRecovery(
 				"attempt":   rc.Attempt + 1,
 				"remaining": rc.Remaining,
 			})
+			// Phase 12.30: log retry attempt.
+			if IsAgentDebugEnabled() {
+				AgentDebugRetryAttempt(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), rc.Attempt+1, "GoalRecovery")
+			}
 		},
 		OnExhausted: func(rc RetryContext) {
 			logger.WarnCF("agent", "Goal recovery exhausted, archiving goal", map[string]any{
@@ -1367,6 +1400,10 @@ func (p *Pipeline) retryLLMForBlockedTool(
 		OnRetry: func(rc RetryContext, reason string) {
 			logFields["action"] = "retry_same_iter"
 			logger.InfoCF("agent", "Goal recovery retry (same iter, blocked tool)", logFields)
+			// Phase 12.30: log retry attempt.
+			if IsAgentDebugEnabled() {
+				AgentDebugRetryAttempt(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), rc.Attempt+1, reason)
+			}
 		},
 		OnExhausted: func(rc RetryContext) {
 			exhausted = true

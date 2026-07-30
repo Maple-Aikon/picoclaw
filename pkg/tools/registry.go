@@ -319,7 +319,53 @@ func (r *ToolRegistry) IsAllowed(name string) bool {
 	return r.toolAllowedLocked(name)
 }
 
+// isLifecycleToolAllowed enforces which goal lifecycle tool may be called
+// at a given phase, regardless of allowlist membership.
+//
+// Phase 12.31: this is a second gate ON TOP of toolAllowedLocked's
+// allowlist membership check. It catches the case where an agent has
+// no `tools:` frontmatter field (the main Telegram agent), so
+// SetAllowlist(nil) leaves all 85 tools visible at OPEN — including
+// set_goal and goal_progress, which should be restricted by phase.
+//
+// Returns true when the tool may be called at this phase:
+//   - set_goal:       only at SET
+//   - goal_progress:  only at CHECKPOINT
+//   - view_goal:      only at OPEN
+//   - complete_goal:  any non-empty phase (always allowed)
+//   - (other):        always true
+//
+// Empty phase ("") disables the gate entirely — all tools return true
+// for backward compat with SetAllowlist-only callers (e.g., instance.go:113
+// agent init path that does not call SetPhase).
+func isLifecycleToolAllowed(toolName, phase string) bool {
+	name := strings.ToLower(strings.TrimSpace(toolName))
+	phase = strings.ToLower(strings.TrimSpace(phase))
+	if phase == "" {
+		return true // phase gate disabled — backward compat
+	}
+	switch name {
+	case "set_goal":
+		return phase == "set"
+	case "goal_progress":
+		return phase == "checkpoint"
+	case "view_goal":
+		return phase == "open"
+	case "complete_goal":
+		return true // any non-empty phase
+	}
+	return true
+}
+
 func (r *ToolRegistry) toolAllowedLocked(name string) bool {
+	// Phase 12.31: lifecycle-tool phase gate. Runs FIRST so the gate fires
+	// regardless of allowlist state. The allowlist filter alone is insufficient
+	// for the no-`tools:`-field case where SetAllowlist(nil) makes the allowlist
+	// empty, leaving all 85 tools visible at OPEN phase — including set_goal and
+	// goal_progress which should be restricted by phase.
+	if !isLifecycleToolAllowed(name, r.phase) {
+		return false
+	}
 	if r.allowlist == nil {
 		return true
 	}
