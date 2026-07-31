@@ -289,6 +289,15 @@ type systemPromptBuildOptions struct {
 	// gets one last chance to provide a user-facing final report.
 	PostCompleteGoalReport bool
 
+	// GoalSnapshot is the rendered header (objective + success criteria)
+	// of the active goal for this turn. Populated at the
+	// promptBuildRequestForTurn layer for CHECKPOINT phase only
+	// (Phase 12.34), then threaded through to
+	// goalPhaseCheckpointHintContributor so the LLM sees goal context
+	// before the decision tree. Empty when no active goal or when the
+	// phase is not Checkpoint.
+	GoalSnapshot string
+
 	// Iteration (Phase 12.16.1) is the current iteration index within the
 	// turn (1-based: 1..MaxIter). Threaded through to PromptBuildRequest so
 	// goalPhaseSetHintContributor can refer to the actual iter instead of
@@ -435,7 +444,9 @@ Each part separated by the marker will be sent as an independent message.`,
 	// to [goal_progress, complete_goal] only — the hint explains the
 	// forward paths and arg-shape required for both tools so the LLM
 	// avoids retrying with malformed args when the cap hits.
-	if hintPart := goalPhaseCheckpointHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase, Iteration: opts.Iteration}); hintPart != nil {
+	// Phase 12.34: thread GoalSnapshot through so the LLM sees goal
+	// context (objective + success criteria) before the decision tree.
+	if hintPart := goalPhaseCheckpointHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase, Iteration: opts.Iteration, GoalSnapshot: opts.GoalSnapshot}); hintPart != nil {
 		add(*hintPart)
 	}
 

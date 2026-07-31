@@ -37,6 +37,16 @@ func promptBuildRequestForTurn(
 		// to the actual iter instead of hardcoding "(iter 1)".
 		Iteration: ts.currentIteration(),
 	}
+	// Phase 12.34: inject goal context (objective + success criteria) into
+	// the CHECKPOINT-phase hint so the LLM can decide between goal_progress
+	// (extend) and complete_goal (finalize) based on actual goal state.
+	// Only at CHECKPOINT — other phases either have no goal lifecycle
+	// decision to make (Open/Set) or already lock to complete_goal (Final).
+	// Per Finding #4: load via the standalone helper (testable in isolation)
+	// rather than threading fields through a turnState method.
+	if string(ts.currentGoalPhase()) == string(GoalPhaseCheckpoint) {
+		req.GoalSnapshot = loadGoalSnapshotForHint(ts.workspace, ts.sessionKey)
+	}
 	hasCallableTools := true
 	if ts.profile.Enabled {
 		hasCallableTools = turnProfileHasCallableTools(ts.profile, ts.agent.Tools.ToProviderDefs()) ||

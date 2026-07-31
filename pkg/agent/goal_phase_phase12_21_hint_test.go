@@ -356,3 +356,54 @@ func TestGoalPhaseCheckpointHint_DoesNotBreakSetSilent(t *testing.T) {
 		})
 	}
 }
+
+// Phase 12.34 Task 4 wire integration: the snapshot loaded at CHECKPOINT
+// must flow from promptBuildRequestForTurn → buildSystemPromptParts →
+// checkpoint hint contributor → emitted prompt part Content.
+//
+// This is the wire-level test (mirror of the GoalPhaseSet hint integration
+// test from Phase 12.3): assert the snapshot text appears inside the
+// actual prompt part emitted by buildSystemPromptParts when GoalPhase is
+// Checkpoint and GoalSnapshot is set in options.
+//
+// REGRESSION-PROOF for "code grep != rendered prompt" lesson: unit tests
+// that only check the contributor function in isolation could pass while
+// the wiring silently breaks. This test asserts the end-to-end chain.
+func TestGoalPhaseCheckpointHint_Integration_GoalSnapshotFlowsThrough(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	snapshot := "Goal: upgrade-uv\n**Objective:** upgrade uv and verify tests pass"
+	parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
+		IncludeToolUseRule: true,
+		GoalPhase:          string(GoalPhaseCheckpoint),
+		Iteration:          25,
+		GoalSnapshot:       snapshot,
+	})
+
+	var hint *PromptPart
+	for i := range parts {
+		if parts[i].Source.ID == PromptSourceGoalPhaseCheckpointHint {
+			hint = &parts[i]
+			break
+		}
+	}
+	if hint == nil {
+		ids := make([]string, 0, len(parts))
+		for _, p := range parts {
+			ids = append(ids, string(p.Source.ID))
+		}
+		t.Fatalf("expected checkpoint hint part in prompt parts; got: %v", ids)
+	}
+
+	// Snapshot must be prepended into the rendered hint content (wiring
+	// proof: thread through buildOptions → contributor → rendered part).
+	if !strings.Contains(hint.Content, snapshot) {
+		t.Errorf("GoalSnapshot not threaded into emitted hint; got:\n%s", hint.Content)
+	}
+	// Snapshot must be PREPENDED (before the decision tree block).
+	snapIdx := strings.Index(hint.Content, snapshot)
+	dtIdx := strings.Index(hint.Content, "Decision tree")
+	if snapIdx < 0 || dtIdx < 0 || snapIdx > dtIdx {
+		t.Errorf("GoalSnapshot should be prepended before Decision tree; snap_idx=%d dt_idx=%d", snapIdx, dtIdx)
+	}
+}
