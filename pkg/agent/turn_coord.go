@@ -471,6 +471,9 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 										"graceful_interrupt":  ts.gracefulInterrupt,
 										"graceful_term_used":  ts.gracefulTerminalUsed,
 									})
+								// Phase 12.36: apply deferred extend before graceful-interrupt exit.
+								// Same-bug-class as retry path's line 551. Idempotent if no request staged.
+								_, _ = al.applyDeferredExtend(ts)
 								continue
 							}
 							// Same-iter BoundedRetry wrap. The blocked tool
@@ -548,6 +551,11 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 									ts.postCompleteGoalReportSent = true
 									ts.pendingFinalReportIter = false
 								}
+								// Phase 12.36: apply deferred extend (same-bug-class as line 474).
+								// Cannot fall through to outer block (line 569) because retry path
+								// intentionally skips the pendingRecoveryMessage = archiveMsg set
+								// at lines 564-566 (recovery was already resolved by retry success).
+								_, _ = al.applyDeferredExtend(ts)
 								continue
 							default:
 								logger.WarnCF("agent", "Unexpected control signal from goal recovery at restricted phase",
