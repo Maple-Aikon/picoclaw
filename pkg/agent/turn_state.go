@@ -234,6 +234,15 @@ type turnState struct {
 	postCompleteGoalReportSent bool // Phase 12.7: emit the final-report hint once after complete_goal; resets to true after the post-final-report iter runs.
 	pendingFinalReportIter     bool // Phase 12.9: transient signal set at top of body if this iter is the post-complete_goal final-report iter; consumed + cleared at end of body.
 
+	// Phase 12.33: tracks the GoalPhase value that was current when
+	// messages[0] (system prompt) was last built. Used by
+	// maybeRebuildPromptForPhaseChange to detect when the goal phase
+	// changed between iterations (e.g., Open → Checkpoint at iter=MaxIter)
+	// and force a system prompt rebuild so the LLM sees the phase-
+	// appropriate hint text instead of the stale iter-0 prompt.
+	// Empty string = no rebuild has happened yet (initial iter).
+	lastBuiltPromptPhase string
+
 	// Replay counter: bound AfterLLM hook replay attempts within a single iteration.
 	// Replay attempts are recovery retries (e.g. malformed tool-call recovery)
 	// that shouldn't consume an iteration slot in iterationCap. See plan

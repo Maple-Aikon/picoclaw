@@ -353,6 +353,21 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			AgentDebugPhaseStart(ts.turnID, ts.sessionKey, iteration, currentPhase, toolsTotal, ts.goalFinalized)
 		}
 
+		// Phase 12.33: rebuild messages[0] (system prompt) when the goal
+		// phase changed since the last build. Without this hook,
+		// messages[0] persists from iter 0 across all iters of a turn,
+		// even when GoalPhase transitions (Open → Checkpoint at
+		// iter=MaxIter). The LLM at iter 5 (phase=Checkpoint) would see
+		// the iter-0 SET-phase prompt with "call set_goal" instruction,
+		// contradicting the actual CHECKPOINT-phase allowlist
+		// ([goal_progress, complete_goal]). See
+		// turn_state_phase_rebuild.go for full design rationale.
+		//
+		// Sync the rebuilt messages back to exec.messages so CallLLM
+		// (line below) sees the updated system prompt.
+		messages = ts.maybeRebuildPromptForPhaseChange(messages, exec, pipeline.Cfg, iteration)
+		exec.messages = messages
+
 		// Execute LLM call via Pipeline
 		ts.setPhase(TurnPhaseRunning)
 		ctrl, callErr := pipeline.CallLLM(ctx, turnCtx, ts, exec, iteration)
