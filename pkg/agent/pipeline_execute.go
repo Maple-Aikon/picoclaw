@@ -164,6 +164,76 @@ toolLoop:
 			continue
 		}
 
+		// Phase 12.35 — gate pre-check. Before invoking ExecuteWithContext
+		// (which would internally re-check IsAllowed and return an ErrorResult),
+		// we pre-check the runtime allowlist here so we can distinguish
+		// BLOCKED-by-gate from EXEC-failed in the recovery path.
+		//
+		// Why: previously, the LLM calling a tool that was blocked by the
+		// phase/lifecycle gate (Phase 12.31) would route through the same
+		// checkToolExecErrorRecovery path as a real runtime error. That path
+		// only matches `Tool execution failed:` prefix or `ErrKind` typed,
+		// neither of which is set by the registry's IsAllowed block — so
+		// `ctx_execute` (MCP tool) at iter 5 CHECKPOINT never got same-iter
+		// BLOCKED recovery (see main-turn-3 trace 2026-07-31 15:28:52 ICT).
+		//
+		// With this pre-check: blocked tool generates a synthetic ToolResult
+		// marked with BlockedByGate=true, ts.lastToolBlockedByGate=true,
+		// messages appended normally, and the recovery path
+		// (checkToolExecErrorRecovery) routes to retryLLMForBlockedTool
+		// (BoundedRetry 3 attempts) — the same wire that already handles
+		// blocked-at-restricted-phase calls.
+		//
+		// SCOPE: pre-check ONLY fires when phase is in {checkpoint, final}.
+		// Phase=set is the entry-point phase where the LLM is expected to
+		// call set_goal first; if it calls any other tool, the legacy
+		// execute-then-error path is the right behavior (LLM sees the
+		// error and learns to call set_goal). Phase=open already has all
+		// tools allowed, so a gate-block there means something deeper is
+		// wrong and ExecuteWithContext's own gate is the canonical path.
+		// Phases {set, open}: skip pre-check, fall through to
+		// ExecuteWithContext's own IsAllowed check.
+		currentPhase := ts.currentGoalPhase()
+		if ts.agent.Tools != nil && (currentPhase == GoalPhaseCheckpoint || currentPhase == GoalPhaseFinal) {
+			if !ts.agent.Tools.IsAllowed(toolName) {
+				denyContent := fmt.Sprintf("tool %q is not available in the current phase (Phase 12.35 gate pre-check at %s)", toolName, currentPhase)
+				al.emitEvent(
+					runtimeevents.KindAgentToolExecSkipped,
+					ts.eventMeta("runTurn", "turn.tool.skipped"),
+					ToolExecSkippedPayload{
+						Tool:   toolName,
+						Reason: denyContent,
+					},
+				)
+				deniedMsg := providers.Message{
+					Role:       "tool",
+					Content:    denyContent,
+					ToolCallID: tc.ID,
+				}
+				messages = append(messages, deniedMsg)
+				if !ts.opts.NoHistory {
+					ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
+					ts.recordPersistedMessage(deniedMsg)
+				}
+				// Mark the block on turnState so checkToolExecErrorRecovery
+				// routes to retryLLMForBlockedTool (BLOCKED path) instead of
+				// the tool-exec-error path. Phase 12.35: this is the new
+				// wire-level signal that gates BLOCKED-vs-EXEC distinction.
+				ts.lastToolBlockedByGate = true
+				// lastToolResult is a *tools.ToolResult — synthesize a
+				// minimal one so the recovery gate (which reads ErrKind +
+				// Content prefix) has a uniform surface.
+				ts.lastToolResult = tools.ErrorResult(denyContent).
+					WithError(fmt.Errorf("tool %q blocked at gate (Phase 12.35)", toolName))
+				exec.allResponsesHandled = false
+				continue
+			}
+		}
+		// Reset the gate-block flag for the next tool (each tool checks
+		// independently; if a previous tool was blocked, don't carry it
+		// over to a sibling tool that may be allowed).
+		ts.lastToolBlockedByGate = false
+
 		if al.hooks != nil {
 			toolReq, decision := al.hooks.BeforeTool(turnCtx, &ToolCallHookRequest{
 				Meta:      ts.eventMeta("runTurn", "turn.tool.before"),

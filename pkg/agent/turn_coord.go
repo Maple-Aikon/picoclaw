@@ -390,6 +390,12 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				ts.postCompleteGoalReportSent = true
 				ts.pendingFinalReportIter = false
 			}
+			// Phase 12.35: apply deferred iterationCap extend if any tool
+			// (e.g. goal_progress) staged one. Defensive — should be no-op
+			// on the ControlContinue path since no tool ran, but covers the
+			// edge case where a future LLM text-only path can stage extend
+			// (currently impossible but cheap to keep for symmetry).
+			_, _ = al.applyDeferredExtend(ts)
 			continue
 		case ControlBreak:
 			// Hard abort: delegate to abortTurn (sets TurnEndStatusAborted)
@@ -576,6 +582,11 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 					ts.postCompleteGoalReportSent = true
 					ts.pendingFinalReportIter = false
 				}
+				// Phase 12.35: apply deferred iterationCap extend if
+				// goal_progress staged one during this iter's tool run.
+				// Without this hook, the staged extend sits forever and
+				// phase never gets the budget it requested.
+				_, _ = al.applyDeferredExtend(ts)
 				continue
 			case ToolControlBreak:
 				// Hard abort: delegate to abortTurn (sets TurnEndStatusAborted)
@@ -1157,3 +1168,34 @@ func (al *AgentLoop) sideQuestionModelConfig(
 	clone := *modelCfg
 	return &clone, nil
 }
+// applyDeferredExtend applies any staged RequestExtendIterationCap request
+// that was set during ExecuteTools. Phase 12.35 wires goal_progress to defer
+// the iterationCap bump to end-of-iter so phase does not flip mid-iter
+// (CHECKPOINT→OPEN when the resolver reads `iter >= iterationCap`).
+//
+// Called from the loop body end (after ExecuteTools returns) before
+// `continue` to the next iter. Returns the new iteration cap (or 0 if
+// no request was staged) and the delta.
+//
+// If a request was applied, the caller should NOT bump the iter counter
+// (otherwise the new cap gets re-clamped before the next iter runs).
+// In this runTurn loop the bump happens at the top of body via
+// `iteration := ts.currentIteration() + 1; ts.setIteration(iteration)`,
+// so simply re-reading ts.currentIteration() at the top of the next
+// pass picks up the new cap without explicit bump management here.
+func (al *AgentLoop) applyDeferredExtend(ts *turnState) (newCap int, delta int) {
+	applied, cap, delta := ts.FlushPendingExtend()
+	if !applied {
+		return 0, 0
+	}
+	logger.DebugCF("agent", "Phase 12.35: applied deferred iterationCap extend from goal_progress at end of iter",
+		map[string]any{
+			"agent_id":   ts.agent.ID,
+			"iter":       ts.currentIteration(),
+			"new_cap":    cap,
+			"delta":      delta,
+			"phase":      string(ts.currentGoalPhase()),
+		})
+	return cap, delta
+}
+

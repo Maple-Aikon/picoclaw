@@ -234,6 +234,23 @@ type turnState struct {
 	postCompleteGoalReportSent bool // Phase 12.7: emit the final-report hint once after complete_goal; resets to true after the post-final-report iter runs.
 	pendingFinalReportIter     bool // Phase 12.9: transient signal set at top of body if this iter is the post-complete_goal final-report iter; consumed + cleared at end of body.
 
+	// Phase 12.35: goal_progress defers iterationCap extension to end of iter
+	// (after ExecuteTools returns, before continue). Setting the flag here
+	// keeps phase stable within the iter — iterationCap does NOT bump until
+	// the post-iter hook fires, so phase resolvers reading `iter >= iterCap`
+	// continue to see CHECKPOINT for the rest of the iter.
+	willExtendIterCap       bool   // true if a goal_progress call set this during ExecuteTools
+	willExtendIterCapAmount int    // amount to extend (0 = use MaxIterationsPerCheckpoint default)
+	willExtendIterCapReason string // audit reason for the deferred extend
+
+	// Phase 12.35: when ExecuteTools pre-checks IsAllowed and finds the tool
+	// is blocked by the phase/lifecycle gate, it sets this on the blocked
+	// tool result and skips ExecuteWithContext. The post-ExecuteTools recovery
+	// path then routes to retryLLMForBlockedTool (Phase 12.22) instead of the
+	// tool-exec-error recovery path (Phase 12.28) — wire must distinguish
+	// BLOCKED-by-gate from EXEC-failed.
+	lastToolBlockedByGate bool // true if the most recent tool was blocked at the gate, not executed
+
 	// Phase 12.33: tracks the GoalPhase value that was current when
 	// messages[0] (system prompt) was last built. Used by
 	// maybeRebuildPromptForPhaseChange to detect when the goal phase
@@ -626,6 +643,88 @@ func (ts *turnState) LastExtensionInfo() (reason string, atIter int) {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 	return ts.lastExtensionReason, ts.lastExtensionAtIter
+}
+
+// RequestExtendIterationCap is the deferred-extend counterpart of
+// ExtendIterationCap. It stages a request and the agent loop applies it at
+// end of iter via FlushPendingExtend. The cap is NOT bumped immediately, so
+// phase resolvers reading `iter >= iterationCap` see the same value for the
+// rest of the iter (Phase 12.35 fix: phase no longer flips mid-iter when
+// goal_progress succeeds at CHECKPOINT).
+//
+// Returns true if the request was accepted. A request is rejected if there
+// is no room to extend (cap is at the absolute ceiling); the caller
+// (goal_progress) handles rejection by not showing a success message.
+func (ts *turnState) RequestExtendIterationCap(n int, reason string) bool {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	// Reject if at ceiling (same edge case ExtendIterationCap clamps to).
+	if ts.maxIterationsCap > 0 && ts.iterationCap >= ts.maxIterationsCap {
+		return false
+	}
+	// Reject if n <= 0 (defensive — goal_progress should never pass 0/negative).
+	if n <= 0 {
+		return false
+	}
+	ts.willExtendIterCap = true
+	if ts.willExtendIterCapAmount == 0 {
+		ts.willExtendIterCapAmount = n
+	} else {
+		// Sum multiple requests within the same iter (defensive).
+		ts.willExtendIterCapAmount += n
+	}
+	if reason != "" {
+		ts.willExtendIterCapReason = reason
+	}
+	return true
+}
+
+// FlushPendingExtend applies any staged RequestExtendIterationCap request.
+// Returns applied=true with the new cap and delta if a request was staged.
+// Called by the agent loop at end of body, after ExecuteTools returns and
+// before the loop top-of-body check re-evaluates `iter < iterationCap`.
+//
+// Phase 12.35: this is the only place iterationCap actually bumps for a
+// goal_progress self-extend; the synchronous ExtendIterationCap call from
+// goal_progress tool handler was removed to keep phase stable within iter.
+func (ts *turnState) FlushPendingExtend() (bool, int, int) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	if !ts.willExtendIterCap {
+		return false, ts.iterationCap, 0
+	}
+	// Apply the staged amount. Clamp to ceiling the same way ExtendIterationCap
+	// does (defensive: someone might have set the ceiling lower since).
+	amount := ts.willExtendIterCapAmount
+	reason := ts.willExtendIterCapReason
+	// Reset BEFORE calling, so any re-entrant RequestExtend sees a clean state.
+	ts.willExtendIterCap = false
+	ts.willExtendIterCapAmount = 0
+	ts.willExtendIterCapReason = ""
+
+	if amount <= 0 {
+		return false, ts.iterationCap, 0
+	}
+	// Reuse the existing logic by calling ExtendIterationCap under the held
+	// lock. We can't simply call the public method because it also takes
+	// ts.mu (re-entrant deadlock on sync.Mutex). Inline the clamp here.
+	oldCap := ts.iterationCap
+	if ts.maxIterationsCap <= 0 {
+		ts.iterationCap = oldCap + amount
+	} else {
+		proposed := oldCap + amount
+		if proposed > ts.maxIterationsCap {
+			ts.iterationCap = ts.maxIterationsCap
+		} else {
+			ts.iterationCap = proposed
+		}
+	}
+	delta := ts.iterationCap - oldCap
+	ts.lastExtensionReason = reason
+	ts.lastExtensionAtIter = ts.iteration
+	return true, ts.iterationCap, delta
 }
 
 // CanExtendIterationCap reports whether iterationCap is below the absolute

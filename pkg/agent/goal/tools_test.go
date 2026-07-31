@@ -626,6 +626,11 @@ type fakeExtender struct {
 	extendCalls    int
 	lastReason     string
 	lastN          int
+	// Phase 12.35: deferred-extend semantics.
+	requestCalls       int // times RequestExtendIterationCap was invoked
+	pendingFlushAmount int // amount staged by RequestExtendIterationCap
+	pendingFlushReason string
+	flushedApplied     int // times FlushPendingExtend returned applied=true
 }
 
 func (f *fakeExtender) RemainingIterations() int { return f.remaining }
@@ -655,6 +660,46 @@ func (f *fakeExtender) ExtendIterationCap(n int, reason string) (int, int) {
 	f.lastReason = reason
 	f.lastN = n
 	return f.IterationCap() + n, n
+}
+// RequestExtendIterationCap stages a deferred extend. Returns true unless
+// at ceiling (matches real *turnState behavior). The fake's CanExtendIterationCap
+// flag is the gate; if false, the request is rejected.
+func (f *fakeExtender) RequestExtendIterationCap(n int, reason string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.requestCalls++
+	if !f.canExtend {
+		return false
+	}
+	if n <= 0 {
+		return false
+	}
+	if f.maxCap > 0 && f.iterCap >= f.maxCap {
+		return false
+	}
+	f.pendingFlushAmount += n
+	if reason != "" {
+		f.pendingFlushReason = reason
+	}
+	return true
+}
+// FlushPendingExtend applies any staged request (mimics the real agent loop
+// end-of-iter hook). Returns applied=true if a request was staged.
+func (f *fakeExtender) FlushPendingExtend() (bool, int, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pendingFlushAmount <= 0 {
+		return false, f.iterCap, 0
+	}
+	delta := f.pendingFlushAmount
+	f.iterCap += delta
+	f.lastReason = f.pendingFlushReason
+	f.lastN = delta
+	f.extendCalls++
+	f.flushedApplied++
+	f.pendingFlushAmount = 0
+	f.pendingFlushReason = ""
+	return true, f.iterCap, delta
 }
 func (f *fakeExtender) iterationCap() int { return 50 }
 func (f *fakeExtender) callCount() int {
@@ -692,8 +737,20 @@ func TestGoalProgressTool_ExtendsIterationCap_WhenRemainingSteps_HasRoom(t *test
 	if res.IsError {
 		t.Fatalf("unexpected error: %v", res.Err)
 	}
+	// Phase 12.35: goal_progress defers ExtendIterationCap to end-of-iter via
+	// FlushPendingExtend. Immediate post-Execute: callCount is still 0, only
+	// requestCalls is incremented. The agent loop calls FlushPendingExtend
+	// after ExecuteTools returns, before continuing the loop.
+	if ext.callCount() != 0 {
+		t.Errorf("expected 0 immediate ExtendIterationCap calls (deferred), got %d", ext.callCount())
+	}
+	// Simulate agent loop end-of-iter hook: extend should now apply.
+	applied, _, delta := ext.FlushPendingExtend()
+	if !applied {
+		t.Errorf("expected FlushPendingExtend to apply the staged request, got applied=false")
+	}
 	if ext.callCount() != 1 {
-		t.Errorf("expected 1 ExtendIterationCap call, got %d", ext.callCount())
+		t.Errorf("expected 1 total ExtendIterationCap after flush, got %d", ext.callCount())
 	}
 	reason, n := ext.recorded()
 	if !strings.Contains(reason, "goal_progress") {
@@ -706,6 +763,7 @@ func TestGoalProgressTool_ExtendsIterationCap_WhenRemainingSteps_HasRoom(t *test
 	if n != ext.MaxIterationsPerCheckpoint() {
 		t.Errorf("expected n=%d (MaxIterationsPerCheckpoint), got %d", ext.MaxIterationsPerCheckpoint(), n)
 	}
+	_ = delta
 }
 
 func TestGoalProgressTool_NoExtend_WhenNoCanExtend(t *testing.T) {
@@ -728,6 +786,12 @@ func TestGoalProgressTool_NoExtend_WhenNoCanExtend(t *testing.T) {
 	})
 	if res.IsError {
 		t.Fatalf("unexpected error: %v", res.Err)
+	}
+	// Phase 12.35: deferred semantics — should not even have staged a request
+	// when CanExtend==false. flushApplied stays 0.
+	applied, _, _ := ext.FlushPendingExtend()
+	if applied {
+		t.Errorf("expected FlushPendingExtend to not apply when CanExtend=false, got applied=true")
 	}
 	if ext.callCount() != 0 {
 		t.Errorf("expected 0 ExtendIterationCap calls when ceiling reached, got %d", ext.callCount())
@@ -761,8 +825,17 @@ func TestGoalProgressTool_ExtendsIterationCap_AtCheckpointCap(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error: %v", res.Err)
 	}
+	// Phase 12.35: deferred extend. Immediately after Execute, callCount=0;
+	// after FlushPendingExtend (simulating end-of-iter agent loop hook), it's 1.
+	if ext.callCount() != 0 {
+		t.Errorf("expected 0 immediate extend calls (deferred), got %d", ext.callCount())
+	}
+	applied, _, _ := ext.FlushPendingExtend()
+	if !applied {
+		t.Errorf("expected flush to apply, got applied=false")
+	}
 	if ext.callCount() != 1 {
-		t.Errorf("expected 1 ExtendIterationCap call at cap (Checkpoint extend), got %d", ext.callCount())
+		t.Errorf("expected 1 ExtendIterationCap call after flush (Checkpoint extend), got %d", ext.callCount())
 	}
 	reason, n := ext.recorded()
 	if !strings.Contains(reason, "goal_progress") {
@@ -801,8 +874,17 @@ func assertCheckpointExtend(t *testing.T, ws string, iterCap, maxCap, maxPerChec
 	if res.IsError {
 		t.Fatalf("unexpected error: %v", res.Err)
 	}
+	// Phase 12.35: deferred extend semantics — callCount is 0 immediately
+	// after Execute; only FlushPendingExtend triggers the actual extend.
+	if ext.callCount() != 0 {
+		t.Fatalf("expected 0 immediate ExtendIterationCap calls (deferred), got %d", ext.callCount())
+	}
+	applied, _, _ := ext.FlushPendingExtend()
+	if !applied {
+		t.Fatalf("expected FlushPendingExtend to apply, got applied=false")
+	}
 	if ext.callCount() != 1 {
-		t.Fatalf("expected 1 ExtendIterationCap call, got %d", ext.callCount())
+		t.Fatalf("expected 1 ExtendIterationCap call after flush, got %d", ext.callCount())
 	}
 	reason, n := ext.recorded()
 	if !strings.Contains(reason, "checkpoint extend") {
@@ -945,8 +1027,16 @@ func TestGoalProgressTool_AcceptsRemainingSteps_WithBlockers(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error: %v", res.Err)
 	}
+	// Phase 12.35: deferred extend — callCount is 0 immediately after Execute.
+	if ext.callCount() != 0 {
+		t.Errorf("expected 0 immediate extend calls (deferred), got %d", ext.callCount())
+	}
+	applied, _, _ := ext.FlushPendingExtend()
+	if !applied {
+		t.Errorf("expected flush to apply, got applied=false")
+	}
 	if ext.callCount() != 1 {
-		t.Errorf("expected 1 ExtendIterationCap call when remaining_steps non-empty, got %d", ext.callCount())
+		t.Errorf("expected 1 ExtendIterationCap call after flush when remaining_steps non-empty, got %d", ext.callCount())
 	}
 }
 

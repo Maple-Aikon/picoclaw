@@ -86,6 +86,18 @@ type IterationExtender interface {
 	// uses this to detect the ceiling-bound edge case where normal extend
 	// would mostly clamp to ceiling and waste the budget.
 	MaxIterationsCap() int
+	// RequestExtendIterationCap is the deferred-extend counterpart of
+	// ExtendIterationCap. Instead of immediately bumping the iteration cap
+	// (which would flip phase mid-iter when the resolver reads `iter >= cap`),
+	// it stages the request and the agent loop applies it at end of iter
+	// (see Phase 12.35). Returns true if the request was accepted (caller
+	// has room and the cap hasn't hit its ceiling), false otherwise.
+	RequestExtendIterationCap(n int, reason string) bool
+	// FlushPendingExtend applies any staged RequestExtendIterationCap request.
+	// Called by the agent loop at end of body, after ExecuteTools returns
+	// and before `continue` to the next iter. Returns true if a request was
+	// applied (caller should NOT bump iter so the new cap survives).
+	FlushPendingExtend() (applied bool, newCap int, delta int)
 }
 
 // WithIterationExtender attaches an IterationExtender to ctx. Pipeline
@@ -555,6 +567,15 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 	// BEFORE the loop condition is re-evaluated, so extending at
 	// remaining==0 is safe: the loop continues and the LLM can call
 	// complete_goal on the next iteration.
+	//
+	// Phase 12.35: defer-extend. Instead of calling ExtendIterationCap
+	// synchronously (which would bump iterationCap mid-iter and flip
+	// phase CHECKPOINT→OPEN at the goal_progress tool result append
+	// boundary, see main-turn-3 trace 2026-07-31), we stage the request
+	// via RequestExtendIterationCap and the agent loop applies it at
+	// end of body via FlushPendingExtend. This keeps phase stable
+	// within the iter — the resolver reading `iter >= iterationCap`
+	// still sees CHECKPOINT for the rest of the iter.
 	if ext := IterationExtenderFromContext(ctx); ext != nil {
 		if len(remaining) > 0 && ext.CanExtendIterationCap() {
 			amount := ext.MaxIterationsPerCheckpoint()
@@ -572,7 +593,11 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 			// so a single unconditional ExtendIterationCap(amount, ...) call handles
 			// every case: small gaps clamp to ceiling, large gaps grant full amount,
 			// zero gap is a no-op (CanExtendIterationCap guards above).
-			_, _ = ext.ExtendIterationCap(amount, "goal_progress: checkpoint extend by MaxIterationsPerCheckpoint (clamped to ceiling if exceeded)")
+			//
+			// Phase 12.35: switched from synchronous ExtendIterationCap to
+			// RequestExtendIterationCap — deferred-extend semantics keep phase
+			// stable mid-iter.
+			_ = ext.RequestExtendIterationCap(amount, "goal_progress: checkpoint extend by MaxIterationsPerCheckpoint (clamped to ceiling if exceeded)")
 		}
 	}
 
