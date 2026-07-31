@@ -260,7 +260,32 @@ func formatToolDiscoveryRule(useBM25, useRegex bool, phase GoalPhase) string {
 // cache key in BuildSystemPromptWithCache includes iter so iter-1
 // prompts are not reused at later iters in the same turn.
 func (cb *ContextBuilder) BuildSystemPrompt(goalPhase string, postCompleteGoalReport bool, iteration int) string {
-	return renderPromptPartsLegacy(cb.BuildSystemPromptParts(goalPhase, postCompleteGoalReport, iteration))
+	return cb.BuildSystemPromptWithSnapshot(goalPhase, postCompleteGoalReport, iteration, "")
+}
+
+// BuildSystemPromptWithSnapshot is the Phase 12.34 variant of
+// BuildSystemPrompt that threads GoalSnapshot through to the
+// CHECKPOINT-phase hint contributor. Pre-Phase-12.34 callers pass "" via
+// BuildSystemPrompt (backward compat). New callers at
+// promptBuildRequestForTurn pass the loaded snapshot for the Checkpoint
+// phase so the LLM sees goal context before the decision tree.
+//
+// The Phase 12.34 wire-level review surfaced that BuildSystemPrompt →
+// BuildSystemPromptParts drops GoalSnapshot (the helper signature is
+// 3-arg, no GoalSnapshot param). Threading it through here keeps the
+// helper signature stable while still letting the CHECKPOINT hint
+// contributor receive the snapshot when called from the rebuild path
+// (Phase 12.33) which routes through BuildSystemPrompt not
+// buildSystemPromptParts.
+func (cb *ContextBuilder) BuildSystemPromptWithSnapshot(goalPhase string, postCompleteGoalReport bool, iteration int, goalSnapshot string) string {
+	return renderPromptPartsLegacy(cb.buildSystemPromptParts(systemPromptBuildOptions{
+		IncludeSkillCatalog:    true,
+		IncludeToolUseRule:     true,
+		GoalPhase:              goalPhase,
+		PostCompleteGoalReport: postCompleteGoalReport,
+		Iteration:              iteration,
+		GoalSnapshot:           goalSnapshot,
+	}))
 }
 
 func (cb *ContextBuilder) BuildSystemPromptParts(goalPhase string, postCompleteGoalReport bool, iteration int) []PromptPart {
@@ -521,6 +546,21 @@ func isCacheableGoalPhase(goalPhase string) bool {
 }
 
 func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompleteGoalReport bool, iteration int) string {
+	return cb.BuildSystemPromptWithCacheAndSnapshot(goalPhase, postCompleteGoalReport, iteration, "")
+}
+
+// BuildSystemPromptWithCacheAndSnapshot is the Phase 12.34 variant of
+// BuildSystemPromptWithCache that threads GoalSnapshot through to the
+// CHECKPOINT-phase hint contributor when the cache is bypassed (non-Open
+// phase). Open phase never renders the checkpoint hint, so the snapshot
+// is silently ignored for Open.
+//
+// Phase 12.34 wire-level audit: the cache-keyed helper signature was
+// 3-arg, so the rebuild path (BuildMessagesFromPrompt →
+// buildSystemPromptForRequest → BuildSystemPromptWithCache) dropped the
+// GoalSnapshot. Threading it through here restores the wire path for
+// the Phase 12.33 phase-change rebuild hook.
+func (cb *ContextBuilder) BuildSystemPromptWithCacheAndSnapshot(goalPhase string, postCompleteGoalReport bool, iteration int, goalSnapshot string) string {
 	// Phase 12.16.1: skip cache for non-Open phases. The tool allowlist is
 	// 1-2 lifecycle tools (set_goal, goal_progress, complete_goal) and the
 	// prompt body is dominated by constant hint text + a tiny tool section.
@@ -529,7 +569,7 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompl
 	// residual risk of stale-prompt leakage when an LLM transitions
 	// between goal phases mid-turn. Open phase remains cached.
 	if !isCacheableGoalPhase(goalPhase) {
-		return cb.BuildSystemPrompt(goalPhase, postCompleteGoalReport, iteration)
+		return cb.BuildSystemPromptWithSnapshot(goalPhase, postCompleteGoalReport, iteration, goalSnapshot)
 	}
 
 	// Try read lock first — fast path when cache is valid
@@ -559,7 +599,7 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompl
 	previousPhase := cb.cachedSystemPromptGoalPhase
 	previousIter := cb.cachedSystemPromptIteration
 	baseline := cb.buildCacheBaseline()
-	prompt := cb.BuildSystemPrompt(goalPhase, postCompleteGoalReport, iteration)
+	prompt := cb.BuildSystemPromptWithSnapshot(goalPhase, postCompleteGoalReport, iteration, goalSnapshot)
 	cb.cachedSystemPrompt = prompt
 	cb.cachedSystemPromptGoalPhase = goalPhase
 	cb.cachedSystemPromptPostCompleteGoalReport = postCompleteGoalReport
@@ -615,7 +655,12 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 		len(req.AllowedSkills) == 0 &&
 		len(req.AllowedTools) == 0
 	if useDefaultCache {
-		staticPrompt := cb.BuildSystemPromptWithCache(req.GoalPhase, req.PostCompleteGoalReport, req.Iteration)
+		// Phase 12.34: pass GoalSnapshot through to the cache-keyed path.
+		// Open phase ignores it (its hint doesn't render GoalSnapshot); for
+		// non-Open phases the cache is bypassed anyway (Phase 12.16.1) and
+		// the snapshot reaches the CHECKPOINT hint via the helper call
+		// inside BuildSystemPromptWithCacheAndSnapshot.
+		staticPrompt := cb.BuildSystemPromptWithCacheAndSnapshot(req.GoalPhase, req.PostCompleteGoalReport, req.Iteration, req.GoalSnapshot)
 		return staticPrompt, []providers.ContentBlock{
 			promptContentBlock(PromptPart{
 				ID:      "kernel.static",
@@ -628,13 +673,14 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 	}
 
 	parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
-		IncludeSkillCatalog: !req.SuppressSkillContext,
-		IncludeToolUseRule:  !req.SuppressToolUseRule,
-		AllowedSkills:       req.AllowedSkills,
-		AllowedTools:        req.AllowedTools,
-		GoalPhase:           req.GoalPhase,
+		IncludeSkillCatalog:    !req.SuppressSkillContext,
+		IncludeToolUseRule:     !req.SuppressToolUseRule,
+		AllowedSkills:          req.AllowedSkills,
+		AllowedTools:           req.AllowedTools,
+		GoalPhase:              req.GoalPhase,
 		PostCompleteGoalReport: req.PostCompleteGoalReport,
-		Iteration:           req.Iteration,
+		Iteration:              req.Iteration,
+		GoalSnapshot:           req.GoalSnapshot,
 	})
 	staticPrompt := renderPromptPartsLegacy(parts)
 	blocks := make([]providers.ContentBlock, 0, len(parts))

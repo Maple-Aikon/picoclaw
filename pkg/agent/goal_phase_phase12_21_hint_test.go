@@ -407,3 +407,45 @@ func TestGoalPhaseCheckpointHint_Integration_GoalSnapshotFlowsThrough(t *testing
 		t.Errorf("GoalSnapshot should be prepended before Decision tree; snap_idx=%d dt_idx=%d", snapIdx, dtIdx)
 	}
 }
+
+// Phase 12.34 Task 5 wire regression: when GoalSnapshot is set and the
+// helper BuildSystemPromptWithCacheAndSnapshot is called (the path used by
+// Phase 12.33 rebuild), the snapshot MUST appear in the returned string.
+// This is the actual wire path used in production — fails closed without
+// the Phase 12.34 helper threading. Locks the regression so a future
+// refactor that drops the snapshot param can't silently re-break the wire.
+func TestGoalPhaseCheckpointHint_BuildSystemPromptWithSnapshot_WirePath(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	snapshot := "Goal: wire-test\n**Objective:** thread snapshot through BuildSystemPrompt"
+	got := cb.BuildSystemPromptWithSnapshot(
+		string(GoalPhaseCheckpoint),
+		false, // postCompleteGoalReport
+		25,    // iter
+		snapshot,
+	)
+	if !strings.Contains(got, snapshot) {
+		t.Errorf("BuildSystemPromptWithSnapshot should embed GoalSnapshot in CHECKPOINT hint; got:\n%s", got)
+	}
+	if !strings.Contains(got, "Goal phase: CHECKPOINT (iter 25)") {
+		t.Errorf("CHECKPOINT hint should show iter placeholder; got:\n%s", got)
+	}
+}
+
+// TestGoalPhaseCheckpointHint_BuildSystemPromptWithCacheAndSnapshot_WirePath
+// verifies the cache-keyed path threads the snapshot too. This is the path
+// the Phase 12.33 phase-change rebuild hook actually calls.
+func TestGoalPhaseCheckpointHint_BuildSystemPromptWithCacheAndSnapshot_WirePath(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	snapshot := "Goal: cache-wire-test\n**Objective:** thread snapshot through cache"
+	got := cb.BuildSystemPromptWithCacheAndSnapshot(
+		string(GoalPhaseCheckpoint),
+		false,
+		25,
+		snapshot,
+	)
+	if !strings.Contains(got, snapshot) {
+		t.Errorf("BuildSystemPromptWithCacheAndSnapshot should embed GoalSnapshot in CHECKPOINT hint; got:\n%s", got)
+	}
+}
