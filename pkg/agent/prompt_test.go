@@ -503,3 +503,15 @@ func TestContextBuilder_MCPServerDeferredAvailability_PhaseAware(t *testing.T) {
 		})
 	}
 }
+
+// Phase 12.34 Task 1: GoalSnapshot field exists on PromptBuildRequest.
+// Tautological test (Finding #3) — passes immediately once field is added.
+// Purpose: lock the field name so future renames are caught.
+func TestPromptBuildRequest_HasGoalSnapshotField(t *testing.T) {
+	req := PromptBuildRequest{
+		GoalSnapshot: "test snapshot",
+	}
+	if req.GoalSnapshot != "test snapshot" {
+		t.Errorf("GoalSnapshot field not working; got %q", req.GoalSnapshot)
+	}
+}

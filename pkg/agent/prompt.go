@@ -152,6 +152,15 @@ type PromptBuildRequest struct {
 	// Defaults to 0 when the caller doesn't know the iter (e.g. legacy
 	// callers, tests, EstimateSystemTokens).
 	Iteration int
+
+	// GoalSnapshot is the rendered header (objective + success criteria
+	// markdown) of the active goal for this turn. Populated by
+	// promptBuildRequestForTurn via loadGoalSnapshotForHint at Checkpoint
+	// phase (Phase 12.34) so the hint contributor can show goal context
+	// to the LLM. Empty when no active goal, when the caller is not a
+	// turn-loop (e.g. EstimateSystemTokens), or when the phase is not
+	// Checkpoint. Hint contributors MUST handle empty gracefully.
+	GoalSnapshot string
 }
 
 type PromptContributor interface {
