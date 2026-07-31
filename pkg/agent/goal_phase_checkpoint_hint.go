@@ -52,6 +52,13 @@ Decision tree:
 
 (c) If you need to wait for user input/approval/review before continuing (cannot make further progress without that external signal), call complete_goal with a summary like "Waiting for <user> to review/approve <X> before continuing". Do NOT call goal_progress with empty remaining_steps — it will be rejected.
 
+Multi-turn goal guidance (Phase 12.34):
+
+- Do NOT use complete_goal as a pause mechanism for a multi-turn goal. calling complete_goal finalizes the goal — it does NOT pause it. The goal ends, and the next user turn starts a fresh goal.
+- "Waiting for next turn" is not a reason to call complete_goal with a summary like "Waiting for next turn". The next turn will be a NEW goal, not a continuation of this one. If you want to keep working on the same goal, use goal_progress.
+- Case (c) is only appropriate when you need an external signal (user input, approval, review) before continuing. It is NOT appropriate for "let me think about it" or "I'll pick this up later" — those are multi-turn goals that need goal_progress.
+- Multi-turn goal: when the goal's objective describes work that spans multiple turns (e.g. "upgrade uv and verify tests pass", "implement feature X with multiple sub-steps"), use goal_progress at every iteration cap. ONLY use complete_goal when the goal is genuinely finished.
+
 DO NOT call any other tool (e.g. read_file, write_file, web_search, etc.) while in CHECKPOINT. They will be rejected and you will waste iterations.
 
 When goal_progress fires, your remaining_steps MUST contain at least 1 item — empty remaining_steps is rejected by the wire guard. When complete_goal fires, your summary must be 1-500 chars.`
@@ -63,11 +70,15 @@ func goalPhaseCheckpointHintContributor(req PromptBuildRequest) *PromptPart {
 	if req.GoalPhase != string(GoalPhaseCheckpoint) {
 		return nil
 	}
-	iter := req.Iteration
-	if iter <= 0 {
-		iter = 1
+	header := fmt.Sprintf(goalPhaseCheckpointHintTextTemplate, req.Iteration)
+	// Phase 12.34: prepend goal context (objective + success criteria)
+	// so the LLM can decide goal_progress vs complete_goal based on actual
+	// goal state. GoalSnapshot is the output of goal.RenderHeader for the
+	// active goal — empty when no active goal, in which case the hint
+	// fires unchanged (backward compat).
+	if req.GoalSnapshot != "" {
+		header = req.GoalSnapshot + "\n" + header
 	}
-	header := fmt.Sprintf(goalPhaseCheckpointHintTextTemplate, iter)
 	return &PromptPart{
 		ID:      "capability.goal_phase_checkpoint_hint",
 		Layer:   PromptLayerCapability,

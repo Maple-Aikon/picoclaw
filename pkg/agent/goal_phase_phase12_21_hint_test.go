@@ -207,3 +207,152 @@ func TestGoalPhaseFinalHint_DoesNotSuggestToolDiscovery(t *testing.T) {
 		}
 	}
 }
+
+// Phase 12.34 Task 2 — GoalSnapshot prepending + multi-turn guidance
+// regression-proof tests. These lock the contract that:
+//  1. GoalSnapshot is prepended to the hint body when present
+//  2. Hint still works (no crash, no missing fields) when no snapshot
+//  3. Iteration placeholder renders the actual iter value (replaces
+//     zero-clamp with explicit value)
+//  4. Multi-turn guidance phase is included in the hint text
+//  5. Snapshot-only emits snapshot content (does not drop template)
+
+// TestGoalPhaseCheckpointHint_PrependsGoalSnapshot verifies that when
+// req.GoalSnapshot is non-empty, the snapshot is prepended to the hint
+// content so the LLM sees goal context before the decision tree.
+func TestGoalPhaseCheckpointHint_PrependsGoalSnapshot(t *testing.T) {
+	snapshot := "Goal: upgrade uv\nObjective: upgrade uv and verify tests pass"
+	req := PromptBuildRequest{
+		GoalPhase:    string(GoalPhaseCheckpoint),
+		Iteration:    25,
+		GoalSnapshot: snapshot,
+	}
+	got := goalPhaseCheckpointHintContributor(req)
+	if got == nil {
+		t.Fatal("expected non-nil hint at Checkpoint")
+	}
+	if !strings.Contains(got.Content, snapshot) {
+		t.Errorf("expected hint content to contain GoalSnapshot %q; got:\n%s", snapshot, got.Content)
+	}
+	// Snapshot MUST come before the decision tree block (so LLM sees goal
+	// context first, then decision tree).
+	snapIdx := strings.Index(got.Content, snapshot)
+	dtIdx := strings.Index(got.Content, "Decision tree")
+	if snapIdx < 0 || dtIdx < 0 {
+		t.Fatalf("expected both snapshot and Decision tree in content; got:\n%s", got.Content)
+	}
+	if snapIdx > dtIdx {
+		t.Errorf("GoalSnapshot should be PREPENDED (before Decision tree); snap_idx=%d decision_idx=%d",
+			snapIdx, dtIdx)
+	}
+}
+
+// TestGoalPhaseCheckpointHint_NoSnapshotBackwardCompat verifies that the
+// hint still works when GoalSnapshot is empty (no active goal, or non-turn
+// caller). The text should still contain all required fields.
+func TestGoalPhaseCheckpointHint_NoSnapshotBackwardCompat(t *testing.T) {
+	req := PromptBuildRequest{GoalPhase: string(GoalPhaseCheckpoint), Iteration: 25}
+	got := goalPhaseCheckpointHintContributor(req)
+	if got == nil {
+		t.Fatal("expected non-nil hint at Checkpoint")
+	}
+	if strings.Contains(got.Content, "GoalSnapshot") {
+		t.Errorf("content should not mention internal field name when snapshot empty; got:\n%s", got.Content)
+	}
+	mustContain := []string{
+		"goal_progress",
+		"complete_goal",
+		"remaining_steps",
+		"summary",
+		"iter 25",
+	}
+	for _, sub := range mustContain {
+		if !strings.Contains(got.Content, sub) {
+			t.Errorf("CheckpointHint missing %q\n--- content ---\n%s", sub, got.Content)
+		}
+	}
+}
+
+// TestGoalPhaseCheckpointHint_IterationPlaceholderRendered locks the
+// per-iter render — must replace the literal "iter %d" with the actual
+// iter value. Per Finding #8, NO `iter <= 0` clamp: iter=0 must render as
+// "iter 0" (real signal, not silent fixup).
+func TestGoalPhaseCheckpointHint_IterationPlaceholderRendered(t *testing.T) {
+	tests := []struct {
+		name     string
+		iter     int
+		wantSub  string
+	}{
+		{"iter_5", 5, "iter 5"},
+		{"iter_25", 25, "iter 25"},
+		{"iter_1", 1, "iter 1"},
+		// Edge case: iter=0 is a real signal, not masked (Phase 12.34 Finding #8).
+		{"iter_0_unchanged", 0, "iter 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := PromptBuildRequest{GoalPhase: string(GoalPhaseCheckpoint), Iteration: tt.iter}
+			got := goalPhaseCheckpointHintContributor(req)
+			if got == nil {
+				t.Fatal("expected non-nil hint at Checkpoint")
+			}
+			if !strings.Contains(got.Content, tt.wantSub) {
+				t.Errorf("expected %q in content; got:\n%s", tt.wantSub, got.Content)
+			}
+		})
+	}
+}
+
+// TestGoalPhaseCheckpointHint_IncludesMultiTurnGuidance is the
+// regression-proof for Phase 12.34's "Multi-turn goal guidance" sub-section.
+// The 4 hardcoded phrases are the LLM-visible contract that prevents the
+// reasoning bug where LLM picks (c) "wait for next turn" via complete_goal
+// for a multi-turn goal. Each phrase addresses a specific failure mode.
+func TestGoalPhaseCheckpointHint_IncludesMultiTurnGuidance(t *testing.T) {
+	req := PromptBuildRequest{GoalPhase: string(GoalPhaseCheckpoint), Iteration: 25}
+	got := goalPhaseCheckpointHintContributor(req)
+	if got == nil {
+		t.Fatal("expected non-nil hint at Checkpoint")
+	}
+	// Phrases that lock the multi-turn guidance. Each is a distinct
+	// failure-mode inoculation. Renaming any of these requires updating
+	// this test deliberately.
+	multiTurnPhrases := []string{
+		// Phrase 1: explicitly forbid complete_goal as a pause mechanism.
+		"Do NOT use complete_goal as a pause mechanism",
+		// Phrase 2: "wait for next turn" alone is not a blocker.
+		"complete_goal with a summary like \"Waiting for next turn",
+		// Phrase 3: case (c) is reserved for external signals only.
+		"only appropriate when you need an external signal",
+		// Phrase 4: multi-turn goal must use goal_progress, not complete_goal.
+		"Multi-turn goal",
+	}
+	for _, sub := range multiTurnPhrases {
+		if !strings.Contains(got.Content, sub) {
+			t.Errorf("CheckpointHint missing multi-turn phrase %q\n--- content ---\n%s", sub, got.Content)
+		}
+	}
+}
+
+// TestGoalPhaseCheckpointHint_DoesNotBreakSetSilent ensures the snapshot
+// prepending does not change behavior for non-Checkpoint phases.
+func TestGoalPhaseCheckpointHint_DoesNotBreakSetSilent(t *testing.T) {
+	for _, phase := range []string{
+		string(GoalPhaseOpen),
+		string(GoalPhaseSet),
+		string(GoalPhaseFinal),
+		"",
+	} {
+		t.Run("phase="+phase, func(t *testing.T) {
+			req := PromptBuildRequest{
+				GoalPhase:    phase,
+				Iteration:    25,
+				GoalSnapshot: "should not appear",
+			}
+			got := goalPhaseCheckpointHintContributor(req)
+			if got != nil {
+				t.Errorf("expected nil at phase %q; got:\n%s", phase, got.Content)
+			}
+		})
+	}
+}
