@@ -161,6 +161,21 @@ type PromptBuildRequest struct {
 	// turn-loop (e.g. EstimateSystemTokens), or when the phase is not
 	// Checkpoint. Hint contributors MUST handle empty gracefully.
 	GoalSnapshot string
+
+	// IterationCap is the current per-turn iteration cap (extended via
+	// goal_progress during the turn). Populated by
+	// promptBuildRequestForTurn so the OPEN hint can show "Iteration cap: N".
+	// Zero means legacy caller doesn't thread cap info — hint falls back
+	// to static text (no dynamic header).
+	// Phase 12.38 §4.
+	IterationCap int
+
+	// MaxIterationsCap is the absolute ceiling for the iteration cap
+	// (set at startup, never extended beyond this value). When
+	// IterationCap == MaxIterationsCap the hint warns about hitting the
+	// absolute ceiling (goal_progress can no longer extend). Zero means
+	// legacy caller — see IterationCap. Phase 12.38 §4.
+	MaxIterationsCap int
 }
 
 type PromptContributor interface {

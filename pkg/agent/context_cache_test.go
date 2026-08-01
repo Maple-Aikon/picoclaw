@@ -1017,6 +1017,69 @@ func TestCache_EstimateSystemTokensDoesNotCorruptCache(t *testing.T) {
 	}
 }
 
+// TestCacheInvalidationOnIterationCapChange (Phase 12.38 §4 F52/F58.2):
+// the cache key must include iterationCap and maxIterationsCap. Without
+// these dimensions, an OPEN cache slot built at cap=5 would be reused at
+// cap=10 after a goal_progress extension at CHECKPOINT — the LLM would
+// see stale "Iteration cap: 5" text instead of the actual cap=10.
+func TestCacheInvalidationOnIterationCapChange(t *testing.T) {
+	tmpDir := setupWorkspace(t, map[string]string{
+		"AGENT.md": "# Agent\nContent",
+		"SOUL.md":  "# Soul\nContent",
+	})
+	defer os.RemoveAll(tmpDir)
+
+	cb := NewContextBuilder(tmpDir)
+
+	// Build OPEN cache at iter 5 with cap=5
+	p1 := cb.BuildSystemPromptWithCacheFullKey("open", false, 5, "", 5, 15)
+	// Same dims → cache HIT (build returns identical prompt)
+	p1Cached := cb.BuildSystemPromptWithCacheFullKey("open", false, 5, "", 5, 15)
+	if p1 != p1Cached {
+		t.Errorf("expected cache HIT on identical dims, got different prompts")
+	}
+	// Cap extended: iter 6 with cap=10 → cache MISS → rebuild with new content
+	p2 := cb.BuildSystemPromptWithCacheFullKey("open", false, 6, "", 10, 15)
+	if p1 == p2 {
+		t.Errorf("expected cache MISS on cap change (5→10), got identical prompts (stale cap-leak)")
+	}
+	if !strings.Contains(p2, "Iteration cap: 10") {
+		t.Errorf("rebuilt prompt must show new cap=10, got:\n%s", p2)
+	}
+	if strings.Contains(p1, "Iteration cap: 10") {
+		t.Errorf("original cache slot must NOT contain stale cap=10, got:\n%s", p1)
+	}
+}
+
+// TestCacheInvalidationOnMaxIterationsCapChange (Phase 12.38 §4): when
+// cap hits ceiling, the warning line "absolute ceiling reached — goal_progress
+// cannot extend further" appears. If maxCap changes so cap is no longer at
+// ceiling (e.g. cap=15, maxCap=20), the warning disappears and the cache
+// must invalidate so the LLM sees the corrected text.
+func TestCacheInvalidationOnMaxIterationsCapChange(t *testing.T) {
+	tmpDir := setupWorkspace(t, map[string]string{
+		"AGENT.md": "# Agent\nContent",
+		"SOUL.md":  "# Soul\nContent",
+	})
+	defer os.RemoveAll(tmpDir)
+
+	cb := NewContextBuilder(tmpDir)
+
+	// cap=15, maxCap=15 → at ceiling → warning present
+	p1 := cb.BuildSystemPromptWithCacheFullKey("open", false, 5, "", 15, 15)
+	// cap=15, maxCap=20 → not at ceiling → no warning
+	p2 := cb.BuildSystemPromptWithCacheFullKey("open", false, 5, "", 15, 20)
+	if p1 == p2 {
+		t.Errorf("expected cache MISS when cap-ceiling state changes (at ceiling → not at ceiling)")
+	}
+	if !strings.Contains(p1, "absolute ceiling reached") {
+		t.Errorf("p1 must show ceiling warning, got:\n%s", p1)
+	}
+	if strings.Contains(p2, "absolute ceiling reached") {
+		t.Errorf("p2 must NOT show ceiling warning (cap<maxCap), got:\n%s", p2)
+	}
+}
+
 // BenchmarkBuildMessagesWithCache measures caching performance.
 func BenchmarkBuildMessagesWithCache(b *testing.B) {
 	tmpDir, _ := os.MkdirTemp("", "picoclaw-bench-*")

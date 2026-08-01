@@ -86,6 +86,46 @@ func TestGoalPhaseOpenHint_PlacementCapabilityTooling(t *testing.T) {
 	}
 }
 
+// Phase 12.38 §4 T1 — Dynamic header when cap dims are non-zero.
+// Verifies the OPEN hint now includes "Goal phase: OPEN (iter N)" header
+// + "Iteration cap: M" + ceiling warning, so the LLM has a per-iter compass
+// even when no checkpoint phase is currently active.
+func TestGoalPhaseOpenHint_DynamicHeaderWithCap(t *testing.T) {
+	part := goalPhaseOpenHintContributor(PromptBuildRequest{
+		GoalPhase:         string(GoalPhaseOpen),
+		Iteration:         5,
+		IterationCap:      15,
+		MaxIterationsCap:  15,
+	})
+	if part == nil {
+		t.Fatal("hint must fire at OPEN phase")
+	}
+	mustContain(t, part.Content, "Goal phase: OPEN (iter 5)", "dynamic header must appear when cap dims are set")
+	mustContain(t, part.Content, "Iteration cap: 15", "cap line must appear when cap dims are set")
+	mustContain(t, part.Content, "absolute ceiling", "ceiling warning must appear when at max cap")
+}
+
+// Phase 12.38 §4 T2 — Legacy zero-cap caller keeps static text (no
+// dynamic header). Backward-compat: callers that don't thread the
+// new IterationCap/MaxIterationsCap fields still get the static text.
+func TestGoalPhaseOpenHint_LegacyZeroCapKeepsStaticText(t *testing.T) {
+	part := goalPhaseOpenHintContributor(PromptBuildRequest{
+		GoalPhase:        string(GoalPhaseOpen),
+		Iteration:        5,
+		IterationCap:     0,
+		MaxIterationsCap: 0,
+	})
+	if part == nil {
+		t.Fatal("hint must fire")
+	}
+	if strings.Contains(part.Content, "Goal phase: OPEN (iter 5)") {
+		t.Fatalf("must NOT include dynamic header when cap=0, got: %s", part.Content)
+	}
+	if !strings.Contains(part.Content, "set_goal") {
+		t.Fatalf("must keep static content (set_goal mention), got: %s", part.Content)
+	}
+}
+
 // T6 — Integration: hint is wired through buildSystemPromptParts.
 // Without this, a contributor-function fix could pass unit tests but the
 // wiring could still be broken (hint never reaches the LLM). Code grep !=

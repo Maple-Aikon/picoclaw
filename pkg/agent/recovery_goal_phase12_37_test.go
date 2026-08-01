@@ -12,6 +12,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -30,7 +31,7 @@ func TestEmptyResponse_FiresAtRestrictedPhases_Phase12_37(t *testing.T) {
 		if action != RecoveryRetrySameIteration {
 			t.Fatalf("phase=%s: want RecoveryRetrySameIteration, got %v", phase, action)
 		}
-		if msg != EmptyResponseRecoveryMessage {
+		if !strings.HasPrefix(msg, EmptyResponseRecoveryMessage) { // Phase 12.38: suffix appended via buildEmptyResponseRetryMessageWithPhase
 			t.Fatalf("phase=%s: want soft msg, got %q", phase, msg)
 		}
 		if ts.emptyResponseRecoveryCount != 1 {
@@ -52,7 +53,7 @@ func TestEmptyResponse_ThirdAttempt_HardMessage_Phase12_37(t *testing.T) {
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("want RetrySameIteration, got %v", action)
 	}
-	if msg != EmptyResponseHardMessage {
+	if !strings.HasPrefix(msg, EmptyResponseHardMessage) { // Phase 12.38: suffix appended
 		t.Fatalf("want hard msg on 3rd attempt, got %q", msg)
 	}
 	if ts.emptyResponseRecoveryCount != 3 {
@@ -107,7 +108,7 @@ func TestEmptyResponse_Open_StillFires_Phase12_37(t *testing.T) {
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("want RetrySameIteration, got %v", action)
 	}
-	if msg != EmptyResponseRecoveryMessage {
+	if !strings.HasPrefix(msg, EmptyResponseRecoveryMessage) { // Phase 12.38: suffix appended via buildEmptyResponseRetryMessageWithPhase
 		t.Fatalf("want soft msg, got %q", msg)
 	}
 	if ts.emptyResponseRecoveryCount != 1 {
@@ -138,7 +139,7 @@ func TestTextOnlyRestricted_FirstAttempt_SoftMessage_Phase12_37(t *testing.T) {
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("want RetrySameIteration, got %v", action)
 	}
-	if msg != TextOnlySoftRetryMessage {
+	if !strings.HasPrefix(msg, TextOnlySoftRetryMessage) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
 		t.Fatalf("want soft msg, got %q", msg)
 	}
 	if ts.textOnlySoftRetriesDone != 1 {
@@ -163,7 +164,7 @@ func TestTextOnlyRestricted_SecondAttempt_StillSoft_Phase12_37(t *testing.T) {
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("want RetrySameIteration, got %v", action)
 	}
-	if msg != TextOnlySoftRetryMessage {
+	if !strings.HasPrefix(msg, TextOnlySoftRetryMessage) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
 		t.Fatalf("want soft msg on 2nd attempt, got %q", msg)
 	}
 	if ts.textOnlySoftRetriesDone != 2 {
@@ -185,7 +186,7 @@ func TestTextOnlyRestricted_ThirdAttempt_HardMessage_Phase12_37(t *testing.T) {
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("want RetrySameIteration, got %v", action)
 	}
-	if msg != TextOnlyHardRetryMessage {
+	if !strings.HasPrefix(msg, TextOnlyHardRetryMessage) { // Phase 12.38: suffix appended
 		t.Fatalf("want hard msg on 3rd attempt, got %q", msg)
 	}
 	if ts.textOnlyHardRetriesDone != 1 {

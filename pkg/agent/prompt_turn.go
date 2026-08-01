@@ -36,6 +36,12 @@ func promptBuildRequestForTurn(
 		// reused at later iters) and goalPhaseSetHintContributor can refer
 		// to the actual iter instead of hardcoding "(iter 1)".
 		Iteration: ts.currentIteration(),
+		// Phase 12.38 §4: thread iteration cap dims so the OPEN-phase hint
+		// renders the per-iter cap compass. ts.iterationCap is the mutable
+		// cap (extended via goal_progress); ts.maxIterationsCap is the
+		// absolute ceiling (set at startup, never extended beyond this).
+		IterationCap:     ts.iterationCap,
+		MaxIterationsCap: ts.maxIterationsCap,
 	}
 	// Phase 12.34: inject goal context (objective + success criteria) into
 	// the CHECKPOINT-phase hint so the LLM can decide between goal_progress

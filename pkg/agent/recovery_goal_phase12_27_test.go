@@ -66,7 +66,7 @@ func TestTextOnlySoftRetry_Checkpoint_ReturnsRetrySameIter_WithCounter(t *testin
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("action=%v, want RecoveryRetrySameIteration (exact) — Checkpoint uses RecallLLM", action)
 	}
-	if msg != TextOnlySoftRetryMessage {
+	if !strings.HasPrefix(msg, TextOnlySoftRetryMessage) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
 		t.Fatalf("msg=%q, want TextOnlySoftRetryMessage (Checkpoint variant, NOT Open variant)", msg)
 	}
 	if ts.textOnlySoftRetriesDone != 1 {
@@ -86,7 +86,7 @@ func TestTextOnlySoftRetry_Set_ReturnsRetrySameIter_WithCounter(t *testing.T) {
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("action=%v, want RecoveryRetrySameIteration (exact) — Set is now eligible", action)
 	}
-	if msg != TextOnlySoftRetryMessage {
+	if !strings.HasPrefix(msg, TextOnlySoftRetryMessage) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
 		t.Fatalf("msg=%q, want TextOnlySoftRetryMessage (Set uses ABSOLUTE wire)", msg)
 	}
 	if ts.textOnlySoftRetriesDone != 1 {
@@ -105,7 +105,7 @@ func TestTextOnlySoftRetry_Final_ReturnsRetrySameIter_WithCounter(t *testing.T) 
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("action=%v, want RecoveryRetrySameIteration (Final pre-report uses RecallLLM)", action)
 	}
-	if msg != TextOnlySoftRetryMessage {
+	if !strings.HasPrefix(msg, TextOnlySoftRetryMessage) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
 		t.Fatalf("msg=%q, want TextOnlySoftRetryMessage (Final pre-report uses standard variant)", msg)
 	}
 }

@@ -28,9 +28,30 @@ import "fmt"
 // generic retry message (Open is a RELATIVE phase — only 2 of 83
 // visible tools are blocked, so always-appending would mislead).
 
-// goalPhaseOpenHintText — the hint text injected into the system prompt
-// at OPEN phase. Static (no per-iter binding).
-const goalPhaseOpenHintText = `Goal lifecycle tools at OPEN phase:
+// goalPhaseOpenHintText — static base text for the OPEN-phase hint.
+// Phase 12.38 §4: prepends a dynamic header (when cap dims are set)
+// showing "Goal phase: OPEN (iter N)" + "Iteration cap: M" + a ceiling
+// warning when at absolute cap. The static body remains for lifecycle
+// tool restriction semantics (which are constant across OPEN iters).
+func goalPhaseOpenHintText(req PromptBuildRequest) string {
+	var header string
+	if req.IterationCap > 0 {
+		// Dynamic header — provides per-iter compass + cap awareness.
+		header = fmt.Sprintf("Goal phase: OPEN (iter %d).\n", req.Iteration)
+		if req.MaxIterationsCap > 0 && req.IterationCap >= req.MaxIterationsCap {
+			// At absolute ceiling — goal_progress can no longer extend.
+			header += fmt.Sprintf("Iteration cap: %d (absolute ceiling reached — goal_progress cannot extend further).\n", req.IterationCap)
+		} else {
+			header += fmt.Sprintf("Iteration cap: %d.\n", req.IterationCap)
+		}
+	}
+	return fmt.Sprintf("%s%s\n", header, goalPhaseOpenHintBodyText)
+}
+
+// goalPhaseOpenHintBodyText — static body for the OPEN hint. Separated
+// from the dynamic header so legacy callers (zero cap dims) get just
+// the body, and new callers get header + body.
+const goalPhaseOpenHintBodyText = `Goal lifecycle tools at OPEN phase:
 - set_goal is LOCKED at OPEN — it only fires at the SET phase (iter 1, before any goal exists). If you want to define/redefine the goal, you must have called set_goal in a previous turn; otherwise the goal is already set and you should not call set_goal.
 - goal_progress is CHECKPOINT-only — it only fires at iter = max_tool_iterations to extend the iteration cap. At any other iter, goal_progress is rejected by the lifecycle gate.
 - view_goal works at OPEN — use it to recall the current goal details if needed.
@@ -42,9 +63,12 @@ If a lifecycle tool call is rejected, pivot to view_goal/complete_goal or the re
 // any other phase (Set, Checkpoint, Final) so the hint does not bleed
 // across the rest of the turn's lifecycle.
 //
-// Phase 12.32: hint text is static (no iter-binding) because the
-// lifecycle restriction semantics are constant across all OPEN-phase
-// iters. This is safe to cache across turns.
+// Phase 12.32: hint text was static (no iter-binding).
+// Phase 12.38 §4: prepends a dynamic header when cap dims are threaded.
+// Cache is invalidated via IterationCap/MaxIterationsCap dims on the
+// systemPromptCacheKey (Phase 12.38 F50/F52/F58.2) so a cap extension
+// at CHECKPOINT correctly invalidates the OPEN cache slot for the next
+// iter.
 func goalPhaseOpenHintContributor(req PromptBuildRequest) *PromptPart {
 	if req.GoalPhase != string(GoalPhaseOpen) {
 		return nil
@@ -55,7 +79,7 @@ func goalPhaseOpenHintContributor(req PromptBuildRequest) *PromptPart {
 		Slot:    PromptSlotTooling,
 		Source:  PromptSource{ID: PromptSourceGoalPhaseOpenHint, Name: "goal_phase_open_hint"},
 		Title:   "Goal Phase Open Hint",
-		Content: fmt.Sprintf("%s\n", goalPhaseOpenHintText),
+		Content: goalPhaseOpenHintText(req),
 		Stable:  true,
 		Cache:   PromptCacheDefault,
 	}

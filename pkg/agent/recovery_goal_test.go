@@ -62,7 +62,7 @@ func TestEvaluateRecovery_EmptyText_PhaseOpen_InjectsOnce(t *testing.T) {
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("expected RecoveryRetrySameIteration, got %v", action)
 	}
-	if msg != EmptyResponseRecoveryMessage {
+	if !strings.HasPrefix(msg, EmptyResponseRecoveryMessage) { // Phase 12.38: suffix appended via buildEmptyResponseRetryMessageWithPhase
 		t.Fatalf("expected EMPTY_FINAL message, got %q", msg)
 	}
 	if ts.emptyResponseRecoveryCount == 0 {
@@ -873,7 +873,7 @@ func TestEvaluateRecovery_WirePathFromCurrentGoalPhase(t *testing.T) {
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("wire-path recovery should fire on lowercase %q, got %v (msg=%q)", wirePhase, action, msg)
 	}
-	if msg != EmptyResponseRecoveryMessage {
+	if !strings.HasPrefix(msg, EmptyResponseRecoveryMessage) { // Phase 12.38: suffix appended via buildEmptyResponseRetryMessageWithPhase
 		t.Fatalf("expected EmptyResponseRecoveryMessage, got %q", msg)
 	}
 }
@@ -1008,8 +1008,8 @@ func TestEvaluateRecovery_EmptyText_IterationBump_ResetsCounter(t *testing.T) {
 	if action1 != RecoveryRetrySameIteration {
 		t.Fatalf("iter 12: expected RecoveryRetrySameIteration, got %v", action1)
 	}
-	if msg1 != EmptyResponseRecoveryMessage {
-		t.Fatalf("iter 12: expected EmptyResponseRecoveryMessage, got %q", msg1)
+	if !strings.HasPrefix(msg1, EmptyResponseRecoveryMessage) { // Phase 12.38: suffix appended
+		t.Fatalf("iter 12: expected EmptyResponseRecoveryMessage prefix, got %q", msg1)
 	}
 	if ts.emptyResponseRecoveryCount == 0 {
 		t.Fatalf("iter 12: emptyResponseRecoveryCount should be true after first fire")
@@ -1049,8 +1049,8 @@ func TestEvaluateRecovery_EmptyText_IterationBump_ResetsCounter(t *testing.T) {
 	if action2 != RecoveryRetrySameIteration {
 		t.Fatalf("iter 14: expected RecoveryRetrySameIteration (Fix #1), got %v", action2)
 	}
-	if msg2 != EmptyResponseRecoveryMessage {
-		t.Fatalf("iter 14: expected EmptyResponseRecoveryMessage, got %q", msg2)
+	if !strings.HasPrefix(msg2, EmptyResponseRecoveryMessage) { // Phase 12.38: suffix appended
+		t.Fatalf("iter 14: expected EmptyResponseRecoveryMessage prefix, got %q", msg2)
 	}
 	if ts.emptyResponseRecoveryCount == 0 {
 		t.Fatalf("iter 14: emptyResponseRecoveryCount should be true after second fire")

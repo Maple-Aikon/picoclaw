@@ -39,6 +39,8 @@ type ContextBuilder struct {
 	cachedSystemPromptGoalPhase string // GoalPhase value cached alongside the prompt; empty when no phase set
 	cachedSystemPromptPostCompleteGoalReport bool // Phase 12.7: cache key dimension for GoalCompleteReport hint
 	cachedSystemPromptIteration int    // Phase 12.16.1: cache key dimension for iter (1..N); prevents iter-1 prompt from being reused at later iters
+	cachedSystemPromptIterationCap int // Phase 12.38 §4: cache key dimension for current iteration cap (changes when goal_progress extends); must invalidate OPEN-phase cache when cap changes mid-turn
+	cachedSystemPromptMaxIterationsCap int // Phase 12.38 §4: cache key dimension for absolute ceiling; must invalidate OPEN-phase cache when ceiling changes
 	wasLastPostCompleteGoalReport bool // Phase 12.7: previous postCompleteGoalReport state for debug log
 	cachedAt                   time.Time // max observed mtime across tracked paths at cache build time
 
@@ -330,6 +332,18 @@ type systemPromptBuildOptions struct {
 	// dimension in BuildSystemPromptWithCache so iter-1 prompts are not
 	// reused at later iters.
 	Iteration int
+
+	// IterationCap is the current per-turn iteration cap (extended via
+	// goal_progress). Threaded to PromptBuildRequest.IterationCap so
+	// goalPhaseOpenHintContributor (Phase 12.38 §4) can render a
+	// per-iter cap-compass line. Zero means legacy caller — hint falls
+	// back to static text.
+	IterationCap int
+
+	// MaxIterationsCap is the absolute ceiling for the iteration cap.
+	// Threaded to PromptBuildRequest.MaxIterationsCap so the OPEN hint
+	// can warn about hitting the absolute ceiling. Zero = legacy caller.
+	MaxIterationsCap int
 }
 
 func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) []PromptPart {
@@ -459,7 +473,12 @@ Each part separated by the marker will be sent as an independent message.`,
 	// shorter hint when a lifecycle tool call IS rejected at OPEN phase.
 	// Placement: between Set (above) and Checkpoint (below) to match
 	// goal lifecycle order Set → Open → Checkpoint → Final.
-	if hintPart := goalPhaseOpenHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase}); hintPart != nil {
+	if hintPart := goalPhaseOpenHintContributor(PromptBuildRequest{
+		GoalPhase:        opts.GoalPhase,
+		Iteration:        opts.Iteration,
+		IterationCap:     opts.IterationCap,
+		MaxIterationsCap: opts.MaxIterationsCap,
+	}); hintPart != nil {
 		add(*hintPart)
 	}
 
@@ -561,6 +580,21 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompl
 // GoalSnapshot. Threading it through here restores the wire path for
 // the Phase 12.33 phase-change rebuild hook.
 func (cb *ContextBuilder) BuildSystemPromptWithCacheAndSnapshot(goalPhase string, postCompleteGoalReport bool, iteration int, goalSnapshot string) string {
+	return cb.BuildSystemPromptWithCacheFullKey(goalPhase, postCompleteGoalReport, iteration, goalSnapshot, 0, 0)
+}
+
+// BuildSystemPromptWithCacheFullKey is the Phase 12.38 §4 variant that
+// threads the iteration-cap dimensions (IterationCap, MaxIterationsCap)
+// into the cache key. The OPEN-phase hint now renders a per-iter cap
+// compass (header + ceiling warning) so the cache key MUST include the
+// cap dims — otherwise an OPEN cache slot built at cap=5 would be
+// reused at cap=10 after a goal_progress extension, and the LLM would
+// see stale "Iteration cap: 5" text.
+//
+// Legacy callers (cap=0) fall back to BuildSystemPromptWithCacheAndSnapshot
+// which uses only (goalPhase, postCompleteGoalReport, iteration,
+// goalSnapshot) as key dims — backward compat.
+func (cb *ContextBuilder) BuildSystemPromptWithCacheFullKey(goalPhase string, postCompleteGoalReport bool, iteration int, goalSnapshot string, iterationCap int, maxIterationsCap int) string {
 	// Phase 12.16.1: skip cache for non-Open phases. The tool allowlist is
 	// 1-2 lifecycle tools (set_goal, goal_progress, complete_goal) and the
 	// prompt body is dominated by constant hint text + a tiny tool section.
@@ -574,7 +608,13 @@ func (cb *ContextBuilder) BuildSystemPromptWithCacheAndSnapshot(goalPhase string
 
 	// Try read lock first — fast path when cache is valid
 	cb.systemPromptMutex.RLock()
-	if cb.cachedSystemPrompt != "" && cb.cachedSystemPromptGoalPhase == goalPhase && cb.cachedSystemPromptPostCompleteGoalReport == postCompleteGoalReport && cb.cachedSystemPromptIteration == iteration && !cb.sourceFilesChangedLocked() {
+	if cb.cachedSystemPrompt != "" &&
+		cb.cachedSystemPromptGoalPhase == goalPhase &&
+		cb.cachedSystemPromptPostCompleteGoalReport == postCompleteGoalReport &&
+		cb.cachedSystemPromptIteration == iteration &&
+		cb.cachedSystemPromptIterationCap == iterationCap &&
+		cb.cachedSystemPromptMaxIterationsCap == maxIterationsCap &&
+		!cb.sourceFilesChangedLocked() {
 		result := cb.cachedSystemPrompt
 		cb.systemPromptMutex.RUnlock()
 		return result
@@ -586,24 +626,42 @@ func (cb *ContextBuilder) BuildSystemPromptWithCacheAndSnapshot(goalPhase string
 	defer cb.systemPromptMutex.Unlock()
 
 	// Double-check: another goroutine may have rebuilt while we waited
-	if cb.cachedSystemPrompt != "" && cb.cachedSystemPromptGoalPhase == goalPhase && cb.cachedSystemPromptIteration == iteration && !cb.sourceFilesChangedLocked() {
+	if cb.cachedSystemPrompt != "" &&
+		cb.cachedSystemPromptGoalPhase == goalPhase &&
+		cb.cachedSystemPromptPostCompleteGoalReport == postCompleteGoalReport &&
+		cb.cachedSystemPromptIteration == iteration &&
+		cb.cachedSystemPromptIterationCap == iterationCap &&
+		cb.cachedSystemPromptMaxIterationsCap == maxIterationsCap &&
+		!cb.sourceFilesChangedLocked() {
 		return cb.cachedSystemPrompt
 	}
 
 	// Snapshot the baseline (existence + max mtime) BEFORE building the prompt.
-	// This way cachedAt reflects the pre-build state: if a file is modified
-	// during BuildSystemPrompt, its new mtime will be > baseline.maxMtime,
-	// so the next sourceFilesChangedLocked check will correctly trigger a
-	// rebuild. The alternative (baseline after build) risks caching stale
-	// content with a too-new baseline, making the staleness invisible.
 	previousPhase := cb.cachedSystemPromptGoalPhase
 	previousIter := cb.cachedSystemPromptIteration
+	previousCap := cb.cachedSystemPromptIterationCap
 	baseline := cb.buildCacheBaseline()
-	prompt := cb.BuildSystemPromptWithSnapshot(goalPhase, postCompleteGoalReport, iteration, goalSnapshot)
+	// Phase 12.38 §4: thread iteration-cap dims through to the
+	// buildSystemPromptParts path so the OPEN hint renders the dynamic
+	// header (cap compass + ceiling warning). Without these, the
+	// cache-rebuilt prompt would have the static text only and not
+	// reflect the new cap.
+	prompt := renderPromptPartsLegacy(cb.buildSystemPromptParts(systemPromptBuildOptions{
+		IncludeSkillCatalog:    true,
+		IncludeToolUseRule:     true,
+		GoalPhase:              goalPhase,
+		PostCompleteGoalReport: postCompleteGoalReport,
+		Iteration:              iteration,
+		GoalSnapshot:           goalSnapshot,
+		IterationCap:           iterationCap,
+		MaxIterationsCap:       maxIterationsCap,
+	}))
 	cb.cachedSystemPrompt = prompt
 	cb.cachedSystemPromptGoalPhase = goalPhase
 	cb.cachedSystemPromptPostCompleteGoalReport = postCompleteGoalReport
 	cb.cachedSystemPromptIteration = iteration
+	cb.cachedSystemPromptIterationCap = iterationCap
+	cb.cachedSystemPromptMaxIterationsCap = maxIterationsCap
 	cb.cachedAt = baseline.maxMtime
 	cb.existedAtCache = baseline.existed
 	cb.skillFilesAtCache = baseline.skillFiles
@@ -622,6 +680,16 @@ func (cb *ContextBuilder) BuildSystemPromptWithCacheAndSnapshot(goalPhase string
 				"previous_iter":     previousIter,
 				"new_iter":          iteration,
 				"length":            len(prompt),
+			})
+	} else if previousCap != 0 && previousCap != iterationCap {
+		// Phase 12.38 §4 F52: cap-change invalidation log
+		logger.DebugCF("agent", "System prompt cache invalidated by iteration-cap change",
+			map[string]any{
+				"goal_phase":     goalPhase,
+				"iteration":      iteration,
+				"previous_cap":   previousCap,
+				"new_cap":        iterationCap,
+				"length":         len(prompt),
 			})
 	} else if postCompleteGoalReport != cb.wasLastPostCompleteGoalReport {
 		logger.DebugCF("agent", "System prompt cache invalidated by post-complete_goal report state change",
@@ -660,7 +728,10 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 		// non-Open phases the cache is bypassed anyway (Phase 12.16.1) and
 		// the snapshot reaches the CHECKPOINT hint via the helper call
 		// inside BuildSystemPromptWithCacheAndSnapshot.
-		staticPrompt := cb.BuildSystemPromptWithCacheAndSnapshot(req.GoalPhase, req.PostCompleteGoalReport, req.Iteration, req.GoalSnapshot)
+		// Phase 12.38 §4: pass iteration-cap dims through to the cache key
+		// so an OPEN cache slot built at cap=5 is invalidated when cap
+		// changes to 10 (e.g. via goal_progress extension at CHECKPOINT).
+		staticPrompt := cb.BuildSystemPromptWithCacheFullKey(req.GoalPhase, req.PostCompleteGoalReport, req.Iteration, req.GoalSnapshot, req.IterationCap, req.MaxIterationsCap)
 		return staticPrompt, []providers.ContentBlock{
 			promptContentBlock(PromptPart{
 				ID:      "kernel.static",
@@ -681,6 +752,8 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 		PostCompleteGoalReport: req.PostCompleteGoalReport,
 		Iteration:              req.Iteration,
 		GoalSnapshot:           req.GoalSnapshot,
+		IterationCap:           req.IterationCap,
+		MaxIterationsCap:       req.MaxIterationsCap,
 	})
 	staticPrompt := renderPromptPartsLegacy(parts)
 	blocks := make([]providers.ContentBlock, 0, len(parts))
