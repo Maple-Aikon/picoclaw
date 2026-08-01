@@ -450,11 +450,19 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 						turnStatus = TurnEndStatusError
 						return turnResult{}, fmt.Errorf("goal archive requested after tool-exec retries exhausted for %s", archiveTool)
 					} else if archiveMsg != "" {
+						// Phase 12.37 GAP #4: isRestricted gate REMOVED.
+						// Tool-exec errors at OPEN now route through
+						// retryLLMForBlockedTool same-iter retry instead
+						// of next-iter carry. Per D2, the goal archives
+						// after 3 failed same-iter retries at OPEN;
+						// transient hint already tells the LLM to
+						// wait/pivot, and allowAll onWrongTool treats ANY
+						// non-gate-blocked real tool as success — archive
+						// only fires if the LLM re-picks a gate-blocked
+						// tool 3× (C1 fix in pipeline_llm.go).
 						currentPhase := ts.currentGoalPhase()
-						isRestricted := currentPhase == GoalPhaseSet ||
-							currentPhase == GoalPhaseCheckpoint ||
-							currentPhase == GoalPhaseFinal
-						if isRestricted {
+						_ = currentPhase
+						{
 							// Phase 12.25 §X2: skip same-iter BoundedRetry
 							// when graceful interrupt is active. The user
 							// has signaled END turn — retrying just wastes
@@ -569,9 +577,10 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 						// Open phase: legacy behavior — pendingRecoveryMessage
 						// is set so the next iteration's recovery prompt
 						// fires, no same-iter wrap needed.
-						if ts.pendingRecoveryMessage == "" {
-							ts.pendingRecoveryMessage = archiveMsg
-						}
+						// Phase 12.37 GAP #4: REMOVED. OPEN now uses
+						// retryLLMForBlockedTool above (same-iter
+						// BoundedRetry) — no next-iter carry path.
+						_ = archiveMsg
 					}
 				}
 				// Re-read exec.messages since ExecuteTools may have updated it

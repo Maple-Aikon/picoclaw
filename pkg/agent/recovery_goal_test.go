@@ -267,11 +267,15 @@ func TestEvaluateRecovery_NoGoalPhase_NoTrigger(t *testing.T) {
 }
 
 func TestEvaluateRecovery_FinalPhase_NoTrigger(t *testing.T) {
+	// Phase 12.37 GAP #2: empty response NOW fires at Final phase too
+	// (was Open-only). Pre-12.37 expected None; new behavior: Final+empty
+	// fires soft Trigger #1 (postReport=false). PostReport=true stays
+	// silent (verified in TestEmptyResponse_FinalPostReport_Silent_Phase12_37).
 	ts := newPhase5TurnState(t)
 	ctx := RecoveryContext{Phase: string(GoalPhaseFinal), TextEmpty: true, HasToolCalls: false}
 	action, _ := evaluateRecovery(ts, ctx)
-	if action != RecoveryNone {
-		t.Fatalf("Final phase should not trigger recovery, got %v", action)
+	if action == RecoveryNone {
+		t.Fatalf("Phase 12.37 GAP #2: Final+empty should now fire Trigger #1, got RecoveryNone")
 	}
 }
 

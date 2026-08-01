@@ -1185,9 +1185,10 @@ func TestTurnCoord_RecoveryTrigger_LockPhaseSilenced(t *testing.T) {
 	ts := &turnState{
 		toolExecRecoveryAttempts: make(map[string]int),
 	}
-	// Lock phase + empty text → silent (Trigger #1 in Open exclusive)
-	if a, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseSet), TextEmpty: true}); a != RecoveryNone {
-		t.Fatalf("Lock phase + empty should be silent, got %v", a)
+	// Lock phase + empty text → fires Trigger #1 (Phase 12.37 GAP #2:
+	// all-phase empty trigger). Pre-12.37 was silent.
+	if a, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseSet), TextEmpty: true}); a == RecoveryNone {
+		t.Fatalf("Phase 12.37 GAP #2: Lock phase + empty should now fire Trigger #1, got RecoveryNone")
 	}
 	// Phase 12.15: Lock phase + tool error → fires RecoveryRetrySameIteration
 	// (Trigger #3 now eligible for Set). The message must include the

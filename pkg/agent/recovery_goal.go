@@ -212,8 +212,15 @@ const (
 	// Both caps are PER-ITERATION counts (not cross-iteration streak). The
 	// cross-iteration textOnlyStreak field still tracks consecutive text-only
 	// iterations but is no longer the gate — recovery fires within iteration.
-	TextOnlySoftRetryCap         = 2  // Phase 12.37: 2 soft prompts per iteration (was 1) — spec 9: soft→soft→hard = 3 total attempts
-	TextOnlyHardRetryCap         = 1  // 1 hard prompt per iteration (fires on third consecutive text-only in same iter)
+	//
+	// Phase 12.37 D3: restricted-phase text-only uses 2 soft + 1 hard = 3
+	// total same-iter attempts (spec 9). Open-phase text-only stays
+	// next-iter carry (spec 7) — separate counters with cap=1+1 preserved
+	// for that path so iter-bump remains the escalation path.
+	TextOnlySoftRetryCap         = 2  // restricted phase: 2 soft prompts per iter (spec 9)
+	TextOnlyHardRetryCap         = 1  // restricted phase: 1 hard prompt per iter (fires on 3rd text-only)
+	TextOnlySoftRetryCapOpen     = 1  // open phase: 1 soft prompt before escalating via next-iter carry (spec 7)
+	TextOnlyHardRetryCapOpen     = 1  // open phase: 1 hard prompt before archive (spec 7)
 	ToolExecErrorRetryCap         = 3  // per-tool retry up to 3 within same iteration
 	ProviderTransientRetryCap     = 3  // matches existing callLLMCore cap
 )
@@ -368,7 +375,10 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 	if !ctx.HasToolCalls && !ctx.TextEmpty {
 		ts.textOnlyStreak++
 		// Increment within-iteration escalation counters in order.
-		if ts.textOnlySoftRetriesDone < TextOnlySoftRetryCap {
+		// Phase 12.37 D3: OPEN path uses cap=1+1 (separate from
+		// restricted path's 2+1) per spec 7 — next-iter carry is the
+		// escalation path, NOT same-iter retry.
+		if ts.textOnlySoftRetriesDone < TextOnlySoftRetryCapOpen {
 			ts.textOnlySoftRetriesDone++
 			logger.InfoCF("agent", "Text-only soft retry fired (Open phase, next-iter)", map[string]any{
 				"agent_id":  agentIDFromTS(ts),
@@ -379,7 +389,7 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 			})
 			return RecoveryRetryNextIteration, TextOnlySoftRetryOpenMessage
 		}
-		if ts.textOnlyHardRetriesDone < TextOnlyHardRetryCap {
+		if ts.textOnlyHardRetriesDone < TextOnlyHardRetryCapOpen {
 			ts.textOnlyHardRetriesDone++
 			logger.InfoCF("agent", "Text-only hard retry fired (Open phase, next-iter)", map[string]any{
 				"agent_id":  agentIDFromTS(ts),

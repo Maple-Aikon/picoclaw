@@ -1172,18 +1172,13 @@ func (p *Pipeline) handleGoalRecovery(
 	}
 	logger.InfoCF("agent", "Goal-lifecycle recovery action (same-iter BoundedRetry)", logFields)
 
-	// Reset the empty-response counter so the BoundedRetry loop can re-evaluate
-	// each attempt. The initial caller (CallLLM line 713-728) sets the counter
-	// when the first trigger fires; the in-iter retry is the SAME event, so
-	// we reset and let evaluateRecovery decide per-attempt.
-	ts.emptyResponseRecoveryCount = 0
-	// Sibling counters: text-only soft/hard retry caps must also reset so the
-	// re-evaluation can re-fire the trigger on attempt 0 if the LLM still
-	// responds text-only. Without this, the caller-side check (textOnly*Done > 0)
-	// marks the trigger as "already attempted this iteration" and escalates to
-	// archive/exhausted, discarding the LLM's actual response. Discovered via
-	// live verify on main-turn-2 (2026-07-24) where "tiếp tục đi" got DefaultResponse
-	// instead of the LLM's 351-char text-only answer.
+	// Phase 12.37 D4: counter is IN-PER-ITER budget (cap=3). Do NOT reset
+	// between attempts — counter must persist across same-iter retries so
+	// the 3-attempt budget is enforced across the entire BoundedRetry loop.
+	// Pre-12.37 reset was correct only because cap was 2 (bool one-shot);
+	// with cap=3 the counter must accumulate. Sibling counters (text-only,
+	// toolExec) still reset because their triggers have per-iter caps with
+	// distinct semantics (text-only is escalation; toolExec is per-tool).
 	ts.textOnlySoftRetriesDone = 0
 	ts.textOnlyHardRetriesDone = 0
 	ts.toolExecRecoveryAttempts = nil
@@ -1486,8 +1481,22 @@ func (p *Pipeline) retryLLMForBlockedTool(
 					return ControlToolLoop
 				}
 				if allowAll {
-					// Allow-all phase (Open default) + real tool —
-					// treat as success.
+					// Allow-all phase (Open default) + real tool.
+					// Phase 12.37 C1 fix: when the tool is ALSO
+					// gate-blocked by the Phase 12.31 lifecycle gate
+					// (e.g. goal_progress at OPEN), treat it as a
+					// wrong-tool to drive BoundedRetry exhaustion →
+					// D2 archive after 3 attempts. Without this,
+					// every real tool is ControlToolLoop and the
+					// archive path never fires (silent dead path).
+					if ts.agent != nil && ts.agent.Tools != nil && !ts.agent.Tools.IsAllowed(firstToolArg) {
+						exec.messages = append(exec.messages, providers.Message{
+							Role:    "user",
+							Content: recoveryMsg,
+						})
+						exec.callMessages = exec.messages
+						return ControlContinue
+					}
 					return ControlToolLoop
 				}
 				// Wrong tool at restricted phase. Re-prompt with the
