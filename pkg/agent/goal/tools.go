@@ -547,6 +547,42 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 	summary := fmt.Sprintf("Logged progress entry #%d for session %s.\n\n%s",
 		idx, shortSessionKey(sessionKey), lastEntryRendered(g.Progress[len(g.Progress)-1]))
 
+	// Phase 12.38 §5 D: append cap-extension line to the tool result so
+	// the LLM can see what happened to the iteration cap in its history.
+	// Without this, the LLM had no idea whether its extend request was
+	// honored — leading to "checkpoint whiplash" (re-calling
+	// goal_progress at OPEN, blocked by the lifecycle gate, see
+	// main-turn-3 trace 2026-07-31).
+	//
+	// Three states to surface:
+	//  - cap was extended (staged, will commit at end-of-iter via
+	//    FlushPendingExtend): "Iteration cap was extended from X to Y."
+	//    Y is the projected new cap after clamping at MaxIterationsCap.
+	//  - cap was NOT extended because at ceiling (CanExtend=false):
+	//    "Iteration cap is at the absolute ceiling (M). No extension
+	//    possible — proceed with remaining iterations."
+	//  - cap was NOT extended because remaining_steps was empty:
+	//    No cap line — just the logged-progress summary (the LLM didn't
+	//    request an extension).
+	if ext := IterationExtenderFromContext(ctx); ext != nil && len(remaining) > 0 {
+		if ext.CanExtendIterationCap() {
+			prevCap := ext.IterationCap()
+			amount := ext.MaxIterationsPerCheckpoint()
+			if amount <= 0 {
+				amount = ext.IterationCap()
+			}
+			projected := prevCap + amount
+			if projected > ext.MaxIterationsCap() {
+				projected = ext.MaxIterationsCap()
+			}
+			summary += fmt.Sprintf("\nIteration cap was extended from %d to %d.", prevCap, projected)
+		} else {
+			// CanExtend=false: either at ceiling or otherwise capped.
+			// Surface this explicitly so the LLM doesn't re-attempt extend.
+			summary += fmt.Sprintf("\nIteration cap is at the absolute ceiling (%d). No extension possible — proceed with remaining iterations.", ext.IterationCap())
+		}
+	}
+
 	// Phase 12.23: self-extend the turn's iteration cap so the agent
 	// can keep working through remaining_steps across iterations of this
 	// turn. Wire: goal_progress -> ExtendIterationCap(n, ...) where n is

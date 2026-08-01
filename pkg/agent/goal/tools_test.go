@@ -1244,3 +1244,102 @@ func TestCompleteGoalTool_EmptySummary_StillAccepted(t *testing.T) {
 			res.IsError, res.ErrKind)
 	}
 }
+
+// TestGoalProgressResultStatesCapExtension (Phase 12.38 §5 F52): the
+// goal_progress tool result must tell the LLM what happened to the
+// iteration cap (extended from X to Y). The previous "Logged progress
+// entry #N for session S." text contained NO cap info, so the LLM could
+// not tell whether its extend request was honored — leading to re-calls
+// at OPEN and the checkpoint whiplash pattern from main-turn-3.
+func TestGoalProgressResultStatesCapExtension(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("PICOCLAW_MEDIA_DIR", tmpDir)
+	sessionKey := "sk_v1_cap_ext_test"
+
+	// Seed goal via set_goal
+	NewSetGoalTool(tmpDir).Execute(ctxWithSession(sessionKey, "agent-main"), map[string]any{
+		"name":             "goal_test_cap",
+		"objective":        "Test cap extension visibility",
+		"success_criteria": []string{"LLM sees the cap extension line"},
+		"in_scope":         []string{"extend cap", "log progress"},
+	})
+
+	ext := &mockExtenderForTest{currentCap: 5, maxCap: 200, maxPerCheckpoint: 10, canExtend: true}
+	ctx := WithIterationExtender(ctxWithSession(sessionKey, "agent-main"), ext)
+
+	tool := NewGoalProgressTool(tmpDir)
+	res := tool.Execute(ctx, map[string]any{
+		"name":            "goal_test_cap",
+		"remaining_steps": []string{"finish the work"},
+	})
+	if res.IsError {
+		t.Fatalf("goal_progress returned error: %s", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "Iteration cap was extended from 5 to 15") {
+		t.Errorf("result must state cap extension line (Phase 12.38 §5), got: %s", res.ForLLM)
+	}
+}
+
+func TestGoalProgressResultStatesCapAtCeiling(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("PICOCLAW_MEDIA_DIR", tmpDir)
+	sessionKey := "sk_v1_cap_ceiling_test"
+
+	NewSetGoalTool(tmpDir).Execute(ctxWithSession(sessionKey, "agent-main"), map[string]any{
+		"name":             "goal_test_ceiling",
+		"objective":        "Test ceiling state in result",
+		"success_criteria": []string{"LLM sees ceiling warning"},
+		"in_scope":         []string{"log at ceiling"},
+	})
+
+	ext := &mockExtenderForTest{currentCap: 200, maxCap: 200, maxPerCheckpoint: 10, canExtend: false}
+	ctx := WithIterationExtender(ctxWithSession(sessionKey, "agent-main"), ext)
+
+	tool := NewGoalProgressTool(tmpDir)
+	res := tool.Execute(ctx, map[string]any{
+		"name":            "goal_test_ceiling",
+		"remaining_steps": []string{"finish the work"},
+	})
+	if res.IsError {
+		t.Fatalf("goal_progress returned error: %s", res.ForLLM)
+	}
+	if strings.Contains(res.ForLLM, "Iteration cap was extended") {
+		t.Errorf("result must NOT claim extension when at ceiling, got: %s", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "at the absolute ceiling") {
+		t.Errorf("result must mention ceiling state, got: %s", res.ForLLM)
+	}
+}
+
+type mockExtenderForTest struct {
+	currentCap       int
+	maxCap           int
+	maxPerCheckpoint int
+	canExtend        bool
+}
+
+func (m *mockExtenderForTest) RemainingIterations() int         { return 0 }
+func (m *mockExtenderForTest) CanExtendIterationCap() bool       { return m.canExtend }
+func (m *mockExtenderForTest) ExtendIterationCap(n int, reason string) (int, int) {
+	m.currentCap += n
+	if m.currentCap > m.maxCap {
+		m.currentCap = m.maxCap
+	}
+	return m.currentCap, n
+}
+func (m *mockExtenderForTest) IterationCap() int              { return m.currentCap }
+func (m *mockExtenderForTest) MaxIterationsPerCheckpoint() int { return m.maxPerCheckpoint }
+func (m *mockExtenderForTest) MaxIterationsCap() int           { return m.maxCap }
+func (m *mockExtenderForTest) RequestExtendIterationCap(n int, reason string) bool {
+	if m.currentCap >= m.maxCap {
+		return false
+	}
+	m.currentCap += n
+	if m.currentCap > m.maxCap {
+		m.currentCap = m.maxCap
+	}
+	return true
+}
+func (m *mockExtenderForTest) FlushPendingExtend() (applied bool, newCap int, delta int) {
+	return false, m.currentCap, 0
+}
