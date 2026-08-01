@@ -184,17 +184,17 @@ toolLoop:
 		// (BoundedRetry 3 attempts) — the same wire that already handles
 		// blocked-at-restricted-phase calls.
 		//
-		// SCOPE: pre-check ONLY fires when phase is in {checkpoint, final}.
-		// Phase=set is the entry-point phase where the LLM is expected to
-		// call set_goal first; if it calls any other tool, the legacy
-		// execute-then-error path is the right behavior (LLM sees the
-		// error and learns to call set_goal). Phase=open already has all
-		// tools allowed, so a gate-block there means something deeper is
-		// wrong and ExecuteWithContext's own gate is the canonical path.
-		// Phases {set, open}: skip pre-check, fall through to
-		// ExecuteWithContext's own IsAllowed check.
+		// SCOPE: pre-check fires at {open, checkpoint, final} (Phase 12.37).
+		// Phase 12.35 originally limited to {checkpoint, final}, but GAP #1
+		// surfaced that lifecycle tools (set_goal/goal_progress) blocked at
+		// GoalPhaseOpen by the Phase 12.31 lifecycle gate need the same
+		// same-iter retry path — otherwise silent drop (recovery doesn't
+		// see the gate-block). Phase=set is the entry-point where the LLM
+		// is expected to call set_goal first; if it calls any other tool,
+		// the legacy execute-then-error path is the right behavior (LLM
+		// sees the error and learns to call set_goal).
 		currentPhase := ts.currentGoalPhase()
-		if ts.agent.Tools != nil && (currentPhase == GoalPhaseCheckpoint || currentPhase == GoalPhaseFinal) {
+		if ts.agent.Tools != nil && (currentPhase == GoalPhaseOpen || currentPhase == GoalPhaseCheckpoint || currentPhase == GoalPhaseFinal) {
 			if !ts.agent.Tools.IsAllowed(toolName) {
 				denyContent := fmt.Sprintf("tool %q is not available in the current phase (Phase 12.35 gate pre-check at %s)", toolName, currentPhase)
 				al.emitEvent(
