@@ -121,3 +121,119 @@ func TestEmptyResponse_CapIsThree_Phase12_37(t *testing.T) {
 		t.Fatalf("want cap=3, got %d", EmptyResponseRecoveryCap)
 	}
 }
+
+// Task 2 — Deviation #3 restricted text-only = 2 soft + 1 hard = 3 attempts.
+
+// 1st text-only at restricted phase: soft message, soft counter→1.
+func TestTextOnlyRestricted_FirstAttempt_SoftMessage_Phase12_37(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	ts.textOnlySoftRetriesDone = 0
+	ts.textOnlyHardRetriesDone = 0
+	action, msg := evaluateRecovery(ts, RecoveryContext{
+		Phase:        "checkpoint",
+		Iteration:    5,
+		TextEmpty:    false,
+		HasToolCalls: false,
+	})
+	if action != RecoveryRetrySameIteration {
+		t.Fatalf("want RetrySameIteration, got %v", action)
+	}
+	if msg != TextOnlySoftRetryMessage {
+		t.Fatalf("want soft msg, got %q", msg)
+	}
+	if ts.textOnlySoftRetriesDone != 1 {
+		t.Fatalf("soft count want 1, got %d", ts.textOnlySoftRetriesDone)
+	}
+	if ts.textOnlyHardRetriesDone != 0 {
+		t.Fatalf("hard count want 0, got %d", ts.textOnlyHardRetriesDone)
+	}
+}
+
+// 2nd text-only at restricted phase: still soft, soft counter→2.
+func TestTextOnlyRestricted_SecondAttempt_StillSoft_Phase12_37(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	ts.textOnlySoftRetriesDone = 1 // simulate 1st fire
+	ts.textOnlyHardRetriesDone = 0
+	action, msg := evaluateRecovery(ts, RecoveryContext{
+		Phase:        "checkpoint",
+		Iteration:    5,
+		TextEmpty:    false,
+		HasToolCalls: false,
+	})
+	if action != RecoveryRetrySameIteration {
+		t.Fatalf("want RetrySameIteration, got %v", action)
+	}
+	if msg != TextOnlySoftRetryMessage {
+		t.Fatalf("want soft msg on 2nd attempt, got %q", msg)
+	}
+	if ts.textOnlySoftRetriesDone != 2 {
+		t.Fatalf("soft count want 2, got %d", ts.textOnlySoftRetriesDone)
+	}
+}
+
+// 3rd text-only at restricted phase: hard message, hard counter→1.
+func TestTextOnlyRestricted_ThirdAttempt_HardMessage_Phase12_37(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	ts.textOnlySoftRetriesDone = 2 // simulate 2 soft fires
+	ts.textOnlyHardRetriesDone = 0
+	action, msg := evaluateRecovery(ts, RecoveryContext{
+		Phase:        "checkpoint",
+		Iteration:    5,
+		TextEmpty:    false,
+		HasToolCalls: false,
+	})
+	if action != RecoveryRetrySameIteration {
+		t.Fatalf("want RetrySameIteration, got %v", action)
+	}
+	if msg != TextOnlyHardRetryMessage {
+		t.Fatalf("want hard msg on 3rd attempt, got %q", msg)
+	}
+	if ts.textOnlyHardRetriesDone != 1 {
+		t.Fatalf("hard count want 1, got %d", ts.textOnlyHardRetriesDone)
+	}
+}
+
+// 4th text-only at restricted phase (cap exhausted): archive.
+func TestTextOnlyRestricted_CapExhausted_ArchivesGoal_Phase12_37(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	ts.textOnlySoftRetriesDone = 2
+	ts.textOnlyHardRetriesDone = 1
+	action, msg := evaluateRecovery(ts, RecoveryContext{
+		Phase:        "checkpoint",
+		Iteration:    5,
+		TextEmpty:    false,
+		HasToolCalls: false,
+	})
+	if action != RecoveryArchiveGoal {
+		t.Fatalf("want RecoveryArchiveGoal, got %v", action)
+	}
+	if msg == "" {
+		t.Fatal("want non-empty archive message")
+	}
+}
+
+// Final + post-report + text-only stays silent (spec 8e, unchanged).
+func TestTextOnlyRestricted_FinalPostReport_Silent_Phase12_37(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	ts.textOnlySoftRetriesDone = 0
+	action, _ := evaluateRecovery(ts, RecoveryContext{
+		Phase:                 "final",
+		Iteration:             10,
+		TextEmpty:             false,
+		HasToolCalls:          false,
+		PostCompleteGoalReport: true,
+	})
+	if action != RecoveryNone {
+		t.Fatalf("want RecoveryNone for final+postReport silent, got %v", action)
+	}
+}
+
+// Const equality: TextOnlySoftRetryCap=2, TextOnlyHardRetryCap=1 (spec 9).
+func TestTextOnlyRestricted_CapsAre2And1_Phase12_37(t *testing.T) {
+	if TextOnlySoftRetryCap != 2 {
+		t.Fatalf("want soft cap=2, got %d", TextOnlySoftRetryCap)
+	}
+	if TextOnlyHardRetryCap != 1 {
+		t.Fatalf("want hard cap=1, got %d", TextOnlyHardRetryCap)
+	}
+}

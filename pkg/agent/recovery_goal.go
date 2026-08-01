@@ -212,8 +212,8 @@ const (
 	// Both caps are PER-ITERATION counts (not cross-iteration streak). The
 	// cross-iteration textOnlyStreak field still tracks consecutive text-only
 	// iterations but is no longer the gate — recovery fires within iteration.
-	TextOnlySoftRetryCap         = 1  // 1 soft prompt per iteration (fires on first text-only)
-	TextOnlyHardRetryCap         = 1  // 1 hard prompt per iteration (fires on second consecutive text-only in same iter)
+	TextOnlySoftRetryCap         = 2  // Phase 12.37: 2 soft prompts per iteration (was 1) — spec 9: soft→soft→hard = 3 total attempts
+	TextOnlyHardRetryCap         = 1  // 1 hard prompt per iteration (fires on third consecutive text-only in same iter)
 	ToolExecErrorRetryCap         = 3  // per-tool retry up to 3 within same iteration
 	ProviderTransientRetryCap     = 3  // matches existing callLLMCore cap
 )
