@@ -1176,7 +1176,7 @@ func (p *Pipeline) handleGoalRecovery(
 	// each attempt. The initial caller (CallLLM line 713-728) sets the counter
 	// when the first trigger fires; the in-iter retry is the SAME event, so
 	// we reset and let evaluateRecovery decide per-attempt.
-	ts.emptyResponseRecoverySent = false
+	ts.emptyResponseRecoveryCount = 0
 	// Sibling counters: text-only soft/hard retry caps must also reset so the
 	// re-evaluation can re-fire the trigger on attempt 0 if the LLM still
 	// responds text-only. Without this, the caller-side check (textOnly*Done > 0)
@@ -1297,7 +1297,7 @@ func (p *Pipeline) handleGoalRecovery(
 			// retries used). This is the "exhausted" terminal — archive the
 			// goal and exit the retry loop with RetryDecisionAbort, so the
 			// caller returns ControlBreak and the loop terminates the turn.
-			if ts.emptyResponseRecoverySent || ts.textOnlySoftRetriesDone > 0 || ts.textOnlyHardRetriesDone > 0 || ts.toolExecRecoveryAttempts != nil {
+			if ts.emptyResponseRecoveryCount >= EmptyResponseRecoveryCap || ts.textOnlySoftRetriesDone > 0 || ts.textOnlyHardRetriesDone > 0 || ts.toolExecRecoveryAttempts != nil {
 				logFields["action"] = "exhausted_archive"
 				logger.InfoCF("agent", "Goal recovery exhausted in same iteration", logFields)
 				ts.goalArchiveRequested = true
@@ -1440,7 +1440,7 @@ func (p *Pipeline) retryLLMForBlockedTool(
 		// entry while Path 4 must NOT — the asymmetry is intentional
 		// (Phase 12.28 memory note: toolExecRecoveryAttempts must
 		// survive across attempts in Path 4 to drive archive detection).
-		ts.emptyResponseRecoverySent = false
+		ts.emptyResponseRecoveryCount = 0
 		ts.textOnlySoftRetriesDone = 0
 		ts.textOnlyHardRetriesDone = 0
 		ts.toolExecRecoveryAttempts = map[string]int{}

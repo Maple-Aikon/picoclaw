@@ -65,28 +65,30 @@ func TestEvaluateRecovery_EmptyText_PhaseOpen_InjectsOnce(t *testing.T) {
 	if msg != EmptyResponseRecoveryMessage {
 		t.Fatalf("expected EMPTY_FINAL message, got %q", msg)
 	}
-	if !ts.emptyResponseRecoverySent {
-		t.Fatalf("expected emptyResponseRecoverySent=true after first fire")
+	if ts.emptyResponseRecoveryCount == 0 {
+		t.Fatalf("expected emptyResponseRecoveryCount>0 after first fire, got %d", ts.emptyResponseRecoveryCount)
 	}
 }
 
 func TestEvaluateRecovery_EmptyText_AlreadySent_NoRetry(t *testing.T) {
+	// Phase 12.37: pre-12.37 this tested "one-shot bool → None on second fire".
+	// New behavior: counter caps at EmptyResponseRecoveryCap (3) — count>=cap
+	// archives the goal. Phase 12.37 covered in recovery_goal_phase12_37_test.go.
+	t.Skip("Phase 12.37: behavior changed to count-based 3-shot cap; see TestEmptyResponse_CapExhausted_ArchivesGoal_Phase12_37")
 	ts := newPhase5TurnState(t)
-	ts.emptyResponseRecoverySent = true // simulate second empty response in same iteration
+	ts.emptyResponseRecoveryCount = 1 // legacy placeholder, unreachable
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: true, HasToolCalls: false}
-	action, _ := evaluateRecovery(ts, ctx)
-	if action != RecoveryNone {
-		t.Fatalf("expected RecoveryNone after one-shot injection, got %v", action)
-	}
+	_, _ = evaluateRecovery(ts, ctx)
 }
 
 func TestEvaluateRecovery_EmptyText_PhaseLock_NoTrigger(t *testing.T) {
+	// Phase 12.37 GAP #2: Trigger #1 (empty) now fires at ALL phases
+	// including GoalPhaseSet. Pre-12.37 expected None here. New behavior
+	// verified in TestEmptyResponse_FiresAtRestrictedPhases_Phase12_37.
+	t.Skip("Phase 12.37: empty trigger fires at all phases; see TestEmptyResponse_FiresAtRestrictedPhases_Phase12_37")
 	ts := newPhase5TurnState(t)
 	ctx := RecoveryContext{Phase: string(GoalPhaseSet), TextEmpty: true, HasToolCalls: false}
-	action, _ := evaluateRecovery(ts, ctx)
-	if action != RecoveryNone {
-		t.Fatalf("expected RecoveryNone in Lock phase, got %v", action)
-	}
+	_, _ = evaluateRecovery(ts, ctx)
 }
 
 func TestEvaluateRecovery_TextOnly2x_PhaseOpen_ForceComplete(t *testing.T) {
@@ -808,7 +810,7 @@ func TestPostCompleteGoalReport_CapBypass(t *testing.T) {
 	}
 }
 
-// Phase 12.10 — Fix #1: emptyResponseRecoverySent was previously sticky
+// Phase 12.10 — Fix #1: emptyResponseRecoveryCount was previously sticky
 // across iterations. After iter 12 fired empty-response recovery, iter 14's
 // empty response silently skipped (RecoveryNone), turning the loop into a
 // no-op. Live evidence: turn 2 main-turn-3 (2026-07-24 13:37 ICT) ended
@@ -835,14 +837,14 @@ func TestEvaluateRecovery_EmptyText_IterationBump_ResetsCounter(t *testing.T) {
 	if msg1 != EmptyResponseRecoveryMessage {
 		t.Fatalf("iter 12: expected EmptyResponseRecoveryMessage, got %q", msg1)
 	}
-	if !ts.emptyResponseRecoverySent {
-		t.Fatalf("iter 12: emptyResponseRecoverySent should be true after first fire")
+	if ts.emptyResponseRecoveryCount == 0 {
+		t.Fatalf("iter 12: emptyResponseRecoveryCount should be true after first fire")
 	}
 
 	// Loop top simulation (mirrors turn_coord.go:163-164 — the actual
 	// production code path). Phase 12.10 fix: reset BOTH per-iter counters.
 	ts.setIteration(13)
-	ts.emptyResponseRecoverySent = false
+	ts.emptyResponseRecoveryCount = 0
 	ts.toolExecRecoveryAttempts = nil
 
 	// iter 13: LLM recovers with tool_call (simulated by HasToolCalls=true
@@ -859,7 +861,7 @@ func TestEvaluateRecovery_EmptyText_IterationBump_ResetsCounter(t *testing.T) {
 
 	// Loop top → iter 14
 	ts.setIteration(14)
-	ts.emptyResponseRecoverySent = false
+	ts.emptyResponseRecoveryCount = 0
 	ts.toolExecRecoveryAttempts = nil
 
 	// iter 14: empty response AGAIN — recovery MUST fire (was the bug)
@@ -876,8 +878,8 @@ func TestEvaluateRecovery_EmptyText_IterationBump_ResetsCounter(t *testing.T) {
 	if msg2 != EmptyResponseRecoveryMessage {
 		t.Fatalf("iter 14: expected EmptyResponseRecoveryMessage, got %q", msg2)
 	}
-	if !ts.emptyResponseRecoverySent {
-		t.Fatalf("iter 14: emptyResponseRecoverySent should be true after second fire")
+	if ts.emptyResponseRecoveryCount == 0 {
+		t.Fatalf("iter 14: emptyResponseRecoveryCount should be true after second fire")
 	}
 }
 
@@ -911,7 +913,7 @@ func TestEvaluateRecovery_ToolExecError_IterationBump_ResetsCap(t *testing.T) {
 
 	// Loop top simulation (Fix #1b reset)
 	ts.setIteration(13)
-	ts.emptyResponseRecoverySent = false
+	ts.emptyResponseRecoveryCount = 0
 	ts.toolExecRecoveryAttempts = nil
 
 	// iter 13: fresh attempts allowed
@@ -944,8 +946,8 @@ func TestEvaluateRecovery_IterationBump_ResetsBothCounters(t *testing.T) {
 	evaluateRecovery(ts, toolCtx)  // tool fires (2)
 
 	// Pre-loop state must be dirty
-	if !ts.emptyResponseRecoverySent {
-		t.Fatalf("setup: emptyResponseRecoverySent should be true")
+	if ts.emptyResponseRecoveryCount == 0 {
+		t.Fatalf("setup: emptyResponseRecoveryCount should be true")
 	}
 	if ts.toolExecRecoveryAttempts["view_goal"] != 2 {
 		t.Fatalf("setup: view_goal counter should be 2, got %d", ts.toolExecRecoveryAttempts["view_goal"])
@@ -953,12 +955,12 @@ func TestEvaluateRecovery_IterationBump_ResetsBothCounters(t *testing.T) {
 
 	// Mirror production reset (turn_coord.go:163-164)
 	ts.setIteration(13)
-	ts.emptyResponseRecoverySent = false
+	ts.emptyResponseRecoveryCount = 0
 	ts.toolExecRecoveryAttempts = nil
 
 	// Both counters must be reset
-	if ts.emptyResponseRecoverySent {
-		t.Fatalf("iter 13: emptyResponseRecoverySent should be reset, got true")
+	if ts.emptyResponseRecoveryCount != 0 {
+		t.Fatalf("iter 13: emptyResponseRecoveryCount should be reset, got true")
 	}
 	if len(ts.toolExecRecoveryAttempts) != 0 {
 		t.Fatalf("iter 13: toolExecRecoveryAttempts should be empty, got %v", ts.toolExecRecoveryAttempts)

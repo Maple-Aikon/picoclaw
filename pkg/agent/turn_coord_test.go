@@ -1167,8 +1167,8 @@ func TestTurnCoord_RecoveryTrigger_EmptyTextNotGoalPhase(t *testing.T) {
 	if action != RecoveryNone {
 		t.Fatalf("expected RecoveryNone for no-goal phase, got %v", action)
 	}
-	if ts.emptyResponseRecoverySent {
-		t.Fatalf("emptyResponseRecoverySent should not flip outside goal phase")
+	if ts.emptyResponseRecoveryCount != 0 {
+		t.Fatalf("emptyResponseRecoveryCount should not flip outside goal phase")
 	}
 	if ts.textOnlyStreak != 0 {
 		t.Fatalf("textOnlyStreak should not bump outside goal phase, got %d", ts.textOnlyStreak)

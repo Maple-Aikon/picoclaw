@@ -116,6 +116,12 @@ const (
 	// emitted JS; not relevant for Go but consistent with project policy).
 	EmptyResponseRecoveryMessage = "Your previous response was empty. Please produce a non-empty text response or invoke a tool to continue working toward the goal."
 
+	// EmptyResponseHardMessage (Phase 12.37) — fires on the 3rd consecutive
+	// empty response within an iteration. Hard direction per spec 9:
+	// soft (#1, #2) → hard (#3) → archive (#4). Fires only when
+	// EmptyResponseRecoveryCap is reached.
+	EmptyResponseHardMessage = "⚠️ Your response is still empty after retries. You MUST produce a non-empty text response or invoke a tool in your next message. If the response is still empty, this turn will be archived."
+
 	// TextOnlySoftRetryMessage (Phase 12) — fires on the first text-only
 	// retry within an iteration. Asks the LLM to make a decision: complete
 	// the goal, complete + ask user, or continue with a tool call. Single
@@ -197,7 +203,7 @@ const (
 // Caps for each trigger. Per §5.2 + §5.3 — these are sub-attempt counts
 // inside one iteration, NOT iteration counts.
 const (
-	EmptyResponseRecoveryCap     = 2  // soft retry up to 2 per iteration
+	EmptyResponseRecoveryCap     = 3  // Phase 12.37: 3 same-iter retries per spec 9 (was 2; now soft-soft-hard)
 	// Phase 12 redesign: text-only retries fire 2x per iteration with escalation.
 	// Soft prompt (TextOnlySoftRetryMessage) fires first, then hard prompt
 	// (TextOnlyHardRetryMessage). If both fire and LLM still produces
@@ -330,28 +336,30 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 		return RecoveryArchiveGoal, "Text-only retry cap exhausted (1 soft + 1 hard per iteration, restricted phase)."
 	}
 
-	// Open phase: Triggers #1 (empty) + #2 (text-only) with next-iter carry.
-	// All Triggers #1/#2 only apply at GoalPhaseOpen. Set/Checkpoint/Final
-	// empty/text-only is handled by the restricted-phase block above.
-	if ctx.Phase != string(GoalPhaseOpen) {
-		return RecoveryNone, ""
-	}
-
-	// Trigger #1: empty text response.
-	if ctx.TextEmpty && !ctx.HasToolCalls && !ts.emptyResponseRecoverySent {
-		if countWouldExceed(ts.emptyResponseRecoverySentCount(), EmptyResponseRecoveryCap) {
-			ts.emptyResponseRecoverySent = true
-			// Phase 12.30: recovery trigger fire. attempt is the
-			// same-iter boolean (0=not-yet, 1=just-set); use 1 for
-			// the fired-now state.
-			if IsAgentDebugEnabled() {
-				AgentDebugRecovery(ts.turnID, ts.sessionKey, ctx.Iteration, GoalPhase(ctx.Phase), "EmptyResponse", 1)
-			}
-			return RecoveryRetrySameIteration, EmptyResponseRecoveryMessage
+	// Phase 12.37 GAP #2: Trigger #1 (empty) fires at ALL phases —
+	// previously Open-only. Restricted phases with an empty response fell
+	// through to RecoveryNone → turn ended with DefaultResponse, never
+	// retried (spec point 8a). Count-based cap: soft hint #1-#2, hard
+	// direction #3 (spec point 9). Final+post-report stays silent.
+	if ctx.TextEmpty && !ctx.HasToolCalls {
+		if ctx.Phase == string(GoalPhaseFinal) && ctx.PostCompleteGoalReport {
+			return RecoveryNone, ""
 		}
+		if ts.emptyResponseRecoveryCount < EmptyResponseRecoveryCap {
+			ts.emptyResponseRecoveryCount++
+			msg := EmptyResponseRecoveryMessage
+			if ts.emptyResponseRecoveryCount >= EmptyResponseRecoveryCap {
+				msg = EmptyResponseHardMessage
+			}
+			if IsAgentDebugEnabled() {
+				AgentDebugRecovery(ts.turnID, ts.sessionKey, ctx.Iteration, GoalPhase(ctx.Phase), "EmptyResponse", ts.emptyResponseRecoveryCount)
+			}
+			return RecoveryRetrySameIteration, msg
+		}
+		return RecoveryArchiveGoal, "Empty response retry exhausted (3 retries, all phases)."
 	}
 
-	// Trigger #2 (Phase 12.27 Open path): text-only on consecutive iterations.
+	// Open phase: Trigger #2 (text-only) with next-iter carry.
 	// Phase 12 redesign: fire soft prompt first, then hard prompt, then archive.
 	// At OPEN phase, we use RecoveryRetryNextIteration (NOT RecoveryRetrySameIteration):
 	// carry the message forward via ts.pendingRecoveryMessage, caller at
@@ -410,19 +418,6 @@ func agentIDFromTS(ts *turnState) string {
 		return ts.agent.ID
 	}
 	return ""
-}
-
-// emptyResponseRecoverySentCount returns 0 or 1 — we only inject the
-// recovery message at most once per iteration.
-func (ts *turnState) emptyResponseRecoverySentCount() int {
-	if ts.emptyResponseRecoverySent {
-		return 1
-	}
-	return 0
-}
-
-func countWouldExceed(current, cap int) bool {
-	return current < cap
 }
 
 // checkToolExecErrorRecovery examines the most recent tool result message

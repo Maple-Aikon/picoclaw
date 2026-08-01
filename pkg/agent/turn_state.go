@@ -272,7 +272,7 @@ type turnState struct {
 	// at iteration boundary. See plan §5.2 + §5.3 in
 	// picoclaw-goal-lifecycle-long-running-task-với-setviewcomplete-goal-goal-phase-tool-allowlist-20260719.
 	textOnlyStreak           int      // consecutive iterations with text-only LLM response (no tool calls). Goal Phase 1 only.
-	emptyResponseRecoverySent bool    // once per iteration: have we injected EMPTY_FINAL_RESPONSE_MESSAGE yet?
+	emptyResponseRecoveryCount int    // Phase 12.37: count of same-iter empty-response recovery injections (was bool one-shot; now 3-shot cap per spec 9)
 	toolExecRecoveryAttempts map[string]int // per-tool execution error retry count (not signature). Same iteration.
 
 	// Phase 12: per-iteration escalation counters for text-only recovery.

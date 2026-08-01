@@ -231,7 +231,7 @@ func TestHandleGoalRecovery_Exhausted_ArchivesGoal(t *testing.T) {
 }
 
 // TestHandleGoalRecovery_CounterPersistsAcrossAttempts verifies that the
-// emptyResponseRecoverySent counter is incremented across the attempts
+// emptyResponseRecoveryCount counter is incremented across the attempts
 // within a single iteration (NOT reset between attempts — only between
 // iterations, per Phase 12.10).
 // writeActiveGoalInWorkspace creates an active goal file in the given workspace
@@ -308,8 +308,8 @@ func TestHandleGoalRecovery_CounterPersistsAcrossAttempts(t *testing.T) {
 	// Counter should have been set true at attempt 0 (after first empty
 	// response), and counter is what gates further EmptyText triggers
 	// within the same iteration (Phase 12.10 cap=2/iter).
-	if !ts.emptyResponseRecoverySent {
-		t.Error("expected emptyResponseRecoverySent=true after recovery fired")
+	if ts.emptyResponseRecoveryCount == 0 {
+		t.Error("expected emptyResponseRecoveryCount=true after recovery fired")
 	}
 }
 
@@ -453,7 +453,7 @@ func TestHandleGoalRecovery_PendingMessageInjected(t *testing.T) {
 //
 // Phase 12.11.1 fix: handleGoalRecovery resets textOnlySoftRetriesDone (and
 // textOnlyHardRetriesDone + toolExecRecoveryAttempts map) on entry, mirroring
-// the existing emptyResponseRecoverySent reset. attempt 1 fires with hint
+// the existing emptyResponseRecoveryCount reset. attempt 1 fires with hint
 // injected, LLM chooses complete_goal or tool call → success.
 func TestHandleGoalRecovery_TextOnlySoftRetry_CounterReset(t *testing.T) {
 	provider := &recoveryTestProvider{

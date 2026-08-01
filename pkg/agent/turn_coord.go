@@ -198,7 +198,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		// → setIteration(+1)), so each new iteration gets a fresh slate.
 		// Previously these counters were sticky across iterations, causing
 		// recovery to silently skip after the first fire in a turn.
-		ts.emptyResponseRecoverySent = false
+		ts.emptyResponseRecoveryCount = 0
 		ts.toolExecRecoveryAttempts = nil
 		ts.lastToolResult = nil // Phase 12.28.3: clear stale tool result from previous iter so checkToolExecErrorRecovery sees only this iter's result.
 		// Phase 12.13: reset phase-stuck counters at iteration boundary so

@@ -314,7 +314,7 @@ func TestRecallLLM_HandleGoalRecovery_Smoke(t *testing.T) {
 		context.Background(),
 		ts, exec, 1, "handleGoalRecovery", func() {
 			// Simulate the 4-counter reset (Phase 12.11.1 lesson)
-			ts.emptyResponseRecoverySent = false
+			ts.emptyResponseRecoveryCount = 0
 			ts.textOnlySoftRetriesDone = 0
 			ts.textOnlyHardRetriesDone = 0
 			ts.toolExecRecoveryAttempts = nil
@@ -362,7 +362,7 @@ func TestRecallLLM_RetryLLMForBlockedTool_Smoke(t *testing.T) {
 		context.Background(),
 		ts, exec, 1, "retryLLMForBlockedTool", func() {
 			// Simulate the 4-counter reset + msg injection
-			ts.emptyResponseRecoverySent = false
+			ts.emptyResponseRecoveryCount = 0
 			ts.textOnlySoftRetriesDone = 0
 			ts.textOnlyHardRetriesDone = 0
 			ts.toolExecRecoveryAttempts = map[string]int{}
