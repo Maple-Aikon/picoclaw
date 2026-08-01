@@ -122,16 +122,18 @@ const (
 	// EmptyResponseRecoveryCap is reached.
 	EmptyResponseHardMessage = "⚠️ Your response is still empty after retries. You MUST produce a non-empty text response or invoke a tool in your next message. If the response is still empty, this turn will be archived."
 
-	// TextOnlySoftRetryMessage (Phase 12) — fires on the first text-only
-	// retry within an iteration. Asks the LLM to make a decision: complete
-	// the goal, complete + ask user, or continue with a tool call. Single
-	// line; Vietnamese; soft tone.
-	TextOnlySoftRetryMessage = "Your last response was text-only with no tool call. Has the goal been completed? If yes, call `complete_goal`. If a critical decision needs user approval, call `complete_goal` with a question for the user. Otherwise, continue working with an appropriate tool."
+	// TextOnlySoftRetryMessage (Phase 12 + 12.38 A2 rewrite) — fires on the
+	// first text-only retry within an iteration. Per F30 (Kimi HIGH): must
+	// NOT recommend specific tools (no `complete_goal`, no "appropriate tool")
+	// because the message persists in history and may outlive the phase
+	// during which the recommendation is correct. Past-tense redirect to
+	// "the current system prompt" is the only durable forward path.
+	TextOnlySoftRetryMessage = "Your last response was text-only with no tool call. Inspect the current system prompt before selecting your next action."
 
-	// TextOnlyHardRetryMessage (Phase 12) — fires on the second text-only
-	// retry within an iteration. Firm tone: LLM MUST pick one of three
-	// paths or the turn will be archived.
-	TextOnlyHardRetryMessage = "⚠️ Second consecutive text-only response with no tool call. You MUST decide in your next response: (1) call `complete_goal` if the goal is finished; (2) call `complete_goal` + a question for the user if a critical decision needs user approval; (3) call a tool to continue working. If your next response is still text-only, this turn will be archived."
+	// TextOnlyHardRetryMessage (Phase 12 + 12.38 A2 rewrite) — fires on the
+	// second text-only retry within an iteration. Same F30 invariant: no
+	// specific tool recommendations, redirect to system prompt.
+	TextOnlyHardRetryMessage = "⚠️ Second consecutive text-only response with no tool call. Inspect the current system prompt before selecting your next action. If your next response is still text-only, this turn will be archived."
 
 	// TextOnlySoftRetryOpenMessage (Phase 12.27) — first text-only at Open
 	// phase (RELATIVE allowlist). Carries forward to NEXT iteration via
@@ -199,6 +201,86 @@ const (
 	// rather than retry the blocked lifecycle tool.
 	ToolExecErrorOpenPhaseHint = " `set_goal` is LOCKED at OPEN phase (it only fires at the SET phase / iter 1). `goal_progress` is CHECKPOINT-only (it only fires at iter = max_tool_iterations). At OPEN, only `view_goal` and `complete_goal` are available for lifecycle operations. Pivot to `complete_goal` with a non-empty `summary` (1-500 chars) when the work is done, or call other non-lifecycle tools. Do NOT retry the same blocked lifecycle tool."
 )
+
+// phaseContextSuffix returns a short past-tense description of the goal
+// phase at the time of the retry, suitable for appending to a recovery
+// message body. Crucially, it does NOT claim current-phase availability
+// (e.g., "Only X is available") because the message persists in
+// conversation history and may outlive the current phase — the user can
+// transition phase between the recovery message being appended and the
+// LLM reading it. The system prompt (per-iter) is the source of truth
+// for CURRENT-phase availability; this suffix only documents the phase
+// AT THE MOMENT OF THE FAILURE for retrospective reasoning.
+//
+// Returns "" for unknown / empty phase (fail-closed — caller decides
+// whether to drop the suffix or use a static fallback).
+//
+// Phase 12.38 v2 §3 / §1.3.
+// F30 (Kimi HIGH): even past-tense tool claims ("most tools are routable",
+// "only `complete_goal` could lift the cap") violate the F20/F30 invariant
+// — feature flags, tenant policy, or dynamic tool registry can change
+// between append and re-read. Fix: suffix describes ONLY phase name +
+// STATE CONSEQUENCE ("the goal had not yet been seeded", "after reaching
+// the iteration cap"). NEVER names a tool, NEVER says what was routable.
+// Tool guidance lives in the per-iter system prompt (Task 3).
+func phaseContextSuffix(phase string) string {
+	switch phase {
+	case string(GoalPhaseSet):
+		return " At the time of this retry, the turn was in the SET phase and the goal had not yet been seeded."
+	case string(GoalPhaseOpen):
+		return " At the time of this retry, the turn was in the OPEN phase."
+	case string(GoalPhaseCheckpoint):
+		return " At the time of this retry, the turn was in the CHECKPOINT phase after reaching the iteration cap."
+	case string(GoalPhaseFinal):
+		return " At the time of this retry, the turn was in the FINAL phase."
+	default:
+		return ""
+	}
+}
+
+// buildEmptyResponseRetryMessageWithPhase constructs the empty-response
+// retry message body for the given phase, appending the phase-context
+// suffix. Used by both the empty-trigger and text-only-trigger return
+// sites at lines 323/334/357 (Phase 12.38 A2).
+//
+// The `hard` flag selects between the soft (EmptyResponseRecoveryMessage)
+// and hard (EmptyResponseHardMessage) variants — Phase 12.37 escalation.
+func buildEmptyResponseRetryMessageWithPhase(phase string, hard bool) string {
+	base := EmptyResponseRecoveryMessage
+	if hard {
+		base = EmptyResponseHardMessage
+	}
+	return base + phaseContextSuffix(phase)
+}
+
+// buildTextOnlyRetryMessageWithPhase constructs the text-only-restricted
+// retry message body for the given phase, appending the phase-context
+// suffix. Used by the restricted (non-OPEN) text-only return sites at
+// lines 323/334 (Phase 12.38 A2).
+//
+// The `restricted` flag distinguishes the restricted-phase path (lines
+// 323/334, same-iter retry with counter) from the OPEN-phase path
+// (lines 374+, next-iter carry, EXEMPT from suffix per §3.4). When
+// `restricted=false` (OPEN path), this helper returns the OPEN text
+// with NO suffix — preserved by the OPEN path's existing next-iter
+// carry mechanism (ts.pendingRecoveryMessage).
+func buildTextOnlyRetryMessageWithPhase(phase string, hard bool, restricted bool) string {
+	if !restricted {
+		// OPEN path: next-iter carry uses the OPEN-specific constants,
+		// NOT the restricted ones. No suffix appended (preserves OPEN's
+		// next-iter semantics — suffix would persist in history for the
+		// next iter even if phase flipped).
+		if hard {
+			return TextOnlyHardRetryOpenMessage
+		}
+		return TextOnlySoftRetryOpenMessage
+	}
+	base := TextOnlySoftRetryMessage
+	if hard {
+		base = TextOnlyHardRetryMessage
+	}
+	return base + phaseContextSuffix(phase)
+}
 
 // Caps for each trigger. Per §5.2 + §5.3 — these are sub-attempt counts
 // inside one iteration, NOT iteration counts.
@@ -320,7 +402,8 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 				"soft_done": ts.textOnlySoftRetriesDone,
 				"hard_done": ts.textOnlyHardRetriesDone,
 			})
-			return RecoveryRetrySameIteration, TextOnlySoftRetryMessage
+			// Phase 12.38 A2: append phase-context suffix for restricted phases.
+			return RecoveryRetrySameIteration, buildTextOnlyRetryMessageWithPhase(ctx.Phase, false, true)
 		}
 		if ts.textOnlyHardRetriesDone < TextOnlyHardRetryCap {
 			ts.textOnlyHardRetriesDone++
@@ -331,7 +414,8 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 				"soft_done": ts.textOnlySoftRetriesDone,
 				"hard_done": ts.textOnlyHardRetriesDone,
 			})
-			return RecoveryRetrySameIteration, TextOnlyHardRetryMessage
+			// Phase 12.38 A2: append phase-context suffix for restricted phases.
+			return RecoveryRetrySameIteration, buildTextOnlyRetryMessageWithPhase(ctx.Phase, true, true)
 		}
 		// Both soft + hard fired this iteration; archive the goal.
 		logger.WarnCF("agent", "Text-only retry cap exhausted — archiving goal (restricted phase)", map[string]any{
@@ -354,10 +438,12 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 		}
 		if ts.emptyResponseRecoveryCount < EmptyResponseRecoveryCap {
 			ts.emptyResponseRecoveryCount++
-			msg := EmptyResponseRecoveryMessage
-			if ts.emptyResponseRecoveryCount >= EmptyResponseRecoveryCap {
-				msg = EmptyResponseHardMessage
-			}
+			// Phase 12.38 A2: empty-response retry at all phases (Phase 12.37 GAP #2)
+			// gets the phase-context suffix. Restricted phases would otherwise
+			// leave no phase marker in the persisted history, making the
+			// "Checkpoint→OPEN" transition confusing on re-read.
+			hard := ts.emptyResponseRecoveryCount >= EmptyResponseRecoveryCap
+			msg := buildEmptyResponseRetryMessageWithPhase(ctx.Phase, hard)
 			if IsAgentDebugEnabled() {
 				AgentDebugRecovery(ts.turnID, ts.sessionKey, ctx.Iteration, GoalPhase(ctx.Phase), "EmptyResponse", ts.emptyResponseRecoveryCount)
 			}

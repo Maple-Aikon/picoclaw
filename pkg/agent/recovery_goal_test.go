@@ -413,8 +413,15 @@ func TestCheckToolExecErrorRecovery_ExecutionGateFormat_NotTransient(t *testing.
 	if tool != "" {
 		t.Fatalf("expected retry (no archive) on first execution-gate rejection, got tool=%q msg=%q", tool, msg)
 	}
-	if !strings.Contains(msg, "final iteration") {
-		t.Fatalf("expected Checkpoint hint to fire, got: %s", msg)
+	if !strings.Contains(msg, "iteration cap") {
+		t.Fatalf("expected Checkpoint hint to fire (mention 'iteration cap'), got: %s", msg)
+	}
+	if !strings.Contains(msg, "current system prompt") {
+		t.Fatalf("expected Checkpoint hint to redirect to 'current system prompt', got: %s", msg)
+	}
+	// F44'' + F37: must NOT contain 'final iteration' (poison text)
+	if strings.Contains(msg, "final iteration") {
+		t.Fatalf("Checkpoint hint must NOT contain 'final iteration' (F37/F44''), got: %s", msg)
 	}
 	if strings.Contains(msg, "looks transient") {
 		t.Fatalf("expected NO transient hint for execution-gate rejection, got: %s", msg)
@@ -501,13 +508,127 @@ func TestBuildToolExecErrorRetryMessage_CheckpointConsequenceBased(t *testing.T)
 	}
 }
 
-// TestBuildToolExecErrorRetryMessage_OpenPhaseLifecycleBlock (Phase 12.32):
+// Phase 12.38 §3 — phaseContextSuffix helper + wire into empty/text-only
+// restricted return sites. Suffix is past-tense (does NOT claim current
+// phase availability, since the persisted hint may outlive a phase flip).
+// OPEN phase is EXEMPT from suffix (next-iter carry uses ts.pendingRecoveryMessage,
+// not the persisted msg text).
+
+// TestPhaseContextSuffix_PhaseDescriptionOnly verifies that each phase
+// suffix contains the phase name and a past-tense description, but does
+// NOT claim any tool availability. Replaces v2 test — folds F30 (Kimi
+// HIGH — even past-tense "most tools are routable" / "could lift the cap"
+// is an availability claim that becomes false after phase flip). Per F30
+// the suffix describes ONLY phase + state consequence, never tool set.
+func TestPhaseContextSuffix_PhaseDescriptionOnly(t *testing.T) {
+	cases := []struct {
+		phase string
+		want  []string
+	}{
+		{string(GoalPhaseSet), []string{"SET", "had not", "seeded"}},
+		{string(GoalPhaseOpen), []string{"OPEN"}},
+		{string(GoalPhaseCheckpoint), []string{"CHECKPOINT", "iteration cap"}},
+		{string(GoalPhaseFinal), []string{"FINAL"}},
+	}
+	for _, c := range cases {
+		suf := phaseContextSuffix(c.phase)
+		for _, w := range c.want {
+			if !strings.Contains(suf, w) {
+				t.Fatalf("phase=%s: suffix must mention %q, got: %s", c.phase, w, suf)
+			}
+		}
+	}
+}
+
+// TestPhaseContextSuffix_NoToolAvailabilityClaims is the case-INSENSITIVE
+// negative test. F27 (Sonnet): v2's negative list was case-sensitive and
+// missed lowercase "only" + "could lift the cap" / "most tools are routable".
+// F30 (Kimi): even past-tense availability claims are forbidden — they
+// remain false if feature flags / tenant policy / dynamic tool registry
+// differ at the next iteration. Fix: case-insensitive comparison, expanded
+// blacklist covering ALL the categories Kimi flagged.
+func TestPhaseContextSuffix_NoToolAvailabilityClaims(t *testing.T) {
+	// Categories of forbidden phrases (case-insensitive):
+	//   - Tool availability claims: "Only X", "most tools", "routable",
+	//     "could lift", "could unlock", "unlock the", "all tools"
+	//   - Tool-set naming: "set_goal", "goal_progress", "complete_goal"
+	//     (the suffix must NOT name any tool — that's system-prompt domain)
+	//   - Allowlist/policy: "allowlist", "blocked", "must call"
+	forbidden := []string{
+		"routable", "allowlist", "blocked",
+		"most tools", "must call",
+		"could lift", "could unlock",
+		"all tools",
+		"set_goal", "goal_progress", "complete_goal",
+	}
+	for _, phase := range []string{string(GoalPhaseSet), string(GoalPhaseOpen), string(GoalPhaseCheckpoint), string(GoalPhaseFinal)} {
+		sufLower := strings.ToLower(phaseContextSuffix(phase))
+		for _, f := range forbidden {
+			if strings.Contains(sufLower, strings.ToLower(f)) {
+				t.Fatalf("phase=%s: suffix must NOT contain %q case-insensitive (F27+F30), got: %s", phase, f, sufLower)
+			}
+		}
+	}
+}
+
+func TestPhaseContextSuffix_UnknownPhaseEmpty(t *testing.T) {
+	if got := phaseContextSuffix(""); got != "" {
+		t.Fatalf("empty phase must yield empty suffix (fail-closed), got: %s", got)
+	}
+	if got := phaseContextSuffix("bogus"); got != "" {
+		t.Fatalf("unknown phase must yield empty suffix, got: %s", got)
+	}
+}
+
+// TestBuildEmptyResponseRetryMessage_PhaseContext verifies that the empty-
+// response retry message includes phase-context suffix for ALL 4 phases
+// (per §3.4 wire rule: append + phaseContextSuffix(ctx.Phase) at line 357).
+func TestBuildEmptyResponseRetryMessage_PhaseContext(t *testing.T) {
+	cases := []struct {
+		phase string
+		want  []string
+	}{
+		{string(GoalPhaseSet), []string{"SET"}},
+		{string(GoalPhaseOpen), []string{"OPEN"}},
+		{string(GoalPhaseCheckpoint), []string{"CHECKPOINT"}},
+		{string(GoalPhaseFinal), []string{"FINAL"}},
+	}
+	for _, c := range cases {
+		// Phase 12.38 A2: empty-response fires at all phases (per Phase 12.37
+		// GAP #2). The helper that constructs the message must include the
+		// phase-context suffix for any non-empty phase.
+		got := buildEmptyResponseRetryMessageWithPhase(c.phase, false)
+		if !strings.Contains(got, c.want[0]) {
+			t.Fatalf("phase=%s: empty message must mention %q, got: %s", c.phase, c.want[0], got)
+		}
+	}
+}
+
+// F30 — text-only-restricted message must redirect to system prompt for
+// current availability, not invent a tool recommendation. Only the
+// RESTRICTED path is tested (OPEN path legitimately mentions
+// `complete_goal` in its base text — that's part of OPEN's design).
+func TestBuildTextOnlyRetryMessage_NoToolRecommendation(t *testing.T) {
+	for _, phase := range []string{string(GoalPhaseSet), string(GoalPhaseCheckpoint), string(GoalPhaseFinal)} {
+		// restricted=true: must NOT mention specific tool names
+		got := strings.ToLower(buildTextOnlyRetryMessageWithPhase(phase, false, true))
+		forbidden := []string{"set_goal", "goal_progress", "complete_goal", "must call"}
+		for _, f := range forbidden {
+			if strings.Contains(got, f) {
+				t.Fatalf("phase=%s (restricted): text-only message must NOT recommend specific tool %q (F30), got: %s", phase, f, got)
+			}
+		}
+	}
+}
+
+
 // The OPEN-phase hint must fire ONLY when the failing tool is a lifecycle
 // tool (set_goal / goal_progress). Open phase is RELATIVE — only 2 of 83
 // visible tools are blocked by the lifecycle gate. Always-append (like
 // Set/Checkpoint/Final) would mislead the LLM when a generic tool like
 // read_file errors at OPEN (read_file works fine at OPEN; the error has
 // nothing to do with the lifecycle gate).
+// TestBuildToolExecErrorRetryMessage_OpenPhaseLifecycleBlock (Phase 12.32):
 func TestBuildToolExecErrorRetryMessage_OpenPhaseLifecycleBlock(t *testing.T) {
 	// Case 1 — positive: goal_progress at OPEN → OPEN hint appended
 	got1 := buildToolExecErrorRetryMessage(
