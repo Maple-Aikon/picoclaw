@@ -421,11 +421,14 @@ func TestCheckToolExecErrorRecovery_ExecutionGateFormat_NotTransient(t *testing.
 	}
 }
 
-// TestBuildToolExecErrorRetryMessage_CheckpointPhase (Phase 12.18): the
-// Checkpoint-phase hint must appear when buildToolExecErrorRetryMessage
-// is called with phase=string(GoalPhaseCheckpoint). The hint tells the
-// LLM that goal_progress + complete_goal are the only allowed tools and
-// it must wrap up (no further tool work).
+// TestBuildToolExecErrorRetryMessage_CheckpointPhase (Phase 12.18 + 12.38):
+// Phase 12.38 replaces the "final iteration" wording with a past-tense
+// consequence-based hint that does NOT poison history when the next iter
+// transitions CHECKPOINT→OPEN (F37, F44''). The new hint:
+//   - uses past tense ("had been reached")
+//   - redirects to current system prompt for actionable direction
+//   - does NOT name any tool (tool guidance lives in per-iter CHECKPOINT hint)
+//   - does NOT claim a tool-availability state
 func TestBuildToolExecErrorRetryMessage_CheckpointPhase(t *testing.T) {
 	got := buildToolExecErrorRetryMessage(
 		"read_file",
@@ -434,21 +437,67 @@ func TestBuildToolExecErrorRetryMessage_CheckpointPhase(t *testing.T) {
 		nil,
 		string(GoalPhaseCheckpoint),
 	)
-	if !strings.Contains(got, "goal_progress") {
-		t.Fatalf("expected Checkpoint hint to mention goal_progress, got: %s", got)
+	// F37/F44'': must NOT contain "final iteration" — poisons history at OPEN
+	if strings.Contains(got, "final iteration") {
+		t.Fatalf("Checkpoint hint must NOT claim 'final iteration' (poisons history at OPEN later), got: %s", got)
 	}
-	if !strings.Contains(got, "complete_goal") {
-		t.Fatalf("expected Checkpoint hint to mention complete_goal, got: %s", got)
+	// F44'': must NOT name `goal_progress` (actionable tool guidance belongs
+	// in per-iter CHECKPOINT system prompt, not in the persisted history hint).
+	// Note: "complete_goal" appears in the base error message template
+	// (the user's general "or call complete_goal" framing), so we don't
+	// assert on it here — only on the hint-specific actionable tool names.
+	if strings.Contains(got, "goal_progress") {
+		t.Fatalf("Checkpoint hint must NOT name goal_progress (F44''), got: %s", got)
 	}
-	if !strings.Contains(got, "final iteration") {
-		t.Fatalf("expected Checkpoint hint to mention 'final iteration', got: %s", got)
+	// Required consequence-based content (past-tense + redirect to system prompt)
+	for _, want := range []string{
+		"iteration cap",
+		"current system prompt",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected Checkpoint hint to mention %q, got: %s", want, got)
+		}
 	}
-	// Also verify base message + tool name + phase hint are all present.
+	// Base message + tool name + error must still be present.
 	if !strings.Contains(got, `"read_file"`) {
 		t.Fatalf("expected tool name in quotes, got: %s", got)
 	}
 	if !strings.Contains(got, "rejected by execution gate") {
 		t.Fatalf("expected original error in message, got: %s", got)
+	}
+}
+
+// TestBuildToolExecErrorRetryMessage_CheckpointConsequenceBased (Phase 12.38
+// §2.1): independent test exercising the same invariants as the upper
+// TestBuildToolExecErrorRetryMessage_CheckpointPhase test, plus the
+// negative-list assertion that explicitly covers all F44''/F30 categories.
+func TestBuildToolExecErrorRetryMessage_CheckpointConsequenceBased(t *testing.T) {
+	got := buildToolExecErrorRetryMessage(
+		"read_file", "rejected by execution gate", false, nil,
+		string(GoalPhaseCheckpoint),
+	)
+	// Negative: poison text (must be gone)
+	negativePhrases := []string{
+		"final iteration",
+		"only",
+		"routable",
+		"goal_progress",          // F44'': tool guidance belongs in per-iter system prompt
+		"remaining_steps",        // F44'': actionable field name, belongs in CHECKPOINT hint
+	}
+	for _, n := range negativePhrases {
+		if strings.Contains(strings.ToLower(got), n) {
+			t.Fatalf("Checkpoint hint must NOT contain %q (F30/F44''), got: %s", n, got)
+		}
+	}
+	// Positive: consequence + redirect
+	positivePhrases := []string{
+		"iteration cap",
+		"current system prompt",
+	}
+	for _, p := range positivePhrases {
+		if !strings.Contains(got, p) {
+			t.Fatalf("Checkpoint hint must contain %q (consequence-based), got: %s", p, got)
+		}
 	}
 }
 

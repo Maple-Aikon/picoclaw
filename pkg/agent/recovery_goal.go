@@ -189,7 +189,7 @@ const (
 	// the current phase..."). Combined effect was a silent recovery blind
 	// spot that ended the turn with a canned "max_tool_iterations" string.
 	// Telegram user feedback 2026-07-26: main-turn-4 hit this at iter 25.
-	ToolExecErrorCheckpointPhaseHint = " This is the final iteration (goal phase: checkpoint). Only `goal_progress` (to extend with another step — remaining_steps MUST be non-empty) and `complete_goal` (to wrap up the goal or wait for user approval/decision via the summary field) are available. Every other tool call is blocked. If your current work is incomplete and you still have concrete next steps, call `goal_progress` with non-empty `remaining_steps` to extend the turn; otherwise call `complete_goal` with a non-empty `summary` (1-500 chars) — the summary may describe a wait-state such as 'Waiting for Maple review' if you need user approval before proceeding."
+	ToolExecErrorCheckpointPhaseHint = " At the time of this rejected call, the iteration cap had been reached. Inspect the latest tool result and the current system prompt before selecting your next action."
 
 	// Phase 12.32: ToolExecErrorOpenPhaseHint is appended ONLY when a
 	// lifecycle tool (set_goal / goal_progress) is rejected at OPEN phase.
