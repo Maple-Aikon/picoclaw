@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -355,10 +356,63 @@ func (p *Pipeline) recallAndCheckTool(
 	if exec.response != nil && len(exec.response.ToolCalls) > 0 {
 		firstTool = exec.response.ToolCalls[0].Name
 	}
+	ctrl := ControlToolLoop
 	if firstTool == "" || !allowlistContains(allowedTools, firstTool) {
-		return onWrongTool(firstTool), firstTool, nil
+		ctrl = onWrongTool(firstTool)
 	}
-	return ControlToolLoop, firstTool, nil
+	// Phase 12.41 (Option A', 2026-08-02): append the assistant tool_calls
+	// message BEFORE EVERY return of ControlToolLoop so ExecuteTools'
+	// role="tool" results always reference a preceding assistant tool_calls
+	// entry. Without this the tool results are orphaned → DeepSeek 400
+	// invalid_request_error (strict message-shape validation) on the next
+	// provider call; MiniMax-M3 tolerated the malformed shape so the bug
+	// stayed hidden (main-turn-8/12). Covers all three ControlToolLoop
+	// sources: the allowlisted branch above, Path 2's allow-all arm and the
+	// malformed empty-name arm (both via onWrongTool returning
+	// ControlToolLoop). Text-only responses (ToolCalls==0) and re-prompt
+	// ControlContinue append nothing.
+	//
+	// Mirror proceedPastLLM (pipeline_llm.go:839-882) EXACTLY: assistantMsg
+	// built from exec.response.Content + exec.normalizedToolCalls
+	// (ID/Type/Name/Function{Name,Arguments,ThoughtSignature}/ExtraContent),
+	// appended to exec.messages unconditionally, persistence trio
+	// (AddFullMessage/recordPersistedMessage/ingestMessage) only under
+	// !ts.opts.NoHistory.
+	if ctrl == ControlToolLoop && exec.response != nil && len(exec.response.ToolCalls) > 0 {
+		assistantMsg := providers.Message{
+			Role:             "assistant",
+			Content:          exec.response.Content,
+			ModelName:        exec.llmModelName,
+			ReasoningContent: exec.response.ReasoningContent,
+			ReasoningDetails: exec.response.ReasoningDetails,
+		}
+		for _, tc := range exec.normalizedToolCalls {
+			argumentsJSON, _ := json.Marshal(tc.Arguments)
+			thoughtSignature := ""
+			if tc.Function != nil {
+				thoughtSignature = tc.Function.ThoughtSignature
+			}
+			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, providers.ToolCall{
+				ID:   tc.ID,
+				Type: "function",
+				Name: tc.Name,
+				Function: &providers.FunctionCall{
+					Name:             tc.Name,
+					Arguments:        string(argumentsJSON),
+					ThoughtSignature: thoughtSignature,
+				},
+				ExtraContent:     tc.ExtraContent,
+				ThoughtSignature: thoughtSignature,
+			})
+		}
+		exec.messages = append(exec.messages, assistantMsg)
+		if !ts.opts.NoHistory && p.al != nil {
+			ts.agent.Sessions.AddFullMessage(ts.sessionKey, assistantMsg)
+			ts.recordPersistedMessage(assistantMsg)
+			ts.ingestMessage(turnCtx, p.al, assistantMsg)
+		}
+	}
+	return ctrl, firstTool, nil
 }
 
 // buildRecoveryHint constructs a phase-aware recovery message. When the LLM
