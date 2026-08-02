@@ -3,8 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -107,12 +105,30 @@ func (p *Pipeline) retryExecuteToolChain(
 		MaxAttempts: ToolExecErrorRetryCap,
 		OnExhausted: func(rc RetryContext) {
 			exhausted = true
+			// Phase 12.42 (C5): mirror Path 2's OnExhausted
+			// (pipeline_llm.go:1416-1426) — the BoundedRetry exhaustion
+			// itself is the stuck signal. Set a phase-specific abort
+			// reason so finalizeGoalOnTurnEnd archives with the right
+			// reason (not a generic error).
+			currentPhase := GoalPhase(phase)
+			switch currentPhase {
+			case GoalPhaseSet:
+				ts.lastPhaseStuckError = GoalPhaseSetStuckAbortReason
+			case GoalPhaseCheckpoint:
+				ts.lastPhaseStuckError = GoalPhaseCheckpointStuckAbortReason
+			case GoalPhaseFinal:
+				ts.lastPhaseStuckError = GoalPhaseFinalStuckAbortReason
+			default:
+				ts.lastPhaseStuckError = computePhaseStuckAbortReasonForPhase(
+					currentPhase, ts.setGoalFailCount, ts.goalProgressFailCount, ts.completeGoalFailCount)
+			}
 			logger.InfoCF("agent", "retryExecuteToolChain: attempts exhausted",
 				map[string]any{
 					"agent_id":   ts.agent.ID,
 					"max":        rc.MaxAttempts,
 					"elapsed_ms": rc.Elapsed.Milliseconds(),
 					"phase":      phase,
+					"reason":     ts.lastPhaseStuckError,
 				})
 		},
 		}, func(ctx context.Context, rc RetryContext) (RetryDecision, error) {
@@ -182,18 +198,50 @@ func (p *Pipeline) retryExecuteToolChainOnce(
 	phase string,
 ) (Control, error) {
 	// Step 1+2: shared recall-and-check primitive. Path 4's wrong-tool
-	// policy is "build phase-aware recovery hint and break" — the LLM
-	// already saw the original recoveryHint and still picked wrong,
-	// so we accept the failure rather than re-prompting.
+	// policy (Phase 12.42, G3): default phase-aware mirror of Path 2's
+	// arms (pipeline_llm.go:1475-1510) — re-prompt instead of break:
+	//   text-only                 → ControlToolLoop (success)
+	//   allowAll + gate-allowed   → ControlToolLoop (execute at Step 3)
+	//   allowAll + gate-blocked   → hint + ControlContinue (re-prompt)
+	//   restricted + wrong tool   → hint + ControlContinue (re-prompt)
 	ctrl, _, err := p.recallAndCheckTool(
 		ctx, turnCtx, ts, exec, iteration,
 		"retryExecuteToolChain",
 		recoveryHint, allowedTools,
 		func(firstTool string) Control {
-			hint := buildRecoveryHint(firstTool, allowedTools, phase)
-			ts.pendingRecoveryMessage = hint
-			retryExecuteToolChainWrongToolHits++
-			return ControlBreak
+			if firstTool == "" {
+				// Text-only or malformed tool call → success (Path 2
+				// arm i, :1476-1482). Caller skips Step 3/4 via the
+				// G4 guard below.
+				return ControlToolLoop
+			}
+			allowAll := len(allowedTools) == 0
+			if allowAll {
+				// Allow-all phase (Open default) + real tool. Phase
+				// 12.37 C1: when the tool is ALSO gate-blocked by the
+				// Phase 12.31 lifecycle gate (e.g. goal_progress at
+				// OPEN), treat it as wrong-tool to drive BoundedRetry
+				// exhaustion → D2 archive after 3 attempts.
+				if ts.agent != nil && ts.agent.Tools != nil && !ts.agent.Tools.IsAllowed(firstTool) {
+					ts.pendingRecoveryMessage = recoveryHint
+					exec.messages = append(exec.messages, providers.Message{
+						Role:    "user",
+						Content: recoveryHint,
+					})
+					exec.callMessages = exec.messages
+					return ControlContinue
+				}
+				return ControlToolLoop
+			}
+			// Restricted phase + wrong tool → re-prompt with the
+			// original recoveryHint (spec 12.37 "buộc LLM tuân thủ 3×").
+			ts.pendingRecoveryMessage = recoveryHint
+			exec.messages = append(exec.messages, providers.Message{
+				Role:    "user",
+				Content: recoveryHint,
+			})
+			exec.callMessages = exec.messages
+			return ControlContinue
 		},
 	)
 	if err != nil {
@@ -202,19 +250,45 @@ func (p *Pipeline) retryExecuteToolChainOnce(
 	if ctrl == ControlBreak {
 		return ControlBreak, nil
 	}
+	if ctrl == ControlContinue {
+		// Wrong tool at allow-all/restricted: hint appended, recovery
+		// hint still armed (pendingRecoveryMessage) → retry next attempt.
+		return ControlContinue, nil
+	}
 	// ctrl == ControlToolLoop — LLM picked a valid tool. Proceed to Step 3+4.
+
+	// Phase 12.42 (G4/C3): text-only or malformed assistant output (no
+	// tool calls) after a tool-exec error is SUCCESS — skip Step 3/4 so
+	// we don't re-read the stale tool error at messages[len-1] and re-arm
+	// a retry loop (which would burn 3 attempts and archive a healthy
+	// goal). C9b: clear pendingRecoveryMessage so BoundedRetry exits
+	// (RetryDecisionDone) instead of retrying.
+	if len(exec.normalizedToolCalls) == 0 {
+		ts.pendingRecoveryMessage = ""
+		return ControlToolLoop, nil
+	}
 
 	// Step 3 (Tasks 4-7 wiring): call ExecuteTools via toolExecLazy().
 	// Production self-binding uses p.ExecuteTools; tests inject *fakeExecutor
 	// via SetToolExecutor (Task 3). The tool results land in exec.messages
 	// (last entries with Role="tool"); checkToolExecErrorRecovery inspects
 	// them after this call.
+	messagesBefore := len(exec.messages)
 	toolCtrl := p.toolExecLazy().ExecuteTools(ctx, turnCtx, ts, exec, iteration)
 	if toolCtrl == ToolControlBreak {
 		// Executor broke early (e.g. approval rejected, hard abort). Mirror
 		// the caller-side handling: return ControlBreak so the coordinator
 		// exits the loop without re-trying in the same iteration.
 		return ControlBreak, nil
+	}
+	// Phase 12.42 (C3, external review F3): if ExecuteTools appended
+	// NOTHING (every normalized call was filtered out — denyByTurnProfile,
+	// allowlist), there is no fresh tool result to check. Skipping Step 4
+	// prevents re-reading the stale tool error at messages[len-1] which
+	// would re-arm a retry loop against a tool that never executed.
+	if len(exec.messages) == messagesBefore {
+		ts.pendingRecoveryMessage = ""
+		return ControlToolLoop, nil
 	}
 
 	// Step 4 (Task 4 — this commit): inspect the tool results for executor
@@ -415,24 +489,7 @@ func (p *Pipeline) recallAndCheckTool(
 	return ctrl, firstTool, nil
 }
 
-// buildRecoveryHint constructs a phase-aware recovery message. When the LLM
-// picked the wrong tool (wrongTool != ""), we name it explicitly; otherwise
-// we just list the allowed tools. The trailing "Pick one of these or call
-// complete_goal" gives the LLM an unambiguous next action.
-func buildRecoveryHint(wrongTool string, allowedTools []string, phase string) string {
-	var b strings.Builder
-	if wrongTool != "" {
-		fmt.Fprintf(&b, "Tool %q is not available in current phase (%s). ", wrongTool, phase)
-	} else {
-		fmt.Fprintf(&b, "No tool selected; current phase is %s. ", phase)
-	}
-	b.WriteString("Allowed tools: ")
-	for i, t := range allowedTools {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(t)
-	}
-	b.WriteString(". Pick one of these or call complete_goal.")
-	return b.String()
-}
+// buildRecoveryHint previously constructed a phase-aware recovery message
+// for Path 4's hardcoded break policy. Phase 12.42 (G3) replaced that policy
+// with the phase-aware mirror of Path 2's arms (re-prompt with the original
+// recoveryHint), so this helper is dead code — removed.
