@@ -191,7 +191,18 @@ const (
 	// the current phase..."). Combined effect was a silent recovery blind
 	// spot that ended the turn with a canned "max_tool_iterations" string.
 	// Telegram user feedback 2026-07-26: main-turn-4 hit this at iter 25.
-	ToolExecErrorCheckpointPhaseHint = " At the time of this rejected call, the iteration cap had been reached. Inspect the latest tool result and the current system prompt before selecting your next action."
+	//
+	// Phase 12.38: replaced "final iteration" wording with a past-tense
+	// consequence-based hint (F37/F44''). Phase 12.40 (anh Maple spec,
+	// 2026-08-02): the consequence-based wording still poisoned history —
+	// "the iteration cap had been reached" is a stale claim once the cap is
+	// extended CHECKPOINT→OPEN, and main-turn-3 18:41 trace showed the LLM
+	// reading it at OPEN and calling complete_goal prematurely. The hint
+	// must NOT claim anything about the iteration cap; it names the 2
+	// available tools and the 3 decision paths (save checkpoint via
+	// goal_progress / end turn to ask user approval via wait-state summary /
+	// end turn when goal is done via final summary).
+	ToolExecErrorCheckpointPhaseHint = " In the current goal phase (checkpoint), only `goal_progress` and `complete_goal` are available — every other tool call is blocked. Choose one of three paths: (1) save a checkpoint and keep working: call `goal_progress` with at least 1 item in `remaining_steps`; (2) end the turn to ask the user for approval/decision: call `complete_goal` with a summary like \"Waiting for user approval before continuing with X\"; (3) end the turn because the goal is done: call `complete_goal` with a concise summary (1-500 chars) of what was accomplished."
 
 	// Phase 12.32: ToolExecErrorOpenPhaseHint is appended ONLY when a
 	// lifecycle tool (set_goal / goal_progress) is rejected at OPEN phase.
@@ -230,7 +241,7 @@ func phaseContextSuffix(phase string) string {
 	case string(GoalPhaseOpen):
 		return " At the time of this retry, the turn was in the OPEN phase."
 	case string(GoalPhaseCheckpoint):
-		return " At the time of this retry, the turn was in the CHECKPOINT phase after reaching the iteration cap."
+		return " At the time of this retry, the turn was in the CHECKPOINT phase."
 	case string(GoalPhaseFinal):
 		return " At the time of this retry, the turn was in the FINAL phase."
 	default:

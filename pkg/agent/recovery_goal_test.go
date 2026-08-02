@@ -413,11 +413,19 @@ func TestCheckToolExecErrorRecovery_ExecutionGateFormat_NotTransient(t *testing.
 	if tool != "" {
 		t.Fatalf("expected retry (no archive) on first execution-gate rejection, got tool=%q msg=%q", tool, msg)
 	}
-	if !strings.Contains(msg, "iteration cap") {
-		t.Fatalf("expected Checkpoint hint to fire (mention 'iteration cap'), got: %s", msg)
+	// Phase 12.40 (anh Maple spec): checkpoint recovery hint must NOT claim
+	// anything about the iteration cap (poisons history when cap is extended
+	// CHECKPOINT→OPEN → LLM believes cap is still reached and completes
+	// prematurely, main-turn-3 2026-08-02 18:41 trace). It must name the 2
+	// available tools + 3 decision paths instead.
+	if strings.Contains(msg, "iteration cap") {
+		t.Fatalf("Checkpoint hint must NOT mention 'iteration cap' (Phase 12.40), got: %s", msg)
 	}
-	if !strings.Contains(msg, "current system prompt") {
-		t.Fatalf("expected Checkpoint hint to redirect to 'current system prompt', got: %s", msg)
+	if !strings.Contains(msg, "goal_progress") {
+		t.Fatalf("expected Checkpoint hint to name goal_progress, got: %s", msg)
+	}
+	if !strings.Contains(msg, "complete_goal") {
+		t.Fatalf("expected Checkpoint hint to name complete_goal, got: %s", msg)
 	}
 	// F44'' + F37: must NOT contain 'final iteration' (poison text)
 	if strings.Contains(msg, "final iteration") {
@@ -428,14 +436,17 @@ func TestCheckToolExecErrorRecovery_ExecutionGateFormat_NotTransient(t *testing.
 	}
 }
 
-// TestBuildToolExecErrorRetryMessage_CheckpointPhase (Phase 12.18 + 12.38):
-// Phase 12.38 replaces the "final iteration" wording with a past-tense
-// consequence-based hint that does NOT poison history when the next iter
-// transitions CHECKPOINT→OPEN (F37, F44''). The new hint:
-//   - uses past tense ("had been reached")
-//   - redirects to current system prompt for actionable direction
-//   - does NOT name any tool (tool guidance lives in per-iter CHECKPOINT hint)
-//   - does NOT claim a tool-availability state
+// TestBuildToolExecErrorRetryMessage_CheckpointPhase (Phase 12.18 + 12.38
+// + 12.40): Phase 12.38 replaced the "final iteration" wording with a
+// consequence-based hint (F37, F44''). Phase 12.40 (anh Maple spec) replaces
+// the consequence-based wording AGAIN: the hint must NOT claim anything
+// about the iteration cap ("iteration cap had been reached" poisons history
+// when the cap is extended CHECKPOINT→OPEN — main-turn-3 2026-08-02 18:41
+// trace: LLM read the stale claim at OPEN and called complete_goal
+// prematurely). Instead it names the 2 available tools + 3 decision paths:
+//   - (1) save a checkpoint → goal_progress
+//   - (2) end the turn to ask user approval → complete_goal w/ wait-state summary
+//   - (3) end the turn when the goal is done → complete_goal w/ final summary
 func TestBuildToolExecErrorRetryMessage_CheckpointPhase(t *testing.T) {
 	got := buildToolExecErrorRetryMessage(
 		"read_file",
@@ -448,18 +459,15 @@ func TestBuildToolExecErrorRetryMessage_CheckpointPhase(t *testing.T) {
 	if strings.Contains(got, "final iteration") {
 		t.Fatalf("Checkpoint hint must NOT claim 'final iteration' (poisons history at OPEN later), got: %s", got)
 	}
-	// F44'': must NOT name `goal_progress` (actionable tool guidance belongs
-	// in per-iter CHECKPOINT system prompt, not in the persisted history hint).
-	// Note: "complete_goal" appears in the base error message template
-	// (the user's general "or call complete_goal" framing), so we don't
-	// assert on it here — only on the hint-specific actionable tool names.
-	if strings.Contains(got, "goal_progress") {
-		t.Fatalf("Checkpoint hint must NOT name goal_progress (F44''), got: %s", got)
+	// Phase 12.40: must NOT claim anything about the iteration cap.
+	if strings.Contains(got, "iteration cap") {
+		t.Fatalf("Checkpoint hint must NOT mention 'iteration cap' (Phase 12.40, poisons history after cap extension), got: %s", got)
 	}
-	// Required consequence-based content (past-tense + redirect to system prompt)
+	// Phase 12.40: MUST name the 2 available tools + 3 decision paths.
 	for _, want := range []string{
-		"iteration cap",
-		"current system prompt",
+		"goal_progress",
+		"complete_goal",
+		"checkpoint",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected Checkpoint hint to mention %q, got: %s", want, got)
@@ -474,11 +482,12 @@ func TestBuildToolExecErrorRetryMessage_CheckpointPhase(t *testing.T) {
 	}
 }
 
-// TestBuildToolExecErrorRetryMessage_CheckpointConsequenceBased (Phase 12.38
-// §2.1): independent test exercising the same invariants as the upper
-// TestBuildToolExecErrorRetryMessage_CheckpointPhase test, plus the
-// negative-list assertion that explicitly covers all F44''/F30 categories.
-func TestBuildToolExecErrorRetryMessage_CheckpointConsequenceBased(t *testing.T) {
+// TestBuildToolExecErrorRetryMessage_CheckpointDecisionPaths (Phase 12.40):
+// independent test of the 3-decision-path checkpoint hint. Replaces the
+// Phase 12.38 consequence-based invariant ("iteration cap" + redirect to
+// system prompt) per anh Maple's spec: the hint must name the 2 available
+// tools + 3 decision paths and must NOT claim anything about the cap.
+func TestBuildToolExecErrorRetryMessage_CheckpointDecisionPaths(t *testing.T) {
 	got := buildToolExecErrorRetryMessage(
 		"read_file", "rejected by execution gate", false, nil,
 		string(GoalPhaseCheckpoint),
@@ -486,24 +495,26 @@ func TestBuildToolExecErrorRetryMessage_CheckpointConsequenceBased(t *testing.T)
 	// Negative: poison text (must be gone)
 	negativePhrases := []string{
 		"final iteration",
-		"only",
-		"routable",
-		"goal_progress",          // F44'': tool guidance belongs in per-iter system prompt
-		"remaining_steps",        // F44'': actionable field name, belongs in CHECKPOINT hint
+		"iteration cap",          // Phase 12.40: no cap claims in recovery hint
+		"had been reached",
 	}
 	for _, n := range negativePhrases {
 		if strings.Contains(strings.ToLower(got), n) {
-			t.Fatalf("Checkpoint hint must NOT contain %q (F30/F44''), got: %s", n, got)
+			t.Fatalf("Checkpoint hint must NOT contain %q (Phase 12.40), got: %s", n, got)
 		}
 	}
-	// Positive: consequence + redirect
+	// Positive: 2 tools + 3 decision paths (Phase 12.40 spec)
 	positivePhrases := []string{
-		"iteration cap",
-		"current system prompt",
+		"goal_progress",
+		"complete_goal",
+		"checkpoint",
+		"remaining_steps",        // path (1) save checkpoint
+		"approval",               // path (2) end turn to ask user approval
+		"accomplished",           // path (3) end turn when goal is done
 	}
 	for _, p := range positivePhrases {
 		if !strings.Contains(got, p) {
-			t.Fatalf("Checkpoint hint must contain %q (consequence-based), got: %s", p, got)
+			t.Fatalf("Checkpoint hint must contain %q (Phase 12.40 decision paths), got: %s", p, got)
 		}
 	}
 }
@@ -527,7 +538,7 @@ func TestPhaseContextSuffix_PhaseDescriptionOnly(t *testing.T) {
 	}{
 		{string(GoalPhaseSet), []string{"SET", "had not", "seeded"}},
 		{string(GoalPhaseOpen), []string{"OPEN"}},
-		{string(GoalPhaseCheckpoint), []string{"CHECKPOINT", "iteration cap"}},
+		{string(GoalPhaseCheckpoint), []string{"CHECKPOINT"}},
 		{string(GoalPhaseFinal), []string{"FINAL"}},
 	}
 	for _, c := range cases {
