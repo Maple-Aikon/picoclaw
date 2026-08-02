@@ -153,6 +153,13 @@ type PromptBuildRequest struct {
 	// callers, tests, EstimateSystemTokens).
 	Iteration int
 
+	// GoalFinalized is true after a successful complete_goal tool call
+	// (Phase 11 turnState.goalFinalized). Used by formatIterCompass in
+	// GoalPhaseFinal to distinguish ceiling-reason ("This is the last iter")
+	// vs post-complete_goal reason ("Goal is finalized, complete_goal is
+	// idempotent"). Phase 12.39.
+	GoalFinalized bool
+
 	// GoalSnapshot is the rendered header (objective + success criteria
 	// markdown) of the active goal for this turn. Populated by
 	// promptBuildRequestForTurn via loadGoalSnapshotForHint at Checkpoint

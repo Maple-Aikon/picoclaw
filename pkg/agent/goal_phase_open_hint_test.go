@@ -86,10 +86,11 @@ func TestGoalPhaseOpenHint_PlacementCapabilityTooling(t *testing.T) {
 	}
 }
 
-// Phase 12.38 §4 T1 — Dynamic header when cap dims are non-zero.
-// Verifies the OPEN hint now includes "Goal phase: OPEN (iter N)" header
-// + "Iteration cap: M" + ceiling warning, so the LLM has a per-iter compass
-// even when no checkpoint phase is currently active.
+// Phase 12.39 — Dynamic header when cap dims are non-zero.
+// Verifies the OPEN hint now uses formatIterCompass (event-marker style):
+// "Goal phase: open (iter N / total M turn iters)" + "Next CHECKPOINT
+// at iter X" / "FINAL phase will be at iter M" (replaced Phase 12.38 v2's
+// static "Iteration cap: M" + ceiling warning).
 func TestGoalPhaseOpenHint_DynamicHeaderWithCap(t *testing.T) {
 	part := goalPhaseOpenHintContributor(PromptBuildRequest{
 		GoalPhase:         string(GoalPhaseOpen),
@@ -100,9 +101,8 @@ func TestGoalPhaseOpenHint_DynamicHeaderWithCap(t *testing.T) {
 	if part == nil {
 		t.Fatal("hint must fire at OPEN phase")
 	}
-	mustContain(t, part.Content, "Goal phase: OPEN (iter 5)", "dynamic header must appear when cap dims are set")
-	mustContain(t, part.Content, "Iteration cap: 15", "cap line must appear when cap dims are set")
-	mustContain(t, part.Content, "absolute ceiling", "ceiling warning must appear when at max cap")
+	mustContain(t, part.Content, "Goal phase: open (iter 5 / total 15 turn iters)", "dynamic header must appear when cap dims are set")
+	mustContain(t, part.Content, "FINAL phase will be at iter 15", "FINAL marker must appear when iterCap == maxCap (no more CHECKPOINTs)")
 }
 
 // Phase 12.38 §4 T2 — Legacy zero-cap caller keeps static text (no

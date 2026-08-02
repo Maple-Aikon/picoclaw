@@ -28,24 +28,24 @@ import "fmt"
 // generic retry message (Open is a RELATIVE phase — only 2 of 83
 // visible tools are blocked, so always-appending would mislead).
 
-// goalPhaseOpenHintText — static base text for the OPEN-phase hint.
-// Phase 12.38 §4: prepends a dynamic header (when cap dims are set)
-// showing "Goal phase: OPEN (iter N)" + "Iteration cap: M" + a ceiling
-// warning when at absolute cap. The static body remains for lifecycle
-// tool restriction semantics (which are constant across OPEN iters).
+// goalPhaseOpenHintText — dynamic header via formatIterCompass (Phase 12.39)
+// + static body for lifecycle tool restriction semantics (Phase 12.32).
+//
+// Phase 12.39 replaced the Phase 12.38 v2 static "Iteration cap: M" + ceiling
+// warning with an event-marker header ("Next CHECKPOINT at iter X" / "FINAL
+// phase will be at iter M") per owner decision §1. The static body remains
+// for lifecycle tool restriction semantics (constant across OPEN iters).
+//
+// Helper signature: formatIterCompass(req, phase, goalFinalized). For OPEN,
+// we pass goalFinalized=false (OPEN never has goalFinalized=true by
+// definition — that's a FINAL-state condition).
 func goalPhaseOpenHintText(req PromptBuildRequest) string {
-	var header string
-	if req.IterationCap > 0 {
-		// Dynamic header — provides per-iter compass + cap awareness.
-		header = fmt.Sprintf("Goal phase: OPEN (iter %d).\n", req.Iteration)
-		if req.MaxIterationsCap > 0 && req.IterationCap >= req.MaxIterationsCap {
-			// At absolute ceiling — goal_progress can no longer extend.
-			header += fmt.Sprintf("Iteration cap: %d (absolute ceiling reached — goal_progress cannot extend further).\n", req.IterationCap)
-		} else {
-			header += fmt.Sprintf("Iteration cap: %d.\n", req.IterationCap)
-		}
+	header := formatIterCompass(req, GoalPhaseOpen, false)
+	if header == "" {
+		// Backward compat: no cap dims (MaxIterationsCap=0) → no header.
+		return fmt.Sprintf("%s\n", goalPhaseOpenHintBodyText)
 	}
-	return fmt.Sprintf("%s%s\n", header, goalPhaseOpenHintBodyText)
+	return fmt.Sprintf("%s\n%s\n", header, goalPhaseOpenHintBodyText)
 }
 
 // goalPhaseOpenHintBodyText — static body for the OPEN hint. Separated

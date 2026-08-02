@@ -279,7 +279,20 @@ func (cb *ContextBuilder) BuildSystemPrompt(goalPhase string, postCompleteGoalRe
 // contributor receive the snapshot when called from the rebuild path
 // (Phase 12.33) which routes through BuildSystemPrompt not
 // buildSystemPromptParts.
+//
+// Phase 12.39: extended signature to thread IterationCap + MaxIterationsCap
+// through to the hint contributors (formatIterCompass needs both dims to
+// render the dynamic header). Without these, the helper returns "" and
+// CHECKPOINT/FINAL hints fall back to the legacy static templates.
 func (cb *ContextBuilder) BuildSystemPromptWithSnapshot(goalPhase string, postCompleteGoalReport bool, iteration int, goalSnapshot string) string {
+	return cb.BuildSystemPromptWithSnapshotFullKey(goalPhase, postCompleteGoalReport, iteration, goalSnapshot, 0, 0)
+}
+
+// BuildSystemPromptWithSnapshotFullKey is the Phase 12.39 variant that
+// threads iteration-cap dims into the prompt build opts. Used when the
+// cache is bypassed (non-Open phases) but the hint contributors still
+// need the cap dims for the dynamic header.
+func (cb *ContextBuilder) BuildSystemPromptWithSnapshotFullKey(goalPhase string, postCompleteGoalReport bool, iteration int, goalSnapshot string, iterationCap int, maxIterationsCap int) string {
 	return renderPromptPartsLegacy(cb.buildSystemPromptParts(systemPromptBuildOptions{
 		IncludeSkillCatalog:    true,
 		IncludeToolUseRule:     true,
@@ -287,6 +300,8 @@ func (cb *ContextBuilder) BuildSystemPromptWithSnapshot(goalPhase string, postCo
 		PostCompleteGoalReport: postCompleteGoalReport,
 		Iteration:              iteration,
 		GoalSnapshot:           goalSnapshot,
+		IterationCap:           iterationCap,
+		MaxIterationsCap:       maxIterationsCap,
 	}))
 }
 
@@ -344,6 +359,12 @@ type systemPromptBuildOptions struct {
 	// Threaded to PromptBuildRequest.MaxIterationsCap so the OPEN hint
 	// can warn about hitting the absolute ceiling. Zero = legacy caller.
 	MaxIterationsCap int
+
+	// GoalFinalized is true after a successful complete_goal tool call.
+	// Threaded to PromptBuildRequest.GoalFinalized so formatIterCompass
+	// can branch the FINAL hint header by cause (ceiling vs post-complete).
+	// Phase 12.39.
+	GoalFinalized bool
 }
 
 func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) []PromptPart {
@@ -490,7 +511,16 @@ Each part separated by the marker will be sent as an independent message.`,
 	// avoids retrying with malformed args when the cap hits.
 	// Phase 12.34: thread GoalSnapshot through so the LLM sees goal
 	// context (objective + success criteria) before the decision tree.
-	if hintPart := goalPhaseCheckpointHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase, Iteration: opts.Iteration, GoalSnapshot: opts.GoalSnapshot}); hintPart != nil {
+	// Phase 12.39: thread IterationCap + MaxIterationsCap so formatIterCompass
+	// can render the dynamic header (event-marker style). Without these,
+	// helper returns "" and the hint falls back to the legacy static template.
+	if hintPart := goalPhaseCheckpointHintContributor(PromptBuildRequest{
+		GoalPhase:        opts.GoalPhase,
+		Iteration:        opts.Iteration,
+		GoalSnapshot:     opts.GoalSnapshot,
+		IterationCap:     opts.IterationCap,
+		MaxIterationsCap: opts.MaxIterationsCap,
+	}); hintPart != nil {
 		add(*hintPart)
 	}
 
@@ -498,7 +528,16 @@ Each part separated by the marker will be sent as an independent message.`,
 	// loop has reached the absolute max_iterations_cap terminal phase.
 	// Tool allowlist = [complete_goal] only. The hint tells the LLM
 	// the only remaining tool is complete_goal with mandatory summary.
-	if hintPart := goalPhaseFinalHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase}); hintPart != nil {
+	// Phase 12.39: thread IterationCap + MaxIterationsCap + GoalFinalized
+	// through to formatIterCompass for the dynamic header (with branching
+	// per goalFinalized).
+	if hintPart := goalPhaseFinalHintContributor(PromptBuildRequest{
+		GoalPhase:        opts.GoalPhase,
+		Iteration:        opts.Iteration,
+		IterationCap:     opts.IterationCap,
+		MaxIterationsCap: opts.MaxIterationsCap,
+		GoalFinalized:    opts.GoalFinalized,
+	}); hintPart != nil {
 		add(*hintPart)
 	}
 
@@ -603,7 +642,7 @@ func (cb *ContextBuilder) BuildSystemPromptWithCacheFullKey(goalPhase string, po
 	// residual risk of stale-prompt leakage when an LLM transitions
 	// between goal phases mid-turn. Open phase remains cached.
 	if !isCacheableGoalPhase(goalPhase) {
-		return cb.BuildSystemPromptWithSnapshot(goalPhase, postCompleteGoalReport, iteration, goalSnapshot)
+		return cb.BuildSystemPromptWithSnapshotFullKey(goalPhase, postCompleteGoalReport, iteration, goalSnapshot, iterationCap, maxIterationsCap)
 	}
 
 	// Try read lock first — fast path when cache is valid

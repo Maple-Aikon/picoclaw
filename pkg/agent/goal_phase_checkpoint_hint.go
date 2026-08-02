@@ -34,6 +34,14 @@ import "fmt"
 // text with a single %d placeholder filled with the current iter number.
 // Do NOT hardcode an iter value — it confuses the LLM when the same
 // hint appears at later iters (Phase 12.16.1 cache-bypass lesson).
+//
+// Phase 12.39: replaced Phase 12.21's Decision tree (a) wording "The system
+// will extend the iteration cap by 1" with a lifecycle continue clause.
+// Root cause: main-turn-3 2026-08-01 — LLM saw "extend by 1" while config
+// actually extends by MaxIterations (5 live, 50 default), reasoned "+1 not
+// enough" → called complete_goal prematurely → archived goal. New wording
+// omits the extend amount entirely — only tells LLM "use goal_progress to
+// continue the lifecycle".
 const goalPhaseCheckpointHintTextTemplate = `Goal phase: CHECKPOINT (iter %d).
 
 You have hit the iteration cap for this turn. Only 2 tools are now available — all other tools are temporarily locked and will be rejected with a "not available in the current phase" error if you call them.
@@ -46,7 +54,7 @@ The 2 available tools:
 
 Decision tree:
 
-(a) If you have more tool work to do for this goal (e.g., need to read more files, run more commands, query APIs further), call goal_progress with remaining_steps listing the steps you still need to do. The system will extend the iteration cap by 1.
+(a) If you have more tool work to do for this goal (e.g., need to read more files, run more commands, query APIs further), call goal_progress with remaining_steps listing the steps you still need to do. Use goal_progress to continue the goal lifecycle when work remains.
 
 (b) If your work for this goal is done, call complete_goal with a concise summary of what was accomplished. The summary is recorded as the goal archive entry.
 
@@ -66,16 +74,28 @@ When goal_progress fires, your remaining_steps MUST contain at least 1 item — 
 // goalPhaseCheckpointHintContributor returns a Capability-layer / Tooling-slot
 // PromptPart when the request is in GoalPhaseCheckpoint phase. Returns nil
 // for any other phase (Open, Set, Final) so the hint does not bleed.
+//
+// Phase 12.39: header now comes from formatIterCompass (event-marker style)
+// instead of the Phase 12.21 static "Goal phase: CHECKPOINT (iter N)" line.
+// The Decision tree + multi-turn guidance below the header are unchanged.
+// Phase 12.34: prepends goal context (objective + success criteria)
+// so the LLM can decide goal_progress vs complete_goal based on actual
+// goal state. GoalSnapshot is the output of goal.RenderHeader for the
+// active goal — empty when no active goal, in which case the hint
+// fires unchanged (backward compat).
 func goalPhaseCheckpointHintContributor(req PromptBuildRequest) *PromptPart {
 	if req.GoalPhase != string(GoalPhaseCheckpoint) {
 		return nil
 	}
-	header := fmt.Sprintf(goalPhaseCheckpointHintTextTemplate, req.Iteration)
-	// Phase 12.34: prepend goal context (objective + success criteria)
-	// so the LLM can decide goal_progress vs complete_goal based on actual
-	// goal state. GoalSnapshot is the output of goal.RenderHeader for the
-	// active goal — empty when no active goal, in which case the hint
-	// fires unchanged (backward compat).
+	// Dynamic header from helper (Phase 12.39). Falls back to legacy
+	// template when MaxIterationsCap=0 (backward compat).
+	var header string
+	if compass := formatIterCompass(req, GoalPhaseCheckpoint, false); compass != "" {
+		header = compass + "\n"
+	} else {
+		// Legacy fallback: use the original template (with iter placeholder).
+		header = fmt.Sprintf(goalPhaseCheckpointHintTextTemplate, req.Iteration)
+	}
 	if req.GoalSnapshot != "" {
 		header = req.GoalSnapshot + "\n" + header
 	}
