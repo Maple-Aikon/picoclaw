@@ -210,7 +210,7 @@ const (
 	// the lifecycle gate, so always-append (like Set/Checkpoint/Final)
 	// would mislead. The hint directs the LLM to pivot to complete_goal
 	// rather than retry the blocked lifecycle tool.
-	ToolExecErrorOpenPhaseHint = " `set_goal` is LOCKED at OPEN phase (it only fires at the SET phase / iter 1). `goal_progress` is CHECKPOINT-only (it only fires at iter = max_tool_iterations). At OPEN, only `view_goal` and `complete_goal` are available for lifecycle operations. Pivot to `complete_goal` with a non-empty `summary` (1-500 chars) when the work is done, or call other non-lifecycle tools. Do NOT retry the same blocked lifecycle tool."
+	ToolExecErrorOpenPhaseHint = " `set_goal` is LOCKED at OPEN phase (it only fires at the SET phase / iter 1). `goal_progress` is CHECKPOINT-only (it only fires at a checkpoint). At OPEN, only `view_goal` and `complete_goal` are available for lifecycle operations. Pivot to `complete_goal` with a non-empty `summary` (1-500 chars) when the work is done, or call other non-lifecycle tools. Do NOT retry the same blocked lifecycle tool."
 )
 
 // phaseContextSuffix returns a short past-tense description of the goal

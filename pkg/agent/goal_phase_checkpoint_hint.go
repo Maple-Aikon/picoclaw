@@ -44,11 +44,11 @@ import "fmt"
 // continue the lifecycle".
 const goalPhaseCheckpointHintTextTemplate = `Goal phase: CHECKPOINT (iter %d).
 
-You have hit the iteration cap for this turn. Only 2 tools are now available — all other tools are temporarily locked and will be rejected with a "not available in the current phase" error if you call them.
+You are now at a CHECKPOINT in this turn. Only 2 tools are now available — all other tools are temporarily locked and will be rejected with a "not available in the current phase" error if you call them.
 
 The 2 available tools:
 
-1. goal_progress — self-evaluate progress and (optionally) extend the iteration cap to keep working on this goal for more iterations. Required fields: completed_steps[], blockers[], remaining_steps[] (at least 1), next_action, drift_detected.
+1. goal_progress — self-evaluate progress and (optionally) continue the goal lifecycle to keep working on this goal for more iterations. Required fields: completed_steps[], blockers[], remaining_steps[] (at least 1), next_action, drift_detected.
 
 2. complete_goal — finalize this goal now. Required field: summary (1-500 chars, written to the goal archive and used as the final user-facing report if your turn produces no other text).
 
@@ -65,7 +65,7 @@ Multi-turn goal guidance (Phase 12.34):
 - Do NOT use complete_goal as a pause mechanism for a multi-turn goal. calling complete_goal finalizes the goal — it does NOT pause it. The goal ends, and the next user turn starts a fresh goal.
 - "Waiting for next turn" is not a reason to call complete_goal with a summary like "Waiting for next turn". The next turn will be a NEW goal, not a continuation of this one. If you want to keep working on the same goal, use goal_progress.
 - Case (c) is only appropriate when you need an external signal (user input, approval, review) before continuing. It is NOT appropriate for "let me think about it" or "I'll pick this up later" — those are multi-turn goals that need goal_progress.
-- Multi-turn goal: when the goal's objective describes work that spans multiple turns (e.g. "upgrade uv and verify tests pass", "implement feature X with multiple sub-steps"), use goal_progress at every iteration cap. ONLY use complete_goal when the goal is genuinely finished.
+- Multi-turn goal: when the goal's objective describes work that spans multiple turns (e.g. "upgrade uv and verify tests pass", "implement feature X with multiple sub-steps"), use goal_progress at every checkpoint. ONLY use complete_goal when the goal is genuinely finished.
 
 DO NOT call any other tool (e.g. read_file, write_file, web_search, etc.) while in CHECKPOINT. They will be rejected and you will waste iterations.
 

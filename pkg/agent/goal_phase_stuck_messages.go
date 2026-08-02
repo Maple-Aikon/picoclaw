@@ -33,13 +33,13 @@ PicoClaw couldn't escape the Set phase — ` + "`set_goal`" + ` failed %d times 
 // GoalPhaseCheckpoint (iteration cap reached but not yet at ceiling).
 const GoalPhaseCheckpointStuckMessage = `⚠️ Goal-Checkpoint phase stuck
 
-PicoClaw couldn't proceed at the iteration cap — ` + "`goal_progress`" + ` failed %d times in a row.
+PicoClaw couldn't proceed at a checkpoint — ` + "`goal_progress`" + ` failed %d times in a row.
 
 **Last error**: %s
 
 **What this means**: the Checkpoint phase only allows ` + "`goal_progress`" + ` and ` + "`complete_goal`" + `. The model couldn't produce a valid continuation summary.
 
-**Try again**: send a new message. PicoClaw will either extend the cap with a fresh progress report, or finalize the goal via complete_goal.`
+**Try again**: send a new message. PicoClaw will either continue the goal with a fresh progress report, or finalize the goal via complete_goal.`
 
 // GoalPhaseFinalStuckMessage — complete_goal failed 2+ times in
 // GoalPhaseFinal (iteration >= maxIterationsCap).

@@ -38,7 +38,7 @@ package agent
 // after the dynamic header). Kept as a constant for backward compat and
 // readability — body content is constant across FINAL iterations.
 const goalPhaseFinalHintBodyText = `
-You have hit the absolute maximum iteration cap. Only 1 tool is now available — complete_goal. All other tools (including set_goal and goal_progress) are permanently locked for this turn.
+You are in the FINAL phase of this turn. Only 1 tool is now available — complete_goal. All other tools (including set_goal and goal_progress) are permanently locked for this turn.
 
 If you have not already completed this goal, call complete_goal now with a summary describing what was accomplished. The summary field is required (1-500 chars) and is the user-facing final report for this turn.
 

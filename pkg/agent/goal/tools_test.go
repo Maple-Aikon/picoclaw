@@ -1245,13 +1245,15 @@ func TestCompleteGoalTool_EmptySummary_StillAccepted(t *testing.T) {
 	}
 }
 
-// TestGoalProgressResultStatesCapExtension (Phase 12.38 §5 F52): the
-// goal_progress tool result must tell the LLM what happened to the
-// iteration cap (extended from X to Y). The previous "Logged progress
-// entry #N for session S." text contained NO cap info, so the LLM could
-// not tell whether its extend request was honored — leading to re-calls
-// at OPEN and the checkpoint whiplash pattern from main-turn-3.
-func TestGoalProgressResultStatesCapExtension(t *testing.T) {
+// TestGoalProgressResultNoCapClaim (Phase 12.40.1): the goal_progress tool
+// result must NOT tell the LLM anything about the iteration cap. Phase 12.38
+// §5 D added "Iteration cap was extended from X to Y" — but per anh Maple
+// spec (Phase 12.40, USER.md: hide extend mechanics entirely), cap claims
+// written into history poison later phases: after CHECKPOINT→OPEN the LLM
+// re-reads the stale number and reasons about caps instead of the goal
+// (main-turn-3 trace). The phase progression is already visible to the LLM
+// via the per-iter compass header ("Goal phase: open (iter N / total M)").
+func TestGoalProgressResultNoCapClaim(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("PICOCLAW_MEDIA_DIR", tmpDir)
 	sessionKey := "sk_v1_cap_ext_test"
@@ -1275,12 +1277,15 @@ func TestGoalProgressResultStatesCapExtension(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("goal_progress returned error: %s", res.ForLLM)
 	}
-	if !strings.Contains(res.ForLLM, "Iteration cap was extended from 5 to 15") {
-		t.Errorf("result must state cap extension line (Phase 12.38 §5), got: %s", res.ForLLM)
+	if strings.Contains(res.ForLLM, "Iteration cap") {
+		t.Errorf("result must NOT state cap extension (Phase 12.40.1 — cap claims in history poison later phases), got: %s", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "Logged progress entry") {
+		t.Errorf("result must still log the progress entry, got: %s", res.ForLLM)
 	}
 }
 
-func TestGoalProgressResultStatesCapAtCeiling(t *testing.T) {
+func TestGoalProgressResultNoCapClaimAtCeiling(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("PICOCLAW_MEDIA_DIR", tmpDir)
 	sessionKey := "sk_v1_cap_ceiling_test"
@@ -1303,11 +1308,11 @@ func TestGoalProgressResultStatesCapAtCeiling(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("goal_progress returned error: %s", res.ForLLM)
 	}
-	if strings.Contains(res.ForLLM, "Iteration cap was extended") {
-		t.Errorf("result must NOT claim extension when at ceiling, got: %s", res.ForLLM)
+	if strings.Contains(res.ForLLM, "Iteration cap") {
+		t.Errorf("result must NOT mention iteration cap at ceiling (Phase 12.40.1), got: %s", res.ForLLM)
 	}
-	if !strings.Contains(res.ForLLM, "at the absolute ceiling") {
-		t.Errorf("result must mention ceiling state, got: %s", res.ForLLM)
+	if !strings.Contains(res.ForLLM, "No further extension is possible this turn") {
+		t.Errorf("result must keep the no-more-extension notice (prevents re-attempt), got: %s", res.ForLLM)
 	}
 }
 

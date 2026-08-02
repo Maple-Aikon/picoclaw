@@ -430,18 +430,18 @@ func (t *GoalProgressTool) Description() string {
 	return `Append a progress entry to the current session's goal log. Each entry is timestamped.
 
 When to use:
-- When more concrete work remains for THIS turn (e.g., running tests, applying a follow-up commit, drafting the next iteration). The remaining_steps list extends the turn's iteration cap so the agent can keep working through them.
+- When more concrete work remains for THIS turn (e.g., running tests, applying a follow-up commit, drafting the next iteration). The remaining_steps list lets the agent keep working through them within this turn.
 
 When NOT to use:
 - When your work is done and the user has no pending decision — call complete_goal instead.
 - When you need to wait for user approval, decision, or review before continuing — call complete_goal with a summary describing the wait state. complete_goal accepts any 1-500 char summary; "Waiting for Maple to review X" is a valid summary even when goal work is not yet complete.
 - Calling goal_progress with empty remaining_steps is rejected to prevent "log then complete_goal at next iter" cycles.
 
-Required field: remaining_steps MUST be non-empty (>= 1 entry). The runtime extends the iteration cap only when this field is populated.
+Required field: remaining_steps MUST be non-empty (>= 1 entry). The runtime only grants more iterations when this field is populated.
 
 - completed_steps: things finished this turn
 - blockers: anything blocking forward progress
-- remaining_steps: REQUIRED. Explicit list of what's still pending — extends the iteration cap so the agent can continue within this turn
+- remaining_steps: REQUIRED. Explicit list of what's still pending — lets the agent continue within this turn
 - drift_detected: set true when the work is no longer aligned with the original objective
 - next_action: one sentence describing the next concrete step (MUST be present if drift_detected is true)`
 }
@@ -547,39 +547,22 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 	summary := fmt.Sprintf("Logged progress entry #%d for session %s.\n\n%s",
 		idx, shortSessionKey(sessionKey), lastEntryRendered(g.Progress[len(g.Progress)-1]))
 
-	// Phase 12.38 §5 D: append cap-extension line to the tool result so
-	// the LLM can see what happened to the iteration cap in its history.
-	// Without this, the LLM had no idea whether its extend request was
-	// honored — leading to "checkpoint whiplash" (re-calling
-	// goal_progress at OPEN, blocked by the lifecycle gate, see
-	// main-turn-3 trace 2026-07-31).
-	//
-	// Three states to surface:
-	//  - cap was extended (staged, will commit at end-of-iter via
-	//    FlushPendingExtend): "Iteration cap was extended from X to Y."
-	//    Y is the projected new cap after clamping at MaxIterationsCap.
-	//  - cap was NOT extended because at ceiling (CanExtend=false):
-	//    "Iteration cap is at the absolute ceiling (M). No extension
-	//    possible — proceed with remaining iterations."
-	//  - cap was NOT extended because remaining_steps was empty:
-	//    No cap line — just the logged-progress summary (the LLM didn't
-	//    request an extension).
+	// Phase 12.38 §5 D appended cap-extension lines to the tool result so
+	// the LLM could see what happened to the iteration cap in its history.
+	// Phase 12.40.1 (anh Maple spec, USER.md: hide extend mechanics
+	// entirely): REMOVED — any cap claim written into history goes stale
+	// after CHECKPOINT→OPEN and misleads the LLM (main-turn-3 trace
+	// 2026-08-02: stale "cap had been reached" → premature complete_goal).
+	// Phase progression is visible via the per-iter compass header
+	// ("Goal phase: open (iter N / total M)"), so the result needs no
+	// cap numbers. The only remaining notice is a cap-free "no further
+	// extension" line when the ceiling is hit, so the LLM does not
+	// re-attempt goal_progress endlessly.
 	if ext := IterationExtenderFromContext(ctx); ext != nil && len(remaining) > 0 {
-		if ext.CanExtendIterationCap() {
-			prevCap := ext.IterationCap()
-			amount := ext.MaxIterationsPerCheckpoint()
-			if amount <= 0 {
-				amount = ext.IterationCap()
-			}
-			projected := prevCap + amount
-			if projected > ext.MaxIterationsCap() {
-				projected = ext.MaxIterationsCap()
-			}
-			summary += fmt.Sprintf("\nIteration cap was extended from %d to %d.", prevCap, projected)
-		} else {
-			// CanExtend=false: either at ceiling or otherwise capped.
-			// Surface this explicitly so the LLM doesn't re-attempt extend.
-			summary += fmt.Sprintf("\nIteration cap is at the absolute ceiling (%d). No extension possible — proceed with remaining iterations.", ext.IterationCap())
+		if !ext.CanExtendIterationCap() {
+			// CanExtend=false: at ceiling or otherwise capped. Keep a
+			// cap-free notice so the LLM doesn't re-attempt extend.
+			summary += "\nNo further extension is possible this turn."
 		}
 	}
 
