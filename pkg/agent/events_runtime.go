@@ -13,6 +13,16 @@ func (al *AgentLoop) publishRuntimeEvent(evt runtimeevents.Event) {
 	al.runtimeEvents.PublishNonBlocking(evt)
 }
 
+// publishRuntimeEventResult publishes and returns the delivery result.
+// Used by the recall observability path (Phase 12.45) to detect dropped
+// events when subscriber buffers are full (A-F05/B-F05).
+func (al *AgentLoop) publishRuntimeEventResult(evt runtimeevents.Event) runtimeevents.PublishResult {
+	if al == nil || al.runtimeEvents == nil {
+		return runtimeevents.PublishResult{Closed: true}
+	}
+	return al.runtimeEvents.PublishNonBlocking(evt)
+}
+
 // PublishToolBreakerTripped implements tools.ToolEventPublisher. Bridges the
 // tools-package breaker event into the agent runtime event bus so the event
 // surfaces in observability dashboards without coupling pkg/tools to the

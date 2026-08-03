@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -389,6 +390,9 @@ func TestRecallLLM_RetryLLMForBlockedTool_Smoke(t *testing.T) {
 // Helper: build a valid ts+exec for RecallLLM direct tests
 func setupRecallTestTurnState(t *testing.T, al *AgentLoop, pipeline *Pipeline) (*turnState, *turnExecution) {
 	t.Helper()
+	// Phase 12.45 F1: every RecallLLM test writes prompt blocks to a temp
+	// file, never the production prompt_history.log.
+	t.Setenv("PICOCLAW_HOOK_LOG_FILE", filepath.Join(t.TempDir(), "prompt.log"))
 	agent := al.registry.GetDefaultAgent()
 	if agent == nil {
 		t.Fatal("expected default agent")

@@ -49,6 +49,13 @@ const (
 	// multi-iter turns when the existing structured gateway events are
 	// insufficient. Default: off (production hot-path cost is zero).
 	EnvAgentDebug = "PICOCLAW_AGENT_DEBUG"
+
+	// EnvReplayPromptLog opts out of the [RECALL] prompt-history blocks
+	// written by the Go-side recall writer (Phase 12.45). Default: ON
+	// (parity with the JS hook which always logs prompt content). Set to
+	// "0" / "false" to disable recall block writing in deployments that
+	// cannot store user content.
+	EnvReplayPromptLog = "PICOCLAW_REPLAY_PROMPT_LOG"
 )
 
 func GetHome() string {

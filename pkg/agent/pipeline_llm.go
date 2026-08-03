@@ -1438,8 +1438,53 @@ func (p *Pipeline) RecallLLM(
 			return nil, fmt.Errorf("hard abort requested before RecallLLM attempt")
 		}
 
+		// Phase 12.45: emit request event + agent-debug BEFORE the call.
+		// Order invariant (A-F07): hard-abort check → emit request → call
+		// → emit response/retry — never emit a request that cannot fire.
+		p.emitReplayRuntimeEvent(
+			runtimeevents.KindAgentLLMRequest,
+			ts.eventMeta("runTurn", replayTracePath),
+			LLMRequestPayload{
+				Model:         exec.llmModel,
+				MessagesCount: len(exec.callMessages),
+				ToolsCount:    len(exec.providerToolDefs),
+				MaxTokens:     ts.agent.MaxTokens,
+				Temperature:   ts.agent.Temperature,
+			},
+		)
+		if IsAgentDebugEnabled() {
+			AgentDebugLLMCall(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), len(exec.providerToolDefs))
+		}
+
 		resp, callErr := p.callLLMCore(ctx, turnCtx, ts, exec, exec.callMessages, exec.providerToolDefs, iteration)
 		if callErr == nil {
+			// Phase 12.45: response event + agent-debug + prompt block.
+			p.emitReplayRuntimeEvent(
+				runtimeevents.KindAgentLLMResponse,
+				ts.eventMeta("runTurn", replayTracePath),
+				LLMResponsePayload{
+					ContentLen:   len(resp.Content),
+					ToolCalls:    len(resp.ToolCalls),
+					HasReasoning: resp.Reasoning != "" || resp.ReasoningContent != "" || len(resp.ReasoningDetails) > 0,
+				},
+			)
+			if IsAgentDebugEnabled() {
+				toolSummaries := make([]AgentDebugToolCall, 0)
+				for _, tc := range resp.ToolCalls {
+					toolSummaries = append(toolSummaries, AgentDebugToolCall{
+						Name:        tc.Name,
+						ArgsSummary: summarizeArgs(tc.Arguments),
+					})
+				}
+				AgentDebugLLMResponse(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), toolSummaries)
+			}
+			logReplayPromptBlock(replayBlockInput{
+				turnID:     ts.turnID,
+				helperName: helperName,
+				iteration:  iteration,
+				messages:   exec.callMessages,
+				resp:       resp,
+			})
 			logger.DebugCF("agent", "agent.recall_llm", map[string]any{
 				"helper":      helperName,
 				"transient":   transientAttempt,
@@ -1452,6 +1497,14 @@ func (p *Pipeline) RecallLLM(
 		// Don't retry context errors — those go through ContextManager.Compact
 		retryReason, isTransient := transientLLMRetryReason(callErr)
 		if !isTransient {
+			// A-F14: exactly one [RECALL FAILED] block per failed recall.
+			logReplayPromptBlock(replayBlockInput{
+				turnID:     ts.turnID,
+				helperName: helperName,
+				iteration:  iteration,
+				messages:   exec.callMessages,
+				err:        callErr,
+			})
 			logger.DebugCF("agent", "agent.recall_llm", map[string]any{
 				"helper":      helperName,
 				"transient":   transientAttempt,
@@ -1464,6 +1517,17 @@ func (p *Pipeline) RecallLLM(
 		}
 
 		// Transient — log retry intent
+		p.emitReplayRuntimeEvent(
+			runtimeevents.KindAgentLLMRetry,
+			ts.eventMeta("runTurn", replayTracePath),
+			LLMRetryPayload{
+				Attempt:    transientAttempt + 1,
+				MaxRetries: maxTransientRetries + 1,
+				Reason:     retryReason,
+				Error:      callErr.Error(),
+				Backoff:    backoffSecs * time.Second,
+			},
+		)
 		logger.DebugCF("agent", "agent.recall_llm", map[string]any{
 			"helper":    helperName,
 			"transient": transientAttempt,
@@ -1478,6 +1542,17 @@ func (p *Pipeline) RecallLLM(
 				return resp, sleepErr
 			}
 		}
+	}
+
+	// All transient attempts exhausted — A-F14: exactly one failed block.
+	if lastErr != nil {
+		logReplayPromptBlock(replayBlockInput{
+			turnID:     ts.turnID,
+			helperName: helperName,
+			iteration:  iteration,
+			messages:   exec.callMessages,
+			err:        lastErr,
+		})
 	}
 
 	return nil, lastErr

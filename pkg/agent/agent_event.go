@@ -31,6 +31,12 @@ func (ts turnEventScope) meta(iteration int, source, tracePath string) HookMeta 
 }
 
 func (al *AgentLoop) emitEvent(kind runtimeevents.Kind, meta HookMeta, payload any) {
+	al.publishRuntimeEvent(al.buildRuntimeEvent(kind, meta, payload))
+}
+
+// buildRuntimeEvent constructs a runtime event from kind + hook meta +
+// payload, mirroring the main-path correlation/scope/attrs wiring.
+func (al *AgentLoop) buildRuntimeEvent(kind runtimeevents.Kind, meta HookMeta, payload any) runtimeevents.Event {
 	clonedMeta := cloneHookMeta(meta)
 	eventCtx := cloneTurnContext(clonedMeta.turnContext)
 	evt := runtimeevents.Event{
@@ -44,7 +50,7 @@ func (al *AgentLoop) emitEvent(kind runtimeevents.Kind, meta HookMeta, payload a
 	}
 
 	if al == nil {
-		return
+		return evt
 	}
 
 	deliveredToEvolution := false
@@ -60,7 +66,7 @@ func (al *AgentLoop) emitEvent(kind runtimeevents.Kind, meta HookMeta, payload a
 		}
 		evt.Attrs[evolutionDirectDeliveryAttr] = true
 	}
-	al.publishRuntimeEvent(evt)
+	return evt
 }
 
 func (al *AgentLoop) currentEvolutionBridge() *evolutionBridge {
