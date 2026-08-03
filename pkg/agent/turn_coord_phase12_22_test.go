@@ -35,6 +35,20 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
+func toolNamesOf(r *providers.LLMResponse) string {
+	if r == nil {
+		return "nil"
+	}
+	if len(r.ToolCalls) == 0 {
+		return "text"
+	}
+	names := make([]string, 0, len(r.ToolCalls))
+	for _, tc := range r.ToolCalls {
+		names = append(names, tc.Name)
+	}
+	return strings.Join(names, ",")
+}
+
 // restrictedPhaseToolBlockProvider simulates LLM at a restricted phase that
 // emits blocked tools then a corrected tool. Phase 12.22 expects:
 //   - attempt 0 (CallLLM): emits blocked tools → triggers tool-exec recovery

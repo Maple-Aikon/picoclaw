@@ -78,13 +78,6 @@ func (p *Pipeline) retryExecuteToolChain(
 	allowedTools []string,
 	phase string,
 ) (Control, error) {
-	retryExecuteToolChainCallCount++
-	logger.InfoCF("agent", "P1242 debug: retryExecuteToolChain entered", map[string]any{
-		"iteration": iteration,
-		"hint":      recoveryHint,
-		"allowed":   allowedTools,
-		"phase":     phase,
-	})
 
 	// Step 5 (Task 5 — this commit): wrap Steps 1-4 in
 	// BoundedRetry(MaxAttempts=ToolExecErrorRetryCap=3) so transient
@@ -215,10 +208,6 @@ func (p *Pipeline) retryExecuteToolChainOnce(
 		"retryExecuteToolChain",
 		recoveryHint, allowedTools,
 		func(firstTool string) Control {
-			logger.InfoCF("agent", "P1242 debug: onWrongTool arm", map[string]any{
-				"first_tool": firstTool,
-				"allowed":    allowedTools,
-			})
 			if firstTool == "" {
 				// Text-only or malformed tool call → success (Path 2
 				// arm i, :1476-1482). Caller skips Step 3/4 via the
@@ -274,13 +263,6 @@ func (p *Pipeline) retryExecuteToolChainOnce(
 	// goal). C9b: clear pendingRecoveryMessage so BoundedRetry exits
 	// (RetryDecisionDone) instead of retrying.
 	if len(exec.normalizedToolCalls) == 0 {
-		logger.InfoCF("agent", "P1242 debug: G4 guard hit", map[string]any{
-			"helper":      "retryExecuteToolChainOnce",
-			"resp_tools":  len(exec.response.ToolCalls),
-			"normalized":  len(exec.normalizedToolCalls),
-			"first_tool":  func() string { if len(exec.response.ToolCalls) > 0 { return exec.response.ToolCalls[0].Name }; return "" }(),
-			"pending_msg": ts.pendingRecoveryMessage,
-		})
 		ts.pendingRecoveryMessage = ""
 		return ControlToolLoop, nil
 	}
@@ -424,13 +406,6 @@ func (p *Pipeline) recallAndCheckTool(
 	// design contract. Caller MUST assign the returned value so downstream
 	// Step 2/Step 3 logic can read the tool call set.
 	exec.response = resp
-	logger.InfoCF("agent", "P1242 debug: recall got resp", map[string]any{
-		"helper":       helperName,
-		"tool_calls":   len(resp.ToolCalls),
-		"content_len":  len(resp.Content),
-		"finish":       resp.FinishReason,
-		"first_tool":   func() string { if len(resp.ToolCalls) > 0 { return resp.ToolCalls[0].Name }; return "" }(),
-	})
 
 	// Phase 12.28.1 fix: also populate exec.normalizedToolCalls.
 	// Pipeline.ExecuteTools (pkg/agent/pipeline_execute.go:121) iterates

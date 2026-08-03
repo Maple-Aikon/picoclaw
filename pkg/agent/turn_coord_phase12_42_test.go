@@ -7,7 +7,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -47,19 +46,16 @@ func (f *phase1242AbortExecutor) ExecuteTools(
 	ts *turnState, exec *turnExecution, iteration int,
 ) ToolControl {
 	f.calls++
-	f.log = append(f.log, fmt.Sprintf("call%d:iter=%d normalized=%d msgs=%d", f.calls, iteration, len(exec.normalizedToolCalls), len(exec.messages)))
-	if f.calls == 1 {
-		// Outer loop: the LLM's read_file is gate-blocked at Checkpoint —
-		// mirror the production gate ErrorResult so
-		// checkToolExecErrorRecovery classifies it as recoverable.
-		exec.messages = append(exec.messages, providers.Message{
-			Role:       "tool",
-			ToolCallID: "read_file",
-			Content:    `tool "read_file" is not available in the current phase (allowed tools: [complete_goal goal_progress])`,
-		})
-		return ToolControlContinue
-	}
-	// Step 3 inside retryExecuteToolChainOnce: terminal break with flag.
+	// call1 fires inside the retry chain Step 3 (outer loop uses the
+	// real Pipeline.ExecuteTools which is bypassed by SetToolExecutor).
+	// Outer loop's read_file gets gate-blocked by the production gate
+	// (real Executor) — checkToolExecErrorRecovery routes to
+	// retryExecuteToolChain. Attempt 0 of the chain picks the valid
+	// tool (e.g. complete_goal); Step 3 executes it. To exercise the
+	// turn_coord ControlBreak flag precedence (G10/C7), Step 3 fires
+	// setFlag (hard-abort / hook-abort / all-responses-handled) and
+	// returns ToolControlBreak — retry chain returns ControlBreak,
+	// outer switch reads the flag, abortTurn produces TurnEndStatusAborted.
 	f.setFlag(exec)
 	return ToolControlBreak
 }
@@ -137,14 +133,14 @@ func phase1242WireSetup(t *testing.T, setFlag func(exec *turnExecution)) (*Agent
 // → turn_coord case ControlBreak must delegate to abortTurn
 // (TurnEndStatusAborted, no fake archive error).
 func TestP1242_W11_HardAbortInRetryPathEndsAborted(t *testing.T) {
-	al, ts, pipeline, provider := phase1242WireSetup(t, func(exec *turnExecution) {
+	al, ts, pipeline, _ := phase1242WireSetup(t, func(exec *turnExecution) {
 		exec.abortedByHardAbort = true
 	})
 	fake := pipeline.toolExecLazy().(*phase1242AbortExecutor)
 
 	result, err := al.runTurn(context.Background(), ts, pipeline)
-	t.Logf("W11 debug: err=%v status=%v fakeCalls=%d archive=%v pending=%q phase=%s stuck=%q calls=%v fakeLog=%v",
-		err, result.status, fake.calls, ts.goalArchiveRequested, ts.pendingRecoveryMessage, ts.currentGoalPhase(), ts.lastPhaseStuckError, provider.log, fake.log)
+	t.Logf("W11 debug: err=%v status=%v fakeCalls=%d archive=%v",
+		err, result.status, fake.calls, ts.goalArchiveRequested)
 	if err != nil {
 		t.Fatalf("W11: runTurn returned error (should be clean abort), got %v", err)
 	}
@@ -170,18 +166,5 @@ func TestP1242_W12_AllResponsesHandledInRetryPathFinalizes(t *testing.T) {
 }
 func (p *restrictedPhaseToolBlockProvider) idx() int {
 	return p.mu.idx
-}
-func toolNamesOf(r *providers.LLMResponse) string {
-	if r == nil {
-		return "nil"
-	}
-	if len(r.ToolCalls) == 0 {
-		return "text"
-	}
-	names := make([]string, 0, len(r.ToolCalls))
-	for _, tc := range r.ToolCalls {
-		names = append(names, tc.Name)
-	}
-	return strings.Join(names, ",")
 }
 
