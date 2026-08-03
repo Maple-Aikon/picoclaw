@@ -89,3 +89,60 @@ func TestGoalCompleteReportHint_StructuredFiveSections_Phase12_20_1(t *testing.T
 		}
 	}
 }
+
+// Phase 12.45.1 — Wire test: the hint must actually SURVIVE stack.Add
+// (ValidatePart) and reach the rendered prompt parts. Phase 12.45 live
+// trace (main-turn-2, 2026-08-03 23:16) found the contributor was called
+// but its part was rejected with "prompt part ... has empty source id" —
+// goalCompleteReportHintContributor never set Source, so the hint was
+// silently skipped from every prompt since Phase 12.7 (2026-07-24).
+// Unit tests above assert contributor output only — they cannot catch
+// a ValidatePart rejection. Lesson: Phase 12.32 "code grep != rendered
+// prompt" applies to stack.Add survival too.
+func TestGoalCompleteReportHint_WirePath_ReachesPromptParts(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
+		IncludeToolUseRule:     true,
+		GoalPhase:              string(GoalPhaseFinal),
+		PostCompleteGoalReport: true,
+	})
+	found := false
+	for _, p := range parts {
+		if p.Source.ID == PromptSourceGoalCompleteReportHint {
+			found = true
+			if !strings.Contains(p.Content, "LAST CHANCE") {
+				t.Errorf("wired hint missing 'LAST CHANCE' marker; got:\n%s", p.Content)
+			}
+			if !strings.Contains(p.Content, "TASK RECAP") {
+				t.Errorf("wired hint missing 5-section template; got:\n%s", p.Content)
+			}
+			break
+		}
+	}
+	if !found {
+		ids := make([]string, 0, len(parts))
+		for _, p := range parts {
+			ids = append(ids, string(p.Source.ID))
+		}
+		t.Fatalf("expected hint part %q in prompt parts (rejected by ValidatePart?); got parts: %v",
+			PromptSourceGoalCompleteReportHint, ids)
+	}
+}
+
+// Wire test companion: hint must NOT reach parts when the post-report
+// flag is off (no bleed into normal Final-phase prompts).
+func TestGoalCompleteReportHint_WirePath_SuppressedWithoutFlag(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+
+	parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
+		IncludeToolUseRule:     true,
+		GoalPhase:              string(GoalPhaseFinal),
+		PostCompleteGoalReport: false,
+	})
+	for _, p := range parts {
+		if p.Source.ID == PromptSourceGoalCompleteReportHint {
+			t.Fatalf("hint part must not appear when PostCompleteGoalReport=false")
+		}
+	}
+}

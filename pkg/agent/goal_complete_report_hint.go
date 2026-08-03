@@ -54,6 +54,7 @@ func goalCompleteReportHintContributor(req PromptBuildRequest) *PromptPart {
 		ID:      string(PromptSourceGoalCompleteReportHint),
 		Layer:   PromptLayerCapability,
 		Slot:    PromptSlotTooling,
+		Source:  PromptSource{ID: PromptSourceGoalCompleteReportHint, Name: "goal_complete_report_hint"},
 		Content: goalCompleteReportHintText,
 	}
 }
