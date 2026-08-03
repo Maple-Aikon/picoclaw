@@ -1,0 +1,27 @@
+package agent
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// TestMain isolates all prompt-history writes from production logs.
+//
+// Phase 12.45 F1: the Go-side recall writer (logReplayPromptBlock) targets
+// the same prompt_history.log as the JS hook. Any agent test that triggers
+// a RecallLLM call (recovery paths, wire tests) would otherwise append
+// [RECALL] blocks to the REAL production log. Redirecting at TestMain level
+// covers every test — including fixtures that don't go through
+// setupRecallTestTurnState (e.g. phase12_42 wire setups).
+func TestMain(m *testing.M) {
+	tmpDir, err := os.MkdirTemp("", "picoclaw-agent-test-*")
+	if err != nil {
+		panic("TestMain: MkdirTemp: " + err.Error())
+	}
+	defer os.RemoveAll(tmpDir)
+	os.Setenv("PICOCLAW_HOOK_LOG_FILE", filepath.Join(tmpDir, "prompt.log"))
+
+	code := m.Run()
+	os.Exit(code)
+}
