@@ -425,12 +425,15 @@ func TestPhase1241_RetryLLMForBlockedTool_HistoryComplete(t *testing.T) {
 	defer cleanup()
 
 	p := NewPipeline(al)
+	fake := &fakeExecutor{returnControl: ToolControlContinue}
+	p.SetToolExecutor(fake)
 	ts, exec := setupRetryChainTestTurnState(t, al, p)
 	al.SetGoalPhaseForTest(string(GoalPhaseCheckpoint))
 
-	ctrl, err := p.retryLLMForBlockedTool(
+	ctrl, err := p.retryExecuteToolChain(
 		context.Background(), context.Background(), ts, exec, 2,
-		"RECOVERY_HINT: pick goal_progress or complete_goal")
+		"RECOVERY_HINT: pick goal_progress or complete_goal",
+		[]string{"goal_progress", "complete_goal"}, "checkpoint")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}

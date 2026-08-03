@@ -146,21 +146,25 @@ func TestRetryExecuteToolChain_T9_1_RetryLLMForBlockedTool_ExecutesToolBeforeCap
 		t.Fatalf("setup: goalArchiveRequested should be false")
 	}
 
-	// Drive retryLLMForBlockedTool. Path 2 expects:
+	// Drive retryExecuteToolChain (Phase 12.42 Path 4 wiring — Path 2
+	// retryLLMForBlockedTool was merged and deleted). Path 4 expects:
 	//   attempt 0: blocked (read_file, not in allowlist) → re-prompt
-	//   attempt 1: goal_progress → in allowlist → RetryDecisionDone
-	ctrl, err := p.retryLLMForBlockedTool(
+	//   attempt 1: goal_progress → in allowlist → Step 3 executes via fake
+	fake := &fakeExecutor{returnControl: ToolControlContinue}
+	p.SetToolExecutor(fake)
+	ctrl, err := p.retryExecuteToolChain(
 		context.Background(), context.Background(), ts, exec, 2,
-		"RECOVERY_HINT: pick goal_progress or complete_goal")
+		"RECOVERY_HINT: pick goal_progress or complete_goal",
+		[]string{"goal_progress", "complete_goal"}, "checkpoint")
 	if err != nil {
-		t.Fatalf("retryLLMForBlockedTool: %v", err)
+		t.Fatalf("retryExecuteToolChain: %v", err)
 	}
 	if ctrl != ControlToolLoop {
 		t.Fatalf("expected ControlToolLoop (LLM picked goal_progress on retry), got %v", ctrl)
 	}
-	// Path 2 returns ControlToolLoop → caller (turn_coord.go:480) calls
-	// ExecuteTools. Verify exec.response is set + carries goal_progress so
-	// the caller's ExecuteTools call would dispatch it.
+	// Path 4 returns ControlToolLoop → the helper already executed the
+	// tool (Step 3). Verify exec.response is set + carries goal_progress
+	// so the retry succeeded with the right tool.
 	if exec.response == nil {
 		t.Fatal("exec.response must be set (Phase 12.26 contract)")
 	}
@@ -200,13 +204,15 @@ func TestRetryExecuteToolChain_T9_2_RestrictedPhase_ExhaustionArchivesWithPhaseS
 			ts.lastPhaseStuckError)
 	}
 
-	// Drive retryLLMForBlockedTool to exhaustion. read_file is not in
-	// Checkpoint allowlist, so all 3 attempts fail → OnExhausted fires.
-	ctrl, err := p.retryLLMForBlockedTool(
+	// Drive retryExecuteToolChain (Phase 12.42 Path 4 wiring) to exhaustion.
+	// read_file is not in the Checkpoint allowlist, so all 3 attempts fail
+	// → OnExhausted fires (C5 stamps phase-stuck reason).
+	ctrl, err := p.retryExecuteToolChain(
 		context.Background(), context.Background(), ts, exec, 2,
-		"RECOVERY_HINT: pick goal_progress or complete_goal")
+		"RECOVERY_HINT: pick goal_progress or complete_goal",
+		[]string{"goal_progress", "complete_goal"}, "checkpoint")
 	if err != nil {
-		t.Fatalf("retryLLMForBlockedTool: %v", err)
+		t.Fatalf("retryExecuteToolChain: %v", err)
 	}
 	// Exhausted path returns ControlBreak.
 	if ctrl != ControlBreak {

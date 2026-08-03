@@ -26,6 +26,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,7 @@ type restrictedPhaseToolBlockProvider struct {
 	mu        struct {
 		idx int
 	}
+	log []string
 }
 
 func (p *restrictedPhaseToolBlockProvider) Chat(
@@ -55,8 +57,10 @@ func (p *restrictedPhaseToolBlockProvider) Chat(
 	idx := p.mu.idx
 	p.mu.idx++
 	if idx < len(p.responses) && p.responses[idx] != nil {
+		p.log = append(p.log, fmt.Sprintf("%d:%s", idx, toolNamesOf(p.responses[idx])))
 		return p.responses[idx], nil
 	}
+	p.log = append(p.log, fmt.Sprintf("%d:default-text", idx))
 	return &providers.LLMResponse{Content: "ok", FinishReason: "stop"}, nil
 }
 
@@ -212,19 +216,25 @@ func TestPhase12_22_CheckpointToolBlock_SameIterRetry(t *testing.T) {
 	// Seed callMessages (handleGoalRecovery re-uses them on attempt > 0).
 	exec.callMessages = append([]providers.Message{}, exec.messages...)
 
-	// Now exercise the same-iter BoundedRetry wrap directly. retryLLMForBlockedTool
-	// will re-run callLLMCore (mock provider attempt 1 emits complete_goal)
-	// without bumping the iteration counter.
-	ctrl, err := pipeline.retryLLMForBlockedTool(
+	// Now exercise the same-iter BoundedRetry wrap directly.
+	// retryExecuteToolChain (Phase 12.42 Path 4 — Path 2 merged/deleted)
+	// will re-run callLLMCore (mock provider attempt 1 emits
+	// complete_goal) without bumping the iteration counter, then execute
+	// the tool via the fake executor (Step 3).
+	fake := &fakeExecutor{returnControl: ToolControlContinue}
+	pipeline.SetToolExecutor(fake)
+	ctrl, err := pipeline.retryExecuteToolChain(
 		context.Background(),
 		context.Background(),
 		ts,
 		exec,
 		startIter,
 		msg,
+		[]string{"complete_goal", "goal_progress"},
+		"checkpoint",
 	)
 	if err != nil {
-		t.Fatalf("retryLLMForBlockedTool: %v", err)
+		t.Fatalf("retryExecuteToolChain: %v", err)
 	}
 
 	// On retry success, control returns ControlContinue (loop continues)
@@ -323,15 +333,17 @@ func TestPhase12_22_CheckpointToolBlock_Exhaustion_ArchivesWithPhaseStuckReason(
 
 	// OnExhausted path: counter at cap → archive with phase-stuck reason.
 	// Phase 12.22 wire (turn_coord.go:370-400) sets
-	// ts.goalArchiveRequested=true when retryLLMForBlockedTool returns
+	// ts.goalArchiveRequested=true when retryExecuteToolChain returns
 	// ControlBreak after exhausting BoundedRetry.
-	ctrl, _ := pipeline.retryLLMForBlockedTool(
+	ctrl, _ := pipeline.retryExecuteToolChain(
 		context.Background(),
 		context.Background(),
 		ts,
 		exec,
 		startIter,
 		`tool "read_file" is not available in the current phase (allowed tools: [complete_goal goal_progress])`,
+		[]string{"complete_goal", "goal_progress"},
+		"checkpoint",
 	)
 	if ctrl != ControlBreak {
 		t.Errorf("expected ControlBreak after BoundedRetry exhausted, got %v", ctrl)
@@ -515,13 +527,15 @@ func TestPhase12_22_SingleIterCheckpoint_LowCap_ReachesArchive(t *testing.T) {
 	// Phase 12.22 wire: when counter is exhausted, handleGoalRecovery
 	// returns ControlBreak after stamping goalArchiveRequested=true with
 	// the matching phase-stuck abort reason.
-	ctrl, _ := pipeline.retryLLMForBlockedTool(
+	ctrl, _ := pipeline.retryExecuteToolChain(
 		context.Background(),
 		context.Background(),
 		ts,
 		exec,
 		startIter,
 		`tool "read_file" is not available in the current phase (allowed tools: [complete_goal goal_progress])`,
+		[]string{"complete_goal", "goal_progress"},
+		"checkpoint",
 	)
 	if ctrl != ControlBreak {
 		t.Errorf("Phase 12.22 wire failed: expected ControlBreak (archive-after-exhaustion), got %v", ctrl)

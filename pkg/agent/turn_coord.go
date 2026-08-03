@@ -485,16 +485,16 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 								continue
 							}
 							// Same-iter BoundedRetry wrap. The blocked tool
-							// call produced an error result — strip the
-							// blocked tool call from the LLM's last
-							// assistant message and re-call LLM with the
-							// recovery hint injected. BoundedRetry gives up
-							// to ToolExecErrorRetryCap=3 attempts; on
-							// exhaustion, computePhaseStuckAbortReason
-							// fires and the goal is archived with the
-							// matching phase-stuck reason.
-							ctrl, retryErr := pipeline.retryLLMForBlockedTool(
-								ctx, turnCtx, ts, exec, iteration, archiveMsg)
+							// call produced an error result — re-call LLM with
+							// the recovery hint injected and execute the
+							// re-picked tool INSIDE the helper (Phase 12.42
+							// Path 4 wiring). BoundedRetry gives up to
+							// ToolExecErrorRetryCap=3 attempts; on exhaustion
+							// the helper archives with the matching
+							// phase-stuck reason (C5).
+							resolvedRetry := resolveAgentToolAllowlistWithPhase(ts.agent.Definition, currentPhase)
+							ctrl, retryErr := pipeline.retryExecuteToolChain(
+								ctx, turnCtx, ts, exec, iteration, archiveMsg, resolvedRetry, string(currentPhase))
 							if retryErr != nil {
 								logger.WarnCF("agent", "Goal recovery handler errored at restricted phase",
 									map[string]any{
@@ -506,8 +506,32 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 							}
 							switch ctrl {
 							case ControlBreak:
+								// Phase 12.42 (G10/C7): ControlBreak from the
+								// helper is NOT always archive-exhaustion —
+								// Step 3 can break early with a clean terminal
+								// cause (hard abort / hook abort / all
+								// responses handled). Mirror the outer
+								// ToolControlBreak flag precedence here so a
+								// clean abort isn't misreported as a fake
+								// "archive after exhaustion" error.
+								if exec.abortedByHardAbort {
+									turnStatus = TurnEndStatusAborted
+									return al.abortTurn(ts)
+								}
+								if exec.abortedByHook {
+									turnStatus = TurnEndStatusError
+									return turnResult{}, fmt.Errorf("hook requested turn abort")
+								}
+								if exec.allResponsesHandled {
+									messages = exec.messages
+									result, finalizeErr := pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, "")
+									if finalizeErr != nil {
+										turnStatus = TurnEndStatusError
+									}
+									return result, finalizeErr
+								}
 								// Archive-after-exhaustion path:
-								// retryLLMForBlockedTool stamped
+								// retryExecuteToolChain stamped
 								// goalArchiveRequested=true and set the
 								// matching phase-stuck abort reason. Honor
 								// it here so finalizeGoalOnTurnEnd picks up
@@ -521,39 +545,13 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 								turnStatus = TurnEndStatusError
 								return turnResult{}, fmt.Errorf("goal archive requested after tool-exec recovery exhaustion at %s", currentPhase)
 							case ControlContinue, ControlToolLoop:
-								// Same-iter retry succeeded — re-call LLM
-								// already produced a fresh tool_call (or text).
-								// Two cases to handle:
-								//   - tool_call: must execute the tool
-								//     before continuing the loop body,
-								//     otherwise at iter == iterationCap the
-								//     iter-bump on next loop pass would
-								//     exit before ExecuteTools ever runs —
-								//     Phase 12.28 B1 ("dropped tool
-								//     execution at recovery retry success").
-								//   - text-only: just consume the new
-								//     content as the assistant message.
-								// In both cases, re-read exec.messages so
-								// the post-tool-exec continuation path
-								// below sees the fresh tool result.
-								if len(exec.response.ToolCalls) > 0 {
-									// Phase 12.28.2 fix: removed
-									// `&& ts.currentIteration() < ts.iterationCap`
-									// guard. Phase 12.28.1's guard
-									// prevented ExecuteTools at iter==cap
-									// (the most common case for
-									// GoalPhaseCheckpoint recovery where
-									// complete_goal must fire at the cap to
-									// archive the goal). Without this,
-									// the post-loop toolLimitResponse
-									// fallback fires before the tool runs.
-									// Phase 12.9 pre-loop hook extends
-									// iterationCap to allow one final iter,
-									// so the loop body running at iter==cap
-									// is by design — the cap guard at line
-									// 633 only fires AFTER the body runs.
-									pipeline.ExecuteTools(ctx, turnCtx, ts, exec, iteration)
-								}
+								// Same-iter retry succeeded — the helper
+								// ALREADY executed any re-picked tool (Step 3
+								// inside retryExecuteToolChainOnce, Phase 12.42
+								// G7). Text-only success consumed content via
+								// exec.response. Re-read exec.messages so the
+								// post-tool-exec continuation path below sees
+								// the fresh tool results.
 								messages = exec.messages
 								if ts.pendingFinalReportIter {
 									ts.postCompleteGoalReportSent = true

@@ -234,15 +234,19 @@ func TestRetryExecuteToolChain_Step4_NoToolSelected_StopsAtStep2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if ctrl != ControlBreak {
-		t.Errorf("expected ControlBreak (Step 2 wrong-tool gate), got %v", ctrl)
+	// Phase 12.42 (G3/G4): text-only is SUCCESS — mirror Path 2 arm i.
+	// Old contract (Task 3 stub) broke on text-only; new contract returns
+	// ControlToolLoop and clears pendingRecoveryMessage (C9b) so
+	// BoundedRetry exits without burning attempts.
+	if ctrl != ControlToolLoop {
+		t.Errorf("expected ControlToolLoop (text-only success), got %v", ctrl)
 	}
-	// ExecuteTools MUST NOT have been called (Step 2 short-circuits).
+	// ExecuteTools MUST NOT have been called (G4 guard: no tool calls).
 	if fake.callCount != 0 {
-		t.Errorf("expected ExecuteTools NOT called (Step 2 gated), got callCount=%d", fake.callCount)
+		t.Errorf("expected ExecuteTools NOT called (text-only), got callCount=%d", fake.callCount)
 	}
-	if ts.pendingRecoveryMessage == "" {
-		t.Errorf("expected ts.pendingRecoveryMessage re-armed with phase-aware hint")
+	if ts.pendingRecoveryMessage != "" {
+		t.Errorf("expected pendingRecoveryMessage cleared (C9b), got %q", ts.pendingRecoveryMessage)
 	}
 }
 
@@ -259,7 +263,7 @@ func TestRetryExecuteToolChain_Step4_NoToolSelected_StopsAtStep2(t *testing.T) {
 // left to Task 7's Path 2/Path 4 migration with scripted providers.
 
 func TestRetryExecuteToolChain_Step5_InnerBreakPropagates(t *testing.T) {
-	provider := &recordingProvider{} // no tool_calls → Step 2 returns ControlBreak
+	provider := &recordingProvider{} // no tool_calls → text-only success (Phase 12.42)
 	al, _, cleanup := newTurnCoordTestLoop(t, provider)
 	defer cleanup()
 	p := NewPipeline(al)
@@ -273,19 +277,19 @@ func TestRetryExecuteToolChain_Step5_InnerBreakPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	// Inner Step 2 → ControlBreak → outer should propagate that, NOT
-	// flatten it to ControlToolLoop. Regression-proof for the innerResult
-	// capture added in Task 5.
-	if ctrl != ControlBreak {
-		t.Errorf("expected ControlBreak propagated from Step 2, got %v", ctrl)
+	// Phase 12.42 (G3/G4): text-only maps to ControlToolLoop success
+	// (mirror Path 2 arm i), never ControlBreak. ControlBreak is now
+	// reserved for Step 3 executor breaks + exhaustion.
+	if ctrl != ControlToolLoop {
+		t.Errorf("expected ControlToolLoop (text-only success), got %v", ctrl)
 	}
-	// No archive requested (wrong-tool is not exhaustion).
+	// No archive requested (text-only is not exhaustion).
 	if ts.goalArchiveRequested {
-		t.Errorf("expected goalArchiveRequested=false (Step 2 is not exhaustion), got true")
+		t.Errorf("expected goalArchiveRequested=false (text-only is not exhaustion), got true")
 	}
-	// ExecuteTools MUST NOT have been called (Step 2 short-circuits).
+	// ExecuteTools MUST NOT have been called (G4 guard).
 	if fake.callCount != 0 {
-		t.Errorf("expected ExecuteTools NOT called (Step 2 gated), got callCount=%d", fake.callCount)
+		t.Errorf("expected ExecuteTools NOT called (text-only), got callCount=%d", fake.callCount)
 	}
 }
 
@@ -684,6 +688,10 @@ func TestRetryLLMForBlockedTool_UsesSharedHelper(t *testing.T) {
 	al, _, cleanup := newTurnCoordTestLoop(t, provider)
 	defer cleanup()
 	p := NewPipeline(al)
+	// Phase 12.42: Path 4 executes the re-picked tool itself (Step 3) —
+	// inject the fake executor so goal_progress dispatch is mocked.
+	fake := &fakeExecutor{returnControl: ToolControlContinue}
+	p.SetToolExecutor(fake)
 
 	ts, exec := setupRetryChainTestTurnState(t, al, p)
 	// setupRetryChainTestTurnState pins phase to Open; re-pin to Checkpoint
@@ -691,9 +699,10 @@ func TestRetryLLMForBlockedTool_UsesSharedHelper(t *testing.T) {
 	// returns lifecycle allowlist ([goal_progress, complete_goal]).
 	al.SetGoalPhaseForTest(string(GoalPhaseCheckpoint))
 
-	ctrl, err := p.retryLLMForBlockedTool(
+	ctrl, err := p.retryExecuteToolChain(
 		context.Background(), context.Background(), ts, exec, 2,
-		"RECOVERY_HINT: pick goal_progress or complete_goal")
+		"RECOVERY_HINT: pick goal_progress or complete_goal",
+		[]string{"goal_progress", "complete_goal"}, "checkpoint")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
