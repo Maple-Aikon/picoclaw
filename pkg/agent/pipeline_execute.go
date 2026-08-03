@@ -196,7 +196,7 @@ toolLoop:
 		currentPhase := ts.currentGoalPhase()
 		if ts.agent.Tools != nil && (currentPhase == GoalPhaseOpen || currentPhase == GoalPhaseCheckpoint || currentPhase == GoalPhaseFinal) {
 			if !ts.agent.Tools.IsAllowed(toolName) {
-				denyContent := fmt.Sprintf("tool %q is not available in the current phase (Phase 12.35 gate pre-check at %s)", toolName, currentPhase)
+				denyContent := gateSkipMessageForPhase(toolName, currentPhase)
 				al.emitEvent(
 					runtimeevents.KindAgentToolExecSkipped,
 					ts.eventMeta("runTurn", "turn.tool.skipped"),
@@ -429,7 +429,7 @@ toolLoop:
 					// phase semantics — it just blocks).
 					if hookResult.IsError &&
 						hookResult.ErrKind == "" &&
-						strings.Contains(toolErrorSummary(hookResult), "is not available in the current phase") {
+						strings.Contains(toolErrorSummary(hookResult), "is temporarily unavailable") {
 						ts.recordPhaseStuckToolAllowedBlock(toolName, toolErrorSummary(hookResult))
 					}
 

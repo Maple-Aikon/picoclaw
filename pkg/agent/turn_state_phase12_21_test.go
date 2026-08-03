@@ -29,7 +29,7 @@ func TestRecordPhaseStuckToolAllowedBlockInPhase_Checkpoint_IncrementsGoalProgre
 	if ts.goalProgressFailCount != 0 {
 		t.Fatalf("precondition: counter should be 0, got %d", ts.goalProgressFailCount)
 	}
-	enrichedMsg := `called tool "write_file" but checkpoint only allows the phase-specific lifecycle tools — tool "write_file" is not available in the current phase`
+	enrichedMsg := `called tool "write_file" but only allowed tools are the phase-specific lifecycle tools`
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhaseCheckpoint, "write_file", enrichedMsg)
 	if ts.goalProgressFailCount != 1 {
 		t.Fatalf("goalProgressFailCount=%d want=1 — IsAllowed block at Checkpoint did NOT increment counter", ts.goalProgressFailCount)
@@ -37,37 +37,32 @@ func TestRecordPhaseStuckToolAllowedBlockInPhase_Checkpoint_IncrementsGoalProgre
 	if !strings.Contains(ts.lastPhaseStuckError, "write_file") {
 		t.Errorf("lastPhaseStuckError missing tool name: %q", ts.lastPhaseStuckError)
 	}
-	if !strings.Contains(ts.lastPhaseStuckError, "checkpoint") {
-		t.Errorf("lastPhaseStuckError missing phase name: %q", ts.lastPhaseStuckError)
-	}
+	// Phase 12.43: enrichedMsg no longer contains phase enum literal (was "checkpoint", "set", "final")
+	// — consequence-based only. Counter increment is the phase signal, not the string.
 }
 
 // TestRecordPhaseStuckToolAllowedBlockInPhase_Set_IncrementsSetGoalCounter covers
 // the Set-phase variant of Fix B.
 func TestRecordPhaseStuckToolAllowedBlockInPhase_Set_IncrementsSetGoalCounter(t *testing.T) {
 	ts := &turnState{}
-	enrichedMsg := `called tool "web_search" but set only allows the phase-specific lifecycle tools — tool "web_search" is not available in the current phase`
+	enrichedMsg := `called tool "web_search" but only allowed tools are the phase-specific lifecycle tools`
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhaseSet, "web_search", enrichedMsg)
 	if ts.setGoalFailCount != 1 {
 		t.Fatalf("setGoalFailCount=%d want=1 — IsAllowed block at Set did NOT increment counter", ts.setGoalFailCount)
 	}
-	if !strings.Contains(ts.lastPhaseStuckError, "set") {
-		t.Errorf("lastPhaseStuckError missing phase name: %q", ts.lastPhaseStuckError)
-	}
+	// Phase 12.43: enrichedMsg no longer contains phase enum literal.
 }
 
 // TestRecordPhaseStuckToolAllowedBlockInPhase_Final_IncrementsCompleteGoalCounter
 // covers the Final-phase variant of Fix B.
 func TestRecordPhaseStuckToolAllowedBlockInPhase_Final_IncrementsCompleteGoalCounter(t *testing.T) {
 	ts := &turnState{}
-	enrichedMsg := `called tool "read_file" but final only allows the phase-specific lifecycle tools — tool "read_file" is not available in the current phase`
+	enrichedMsg := `called tool "read_file" but only allowed tools are the phase-specific lifecycle tools`
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhaseFinal, "read_file", enrichedMsg)
 	if ts.completeGoalFailCount != 1 {
 		t.Fatalf("completeGoalFailCount=%d want=1 — IsAllowed block at Final did NOT increment counter", ts.completeGoalFailCount)
 	}
-	if !strings.Contains(ts.lastPhaseStuckError, "final") {
-		t.Errorf("lastPhaseStuckError missing phase name: %q", ts.lastPhaseStuckError)
-	}
+	// Phase 12.43: enrichedMsg no longer contains phase enum literal.
 }
 
 // TestRecordPhaseStuckToolAllowedBlockInPhase_Open_NoIncrement documents that
@@ -78,7 +73,7 @@ func TestRecordPhaseStuckToolAllowedBlockInPhase_Final_IncrementsCompleteGoalCou
 func TestRecordPhaseStuckToolAllowedBlockInPhase_Open_NoIncrement(t *testing.T) {
 	ts := &turnState{}
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhaseOpen, "any_tool",
-		`called tool "any_tool" but open only allows the phase-specific lifecycle tools`)
+		`called tool "any_tool" but only allowed tools are the phase-specific lifecycle tools`)
 	if ts.setGoalFailCount != 0 || ts.goalProgressFailCount != 0 || ts.completeGoalFailCount != 0 {
 		t.Fatalf("Open phase should NOT increment any phase-stuck counter, got set=%d prog=%d comp=%d",
 			ts.setGoalFailCount, ts.goalProgressFailCount, ts.completeGoalFailCount)

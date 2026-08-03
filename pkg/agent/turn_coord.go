@@ -448,6 +448,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 								"message":  archiveMsg,
 							})
 						turnStatus = TurnEndStatusError
+						// Phase 12.43 verification: %s=archiveTool (tool name, not phase) — safe.
 						return turnResult{}, fmt.Errorf("goal archive requested after tool-exec retries exhausted for %s", archiveTool)
 					} else if archiveMsg != "" {
 						// Phase 12.37 GAP #4: isRestricted gate REMOVED.
@@ -543,7 +544,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 										"archive_request": ts.goalArchiveRequested,
 									})
 								turnStatus = TurnEndStatusError
-								return turnResult{}, fmt.Errorf("goal archive requested after tool-exec recovery exhaustion at %s", currentPhase)
+								return turnResult{}, fmt.Errorf("goal archive requested after tool-exec recovery exhaustion (see goal archive log for details)")
 							case ControlContinue, ControlToolLoop:
 								// Same-iter retry succeeded — the helper
 								// ALREADY executed any re-picked tool (Step 3

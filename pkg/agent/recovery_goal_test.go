@@ -376,7 +376,7 @@ func TestCheckToolExecErrorRecovery_ExecutionGateFormat_TriggersRecovery(t *test
 	ts := newPhase5TurnState(t)
 	exec := &turnExecution{
 		messages: []providers.Message{
-			{Role: "tool", Content: `tool "read_file" is not available in the current phase (allowed tools: [goal_progress complete_goal])`},
+			{Role: "tool", Content: `tool "read_file" is temporarily unavailable (allowed tools: [goal_progress complete_goal])`},
 		},
 	}
 	tool, msg := checkToolExecErrorRecovery(ts, exec)
@@ -401,7 +401,7 @@ func TestCheckToolExecErrorRecovery_ExecutionGateFormat_NotTransient(t *testing.
 			// Phrase the error to include "timeout" so the transient
 			// heuristic WOULD trigger if applied — verifies our explicit
 			// override at the recovery call site.
-			{Role: "tool", Content: `tool "read_file" is not available in the current phase (timeout waiting on allowed tools)`},
+			{Role: "tool", Content: `tool "read_file" is temporarily unavailable (timeout waiting on allowed tools)`},
 		},
 	}
 	// Force Checkpoint phase so the recovery builder picks the
@@ -1331,7 +1331,7 @@ func TestCheckToolExecErrorRecovery_PrefixFallbackWhenErrKindEmpty(t *testing.T)
 	ts.lastToolResult = &toolshared.ToolResult{IsError: true} // no ErrKind
 	exec := &turnExecution{
 		messages: []providers.Message{
-			{Role: "tool", ToolCallID: "write_file", Content: `tool "write_file" is not available in the current phase`},
+			{Role: "tool", ToolCallID: "write_file", Content: `tool "write_file" is temporarily unavailable`},
 		},
 	}
 

@@ -209,7 +209,7 @@ func TestPhase12_22_CheckpointToolBlock_SameIterRetry(t *testing.T) {
 // is the one that triggers same-iter BoundedRetry.
 	exec.messages = append(exec.messages, providers.Message{
 		Role:    "tool",
-		Content: `tool "read_file" is not available in the current phase (allowed tools: [complete_goal goal_progress])`,
+		Content: `tool "read_file" is temporarily unavailable (allowed tools: [complete_goal goal_progress])`,
 	})
 
 	// Reset counter so first call is attempt 0 (counter < cap).
@@ -337,7 +337,7 @@ func TestPhase12_22_CheckpointToolBlock_Exhaustion_ArchivesWithPhaseStuckReason(
 	// attempts (counter cap = 3 per ToolExecErrorRetryCap).
 	exec.messages = append(exec.messages, providers.Message{
 		Role:    "tool",
-		Content: `tool "read_file" is not available in the current phase (allowed tools: [complete_goal goal_progress])`,
+		Content: `tool "read_file" is temporarily unavailable (allowed tools: [complete_goal goal_progress])`,
 	})
 	ts.toolExecRecoveryAttempts = map[string]int{"read_file": 3}
 
@@ -355,7 +355,7 @@ func TestPhase12_22_CheckpointToolBlock_Exhaustion_ArchivesWithPhaseStuckReason(
 		ts,
 		exec,
 		startIter,
-		`tool "read_file" is not available in the current phase (allowed tools: [complete_goal goal_progress])`,
+		`tool "read_file" is temporarily unavailable (allowed tools: [complete_goal goal_progress])`,
 		[]string{"complete_goal", "goal_progress"},
 		"checkpoint",
 	)
@@ -373,8 +373,15 @@ func TestPhase12_22_CheckpointToolBlock_Exhaustion_ArchivesWithPhaseStuckReason(
 	if ts.lastPhaseStuckError == "" {
 		t.Errorf("expected ts.lastPhaseStuckError to be set after exhaustion, got empty")
 	}
-	if !strings.Contains(strings.ToLower(ts.lastPhaseStuckError), "checkpoint") {
-		t.Errorf("expected ts.lastPhaseStuckError to mention 'checkpoint', got %q", ts.lastPhaseStuckError)
+	// Phase 12.43: lastPhaseStuckError is the AbortReason constant (consequence-based),
+	// NOT legacy enrichedMsg with phase enum literal. AbortReason for Checkpoint is
+	// "goal_stuck_v1_continuation" (v1_ prefix per DOUBT-4 collision avoidance).
+	if strings.Contains(strings.ToLower(ts.lastPhaseStuckError), "checkpoint") {
+		t.Errorf("expected NO phase enum literal in lastPhaseStuckError (Phase 12.43), got %q", ts.lastPhaseStuckError)
+	}
+	if ts.lastPhaseStuckError != GoalPhaseCheckpointStuckAbortReason {
+		t.Errorf("expected lastPhaseStuckError to be Checkpoint abort reason %q, got %q",
+			GoalPhaseCheckpointStuckAbortReason, ts.lastPhaseStuckError)
 	}
 }
 
@@ -530,7 +537,7 @@ func TestPhase12_22_SingleIterCheckpoint_LowCap_ReachesArchive(t *testing.T) {
 	// exec.messages[-1] with counter already at cap (exhaustion).
 	exec.messages = append(exec.messages, providers.Message{
 		Role:    "tool",
-		Content: `tool "read_file" is not available in the current phase (allowed tools: [complete_goal goal_progress])`,
+		Content: `tool "read_file" is temporarily unavailable (allowed tools: [complete_goal goal_progress])`,
 	})
 	ts.toolExecRecoveryAttempts = map[string]int{"read_file": 3}
 
@@ -547,7 +554,7 @@ func TestPhase12_22_SingleIterCheckpoint_LowCap_ReachesArchive(t *testing.T) {
 		ts,
 		exec,
 		startIter,
-		`tool "read_file" is not available in the current phase (allowed tools: [complete_goal goal_progress])`,
+		`tool "read_file" is temporarily unavailable (allowed tools: [complete_goal goal_progress])`,
 		[]string{"complete_goal", "goal_progress"},
 		"checkpoint",
 	)

@@ -110,3 +110,28 @@ func goalPhaseCheckpointHintContributor(req PromptBuildRequest) *PromptPart {
 		Cache:   PromptCacheNone,
 	}
 }
+
+// Phase 12.43 (Q4-A, DOUBT-3 rephrased) — instruction for LLM when writing
+// Blockers in goal_progress. Describes consequences (which tool, what
+// alternative paths) instead of state references. State descriptors may
+// become stale after phase transitions and mislead future reasoning.
+const goalProgressBlockersHintText = `When writing Blockers in goal_progress: describe consequences (which tool was rejected, what alternative paths exist) instead of state references. State descriptors (e.g., describing where you are in the lifecycle) may become stale after transitions and mislead future reasoning. Frame continuation needs as tool/information requirements, not as state assertions.`
+
+// goalProgressBlockersHintContributor — Phase 12.43 contributor that fires
+// at GoalPhaseCheckpoint to inject the Blockers guidance text. Wired via
+// phase-aware contributor registration (Q4-A inline, no new file).
+func goalProgressBlockersHintContributor(req PromptBuildRequest) *PromptPart {
+	if req.GoalPhase != string(GoalPhaseCheckpoint) {
+		return nil
+	}
+	return &PromptPart{
+		ID:      "capability.goal_progress_blockers_hint",
+		Layer:   PromptLayerCapability,
+		Slot:    PromptSlotTooling,
+		Source:  PromptSource{ID: PromptSourceGoalPhaseCheckpointHint, Name: "goal_progress_blockers_hint"},
+		Title:   "Goal Progress Blockers Hint",
+		Content: goalProgressBlockersHintText + "\n",
+		Stable:  false,
+		Cache:   PromptCacheNone,
+	}
+}

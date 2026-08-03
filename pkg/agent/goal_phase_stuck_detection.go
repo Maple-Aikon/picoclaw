@@ -93,8 +93,8 @@ func (ts *turnState) recordPhaseStuckToolFail(toolName, errMsg string) {
 // available in the current phase") before calling.
 func (ts *turnState) recordPhaseStuckToolAllowedBlock(toolName, errMsg string) {
 	enrichedMsg := fmt.Sprintf(
-		"called tool %q but %s only allows the phase-specific lifecycle tools",
-		toolName, ts.currentGoalPhase(),
+		"called tool %q but only allowed tools are the phase-specific lifecycle tools",
+		toolName,
 	)
 	if errMsg != "" {
 		enrichedMsg = enrichedMsg + " — " + errMsg

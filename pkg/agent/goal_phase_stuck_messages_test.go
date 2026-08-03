@@ -1,39 +1,53 @@
 package agent
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/agent/goal"
 )
 
-// TestPhaseStuckMessages_ContainPhaseKeywords — the 3 phase-stuck messages
-// must each name the phase explicitly so the user understands which phase
-// PicoClaw got stuck in. The fallback "empty response" message is misleading
-// because LLM responses are NOT empty (typically 300-2000 chars) — the
-// actual cause is a phase-specific lifecycle tool failure.
-func TestPhaseStuckMessages_ContainPhaseKeywords(t *testing.T) {
+// Phase 12.43 — assertNoPhaseClaim helper.
+// Per Phase 12.40 / 12.40.1 / 12.43 invariant: no phase claims in LLM-visible text.
+// Q11-A: 10 phrases → 3 patterns (skip-message variants + 2 stuck-message patterns).
+var phaseClaimRegex = regexp.MustCompile(`(?i)\b(at checkpoint|at final phase|open phase|current phase is set|Phase 12.35 gate pre-check at|Goal-(Set|Checkpoint|Final) phase stuck|the (Set|Checkpoint|Final) phase only allows)\b`)
+
+func assertNoPhaseClaim(t *testing.T, msg string) {
+	t.Helper()
+	if match := phaseClaimRegex.FindString(strings.ToLower(msg)); match != "" {
+		t.Errorf("LLM-visible text contains phase/state claim %q (must be consequence-based): %s", match, msg)
+	}
+}
+
+// TestPhaseStuckMessages_ConsequenceBased — Phase 12.43: stuck messages must
+// describe consequences (what failed, what to try), NOT phase state claims
+// (which become stale after transitions). The 3 messages must each name the
+// failing tool + action alternative, not "Goal-Set phase stuck" header.
+func TestPhaseStuckMessages_ConsequenceBased(t *testing.T) {
 	cases := []struct {
 		name    string
 		message string
 		phase   string
 		tool    string
 	}{
-		{"Set", GoalPhaseSetStuckMessage, "Set", "set_goal"},
-		{"Checkpoint", GoalPhaseCheckpointStuckMessage, "Checkpoint", "goal_progress"},
-		{"Final", GoalPhaseFinalStuckMessage, "Final", "complete_goal"},
+		{"Set", GoalPhaseSetStuckMessage, "setup", "set_goal"},
+		{"Checkpoint", GoalPhaseCheckpointStuckMessage, "continuation", "goal_progress"},
+		{"Final", GoalPhaseFinalStuckMessage, "finalization", "complete_goal"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if !strings.Contains(tc.message, tc.phase) {
-				t.Errorf("message for %s phase must contain %q keyword", tc.name, tc.phase)
-			}
 			if !strings.Contains(tc.message, tc.tool) {
 				t.Errorf("message for %s phase must mention tool %q", tc.name, tc.tool)
+			}
+			if !strings.Contains(tc.message, tc.phase) {
+				t.Errorf("message for %s phase must mention consequence keyword %q", tc.name, tc.phase)
 			}
 			if !strings.Contains(tc.message, "PicoClaw") {
 				t.Errorf("message for %s phase must mention PicoClaw as the source", tc.name)
 			}
+			// Phase 12.43: no phase enum claims in LLM-visible text.
+			assertNoPhaseClaim(t, tc.message)
 		})
 	}
 }
@@ -174,8 +188,8 @@ func TestApplyFallbackForEmptyResponse_PhaseStuckSet_Preferred(t *testing.T) {
 	ts.lastPhaseStuckError = "missing required property name"
 
 	got := al.applyFallbackForEmptyResponse(ts)
-	if !strings.Contains(got, "Goal-Set phase stuck") {
-		t.Fatalf("expected fallback to contain 'Goal-Set phase stuck', got %q", got)
+	if !strings.Contains(got, "Goal setup could not complete") {
+		t.Fatalf("expected fallback to contain 'Goal setup could not complete', got %q", got)
 	}
 	if !strings.Contains(got, "set_goal") {
 		t.Fatalf("expected fallback to mention set_goal, got %q", got)
@@ -183,6 +197,8 @@ func TestApplyFallbackForEmptyResponse_PhaseStuckSet_Preferred(t *testing.T) {
 	if strings.Contains(got, "empty response") {
 		t.Fatalf("phase-stuck fallback must NOT contain the misleading 'empty response' string; got %q", got)
 	}
+	// Phase 12.43: no phase enum claims in LLM-visible text.
+	assertNoPhaseClaim(t, got)
 }
 
 // TestApplyFallbackForEmptyResponse_PhaseStuckCheckpoint_Preferred — same as
@@ -215,12 +231,14 @@ func TestApplyFallbackForEmptyResponse_PhaseStuckCheckpoint_Preferred(t *testing
 	ts.lastPhaseStuckError = "missing required field completed_steps"
 
 	got := al.applyFallbackForEmptyResponse(ts)
-	if !strings.Contains(got, "Goal-Checkpoint phase stuck") {
-		t.Fatalf("expected fallback to contain 'Goal-Checkpoint phase stuck', got %q", got)
+	if !strings.Contains(got, "Goal continuation could not complete") {
+		t.Fatalf("expected fallback to contain 'Goal continuation could not complete', got %q", got)
 	}
 	if !strings.Contains(got, "goal_progress") {
 		t.Fatalf("expected fallback to mention goal_progress, got %q", got)
 	}
+	// Phase 12.43: no phase enum claims in LLM-visible text.
+	assertNoPhaseClaim(t, got)
 }
 
 // TestApplyFallbackForEmptyResponse_PhaseStuckFinal_Preferred — same as
@@ -253,12 +271,14 @@ func TestApplyFallbackForEmptyResponse_PhaseStuckFinal_Preferred(t *testing.T) {
 	ts.lastPhaseStuckError = "summary too short"
 
 	got := al.applyFallbackForEmptyResponse(ts)
-	if !strings.Contains(got, "Goal-Final phase stuck") {
-		t.Fatalf("expected fallback to contain 'Goal-Final phase stuck', got %q", got)
+	if !strings.Contains(got, "Goal finalization could not complete") {
+		t.Fatalf("expected fallback to contain 'Goal finalization could not complete', got %q", got)
 	}
 	if !strings.Contains(got, "complete_goal") {
 		t.Fatalf("expected fallback to mention complete_goal, got %q", got)
 	}
+	// Phase 12.43: no phase enum claims in LLM-visible text.
+	assertNoPhaseClaim(t, got)
 }
 
 // TestApplyFallbackForEmptyResponse_GoalSummaryStillTakesPriority — Phase

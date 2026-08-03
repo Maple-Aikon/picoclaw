@@ -524,6 +524,16 @@ Each part separated by the marker will be sent as an independent message.`,
 		add(*hintPart)
 	}
 
+	// Phase 12.43 (Q4-A) — goal_progress Blockers guidance. Fires only at
+	// GoalPhaseCheckpoint. Wires `goalProgressBlockersHintContributor` to
+	// inject the consequence-based Blockers writing instruction (Q4-A
+	// rephrased per DOUBT-3).
+	if hintPart := goalProgressBlockersHintContributor(PromptBuildRequest{
+		GoalPhase: opts.GoalPhase,
+	}); hintPart != nil {
+		add(*hintPart)
+	}
+
 	// Phase 12.21 — GoalPhaseFinal hint. Fires ONLY when the per-turn
 	// loop has reached the absolute max_iterations_cap terminal phase.
 	// Tool allowlist = [complete_goal] only. The hint tells the LLM

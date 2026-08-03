@@ -673,7 +673,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 				"reason":  "toolAllowedLocked returned false",
 			})
 		return ErrorResult(
-			fmt.Sprintf("tool %q is not available in the current phase (allowed tools: %v)", name, allowed),
+			fmt.Sprintf("tool %q is temporarily unavailable (allowed tools: %v)", name, allowed),
 		).WithError(fmt.Errorf("tool %q not in runtime allowlist", name))
 	}
 

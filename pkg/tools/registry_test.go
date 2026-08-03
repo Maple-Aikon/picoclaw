@@ -252,7 +252,7 @@ func TestToolRegistry_SetPhaseBlocksDiscoveryToolInSetPhase(t *testing.T) {
 	if !result.IsError {
 		t.Errorf("expected discovery tool to be blocked at GoalPhaseSet, got success: %s", result.ForLLM)
 	}
-	if !strings.Contains(result.ForLLM, "is not available in the current phase") {
+	if !strings.Contains(result.ForLLM, "is temporarily unavailable") {
 		t.Errorf("expected phase-block message in ForLLM, got %q", result.ForLLM)
 	}
 }
