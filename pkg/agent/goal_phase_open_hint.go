@@ -55,7 +55,7 @@ const goalPhaseOpenHintBodyText = `Goal lifecycle tools at OPEN phase:
 - set_goal is LOCKED at OPEN — it only fires at the SET phase (iter 1, before any goal exists). If you want to define/redefine the goal, you must have called set_goal in a previous turn; otherwise the goal is already set and you should not call set_goal.
 - goal_progress is CHECKPOINT-only — it only fires at a checkpoint to continue the goal lifecycle. At any other iter, goal_progress is rejected by the lifecycle gate.
 - view_goal works at OPEN — use it to recall the current goal details if needed.
-- complete_goal works at OPEN — call it when the work is done. Required args: name (goal id), summary (1-500 char final report in the user's language).
+- complete_goal works at OPEN — call it when the work is done. Required args: name (goal id), summary (1-1000 char final report in the user's language).
 If a lifecycle tool call is rejected, pivot to view_goal/complete_goal or the regular tools; do NOT retry the same blocked tool.`
 
 // goalPhaseOpenHintContributor returns a Capability-layer / Tooling-slot

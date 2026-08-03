@@ -347,7 +347,7 @@ func TestGoalProgressTool_RejectsAfterCompletion(t *testing.T) {
 		"objective":        "o",
 		"success_criteria": []string{"c"},
 	})
-	// Phase 11: complete_goal requires a `summary` arg (1-500 chars).
+	// Phase 11: complete_goal requires a `summary` arg (1-1000 chars).
 	NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
 		"summary": "first summary",
 	})
@@ -458,7 +458,7 @@ func TestCompleteGoalTool_NoGoalSentinel_StillError(t *testing.T) {
 }
 
 // TestCompleteGoalTool_RequiresSummary verifies Phase 11: complete_goal
-// must be called with a `summary` arg (1-500 chars). Empty / missing
+// must be called with a `summary` arg (1-1000 chars). Empty / missing
 // summary returns invalid_input so the LLM retries in the same
 // iteration. The runtime cannot fabricate a final reply on the LLM's
 // behalf — that would defeat the audit trail.
@@ -1109,8 +1109,9 @@ func TestCompleteGoalTool_AcceptsVN_SummaryAtRuneLimit(t *testing.T) {
 	}
 }
 
-// T-A2: 501-rune VN summary — must REJECT with clear error.
-func TestCompleteGoalTool_RejectsVN_SummaryOverRuneLimit(t *testing.T) {
+// T-A2 (Phase 12.44 semantics): 501-rune VN summary — ACCEPTED, archive
+// truncated to 1000 runes (owner decision 2026-08-03: truncate-not-reject).
+func TestCompleteGoalTool_AcceptsVN_SummaryOverOld500RuneLimit(t *testing.T) {
 	ws := tempWorkspace(t)
 	ctx := ctxWithSession("sess-B", "agent")
 	NewSetGoalTool(ws).Execute(ctx, map[string]any{
@@ -1123,8 +1124,8 @@ func TestCompleteGoalTool_RejectsVN_SummaryOverRuneLimit(t *testing.T) {
 	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
 		"summary": summary,
 	})
-	if !res.IsError || res.ErrKind != toolshared.ErrInvalidInput {
-		t.Errorf("501-rune VN summary should reject; got isErr=%v kind=%q msg=%q",
+	if res.IsError {
+		t.Fatalf("501-rune VN summary should be ACCEPTED (truncate-not-reject); got isErr=%v kind=%q msg=%q",
 			res.IsError, res.ErrKind, res.ForLLM)
 	}
 }
@@ -1206,8 +1207,9 @@ func TestCompleteGoalTool_AcceptsMixed_500RunesNoRejection(t *testing.T) {
 	}
 }
 
-// T-A6: 501-byte ASCII summary — must REJECT (rune count must mean BOTH byte and rune cap).
-func TestCompleteGoalTool_RejectsASCII_SummaryAt501Bytes(t *testing.T) {
+// T-A6 (Phase 12.44 semantics): 501-byte ASCII summary — ACCEPTED (no
+// byte cap anymore; 1000-rune truncate-not-reject).
+func TestCompleteGoalTool_AcceptsASCII_SummaryAt501Bytes(t *testing.T) {
 	ws := tempWorkspace(t)
 	ctx := ctxWithSession("sess-F", "agent")
 	NewSetGoalTool(ws).Execute(ctx, map[string]any{
@@ -1220,8 +1222,8 @@ func TestCompleteGoalTool_RejectsASCII_SummaryAt501Bytes(t *testing.T) {
 	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
 		"summary": summary,
 	})
-	if !res.IsError || res.ErrKind != toolshared.ErrInvalidInput {
-		t.Errorf("501-byte ASCII summary should reject; got isErr=%v kind=%q msg=%q",
+	if res.IsError {
+		t.Fatalf("501-byte ASCII summary should be ACCEPTED (truncate-not-reject); got isErr=%v kind=%q msg=%q",
 			res.IsError, res.ErrKind, res.ForLLM)
 	}
 }

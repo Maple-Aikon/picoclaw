@@ -177,7 +177,7 @@ const (
 	// back to complete_goal (the only allowed tool) until the goal is fully
 	// closed. Skipped when postCompleteGoalReportSent=true (the final report
 	// has already been published — no more iterations happen).
-	ToolExecErrorFinalPhaseHint = " In the current goal phase (final), only `complete_goal` is available — every other tool call is blocked. The goal is already finalized; call `complete_goal` with a non-empty `summary` (1-500 chars) to close out the turn, or reply with the final user-facing report directly. The summary field accepts wait-state descriptions such as 'Waiting for user approval before proceeding with X' — use this when you need user approval/decision before continuing."
+	ToolExecErrorFinalPhaseHint = " In the current goal phase (final), only `complete_goal` is available — every other tool call is blocked. The goal is already finalized; call `complete_goal` with a non-empty `summary` (1-1000 chars) to close out the turn, or reply with the final user-facing report directly. The summary field accepts wait-state descriptions such as 'Waiting for user approval before proceeding with X' — use this when you need user approval/decision before continuing."
 
 	// Phase 12.18: ToolExecErrorCheckpointPhaseHint is appended when a tool
 	// call was rejected at GoalPhaseCheckpoint (iter == iterationCap, hit the
@@ -202,7 +202,7 @@ const (
 	// available tools and the 3 decision paths (save checkpoint via
 	// goal_progress / end turn to ask user approval via wait-state summary /
 	// end turn when goal is done via final summary).
-	ToolExecErrorCheckpointPhaseHint = " In the current goal phase (checkpoint), only `goal_progress` and `complete_goal` are available — every other tool call is blocked. Choose one of three paths: (1) save a checkpoint and keep working: call `goal_progress` with at least 1 item in `remaining_steps`; (2) end the turn to ask the user for approval/decision: call `complete_goal` with a summary like \"Waiting for user approval before continuing with X\"; (3) end the turn because the goal is done: call `complete_goal` with a concise summary (1-500 chars) of what was accomplished."
+	ToolExecErrorCheckpointPhaseHint = " In the current goal phase (checkpoint), only `goal_progress` and `complete_goal` are available — every other tool call is blocked. Choose one of three paths: (1) save a checkpoint and keep working: call `goal_progress` with at least 1 item in `remaining_steps`; (2) end the turn to ask the user for approval/decision: call `complete_goal` with a summary like \"Waiting for user approval before continuing with X\"; (3) end the turn because the goal is done: call `complete_goal` with a concise summary (1-1000 chars) of what was accomplished."
 
 	// Phase 12.32: ToolExecErrorOpenPhaseHint is appended ONLY when a
 	// lifecycle tool (set_goal / goal_progress) is rejected at OPEN phase.
@@ -210,7 +210,7 @@ const (
 	// the lifecycle gate, so always-append (like Set/Checkpoint/Final)
 	// would mislead. The hint directs the LLM to pivot to complete_goal
 	// rather than retry the blocked lifecycle tool.
-	ToolExecErrorOpenPhaseHint = " `set_goal` is LOCKED at OPEN phase (it only fires at the SET phase / iter 1). `goal_progress` is CHECKPOINT-only (it only fires at a checkpoint). At OPEN, only `view_goal` and `complete_goal` are available for lifecycle operations. Pivot to `complete_goal` with a non-empty `summary` (1-500 chars) when the work is done, or call other non-lifecycle tools. Do NOT retry the same blocked lifecycle tool."
+	ToolExecErrorOpenPhaseHint = " `set_goal` is LOCKED at OPEN phase (it only fires at the SET phase / iter 1). `goal_progress` is CHECKPOINT-only (it only fires at a checkpoint). At OPEN, only `view_goal` and `complete_goal` are available for lifecycle operations. Pivot to `complete_goal` with a non-empty `summary` (1-1000 chars) when the work is done, or call other non-lifecycle tools. Do NOT retry the same blocked lifecycle tool."
 )
 
 // phaseContextSuffix returns a short past-tense description of the goal

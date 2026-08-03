@@ -65,7 +65,7 @@ func TestGoalPhaseOpenHint_MentionsCompleteGoalAvailable(t *testing.T) {
 	}
 	mustContain(t, part.Content, "complete_goal",
 		"hint must reference complete_goal as available at OPEN")
-	mustContain(t, part.Content, "1-500 char",
+	mustContain(t, part.Content, "1-1000 char",
 		"hint must document the complete_goal summary length constraint")
 }
 

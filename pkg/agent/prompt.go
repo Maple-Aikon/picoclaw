@@ -330,7 +330,7 @@ func builtinPromptSources() []PromptSourceDescriptor {
 		{
 			ID:              PromptSourceGoalPhaseFinalHint,
 			Owner:           "agent",
-			Description:     "Goal-phase FINAL hint (Phase 12.21): terminal phase, only complete_goal is available, summary REQUIRED (1-500 chars)",
+			Description:     "Goal-phase FINAL hint (Phase 12.21): terminal phase, only complete_goal is available, summary REQUIRED (1-1000 chars)",
 			Allowed:         []PromptPlacement{{Layer: PromptLayerCapability, Slot: PromptSlotTooling}},
 			StableByDefault: false,
 		},

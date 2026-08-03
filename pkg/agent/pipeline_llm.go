@@ -823,6 +823,30 @@ func (p *Pipeline) proceedPastLLM(
 		exec.normalizedToolCalls = append(exec.normalizedToolCalls, providers.NormalizeToolCall(tc))
 	}
 
+	// Phase 12.44 (owner directive 2026-08-03 + Q-E): the final-report iter
+	// runs AFTER complete_goal — tools are locked by design (the Phase 12.7
+	// goalCompleteReportHintText already tells the LLM "Tools are now locked —
+	// do NOT call any tools"). Strip ALL tool calls here: they are NEVER
+	// executed; only the LLM's text is taken for the user.
+	// F23A: LLM drift at this iter is an anomaly → fail-fast in logs (not
+	// swallowed silently). At most one warning per turn.
+	if ts.pendingFinalReportIter && len(exec.normalizedToolCalls) > 0 {
+		names := make([]string, 0, len(exec.normalizedToolCalls))
+		for _, tc := range exec.normalizedToolCalls {
+			names = append(names, tc.Name)
+		}
+		logger.WarnCF("agent", "Final-report iter: tool call(s) stripped (LLM drift; tools locked by design)",
+			map[string]any{
+				"agent_id":     ts.agent.ID,
+				"iteration":    iteration,
+				"tool_count":   len(names),
+				"tool_names":   names,
+				"session_key":  ts.sessionKey,
+				"turn_id":      ts.turnID,
+			})
+		exec.normalizedToolCalls = []providers.ToolCall{}
+	}
+
 	toolNames := make([]string, 0, len(exec.normalizedToolCalls))
 	for _, tc := range exec.normalizedToolCalls {
 		toolNames = append(toolNames, tc.Name)

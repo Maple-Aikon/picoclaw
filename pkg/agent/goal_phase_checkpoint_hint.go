@@ -50,7 +50,7 @@ The 2 available tools:
 
 1. goal_progress — self-evaluate progress and (optionally) continue the goal lifecycle to keep working on this goal for more iterations. Required fields: completed_steps[], blockers[], remaining_steps[] (at least 1), next_action, drift_detected.
 
-2. complete_goal — finalize this goal now. Required field: summary (1-500 chars, written to the goal archive and used as the final user-facing report if your turn produces no other text).
+2. complete_goal — finalize this goal now. Required field: summary (1-1000 chars, written to the goal archive and used as the final user-facing report if your turn produces no other text).
 
 Decision tree:
 
@@ -69,7 +69,7 @@ Multi-turn goal guidance (Phase 12.34):
 
 DO NOT call any other tool (e.g. read_file, write_file, web_search, etc.) while in CHECKPOINT. They will be rejected and you will waste iterations.
 
-When goal_progress fires, your remaining_steps MUST contain at least 1 item — empty remaining_steps is rejected by the wire guard. When complete_goal fires, your summary must be 1-500 chars.`
+When goal_progress fires, your remaining_steps MUST contain at least 1 item — empty remaining_steps is rejected by the wire guard. When complete_goal fires, your summary must be 1-1000 chars.`
 
 // goalPhaseCheckpointHintContributor returns a Capability-layer / Tooling-slot
 // PromptPart when the request is in GoalPhaseCheckpoint phase. Returns nil

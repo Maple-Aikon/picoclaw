@@ -740,6 +740,30 @@ func (ts *turnState) CanExtendIterationCap() bool {
 	return ts.iterationCap < ts.maxIterationsCap
 }
 
+// PublishToUser implements goal.TurnStateAccess (Phase 12.44): publishes
+// text directly to the user's channel. Void + best-effort (F14 fold) —
+// matches PublishResponseIfNeeded convention: the system has NO detectable
+// fail path for outbound publish (no outbox, no ack). Retry publish does
+// not exist by design; the final-report iter is the safety net.
+//
+// Audit note (2026-08-03): ts.al is set for SubTurns at subturn.go:412 AND
+// for main turns at runTurn (turn_coord.go) — the plan §4 assumption
+// "al field có sẵn" was only half-true (SubTurn-only before Phase 12.44).
+func (ts *turnState) PublishToUser(ctx context.Context, text string) {
+	if ts == nil || text == "" {
+		return
+	}
+	if ts.al == nil {
+		// No AgentLoop back-ref (e.g. unit fixtures) — cannot publish.
+		return
+	}
+	if ts.channel == "" || ts.chatID == "" {
+		// CLI/test runs have no channel — skip (T5 contract).
+		return
+	}
+	ts.al.PublishResponseIfNeeded(ctx, ts.channel, ts.chatID, ts.sessionKey, text)
+}
+
 // MarkGoalFinalized is the Phase 11 hook that complete_goal calls to
 // short-circuit the per-turn loop. Once set, currentGoalPhase() returns
 // GoalPhaseFinal and the runtime breaks out of the iteration loop after

@@ -23,6 +23,12 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	defer turnCancel()
 	ts.setTurnCancel(turnCancel)
 
+	// Phase 12.44 (audit fix — plan §4 assumed this existed): bind the
+	// AgentLoop back-ref for MAIN turns too. Previously ts.al was only set
+	// for SubTurns (subturn.go:412); PublishToUser would have silently
+	// no-op'd on Telegram main turns without this.
+	ts.al = al
+
 	// Inject turnState and AgentLoop into context so tools (e.g. spawn) can retrieve them.
 	turnCtx = withTurnState(turnCtx, ts)
 	turnCtx = WithAgentLoop(turnCtx, al)
@@ -408,6 +414,16 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				turnStatus = TurnEndStatusError
 				return turnResult{}, fmt.Errorf("hook requested turn abort")
 			}
+			// Phase 12.44: the final-report iter's text-only path returns
+			// ControlBreak (proceedPastLLM line 816), NOT ControlContinue —
+			// the post-body marker flip (lines 597-609) never runs on this
+			// path. Flip here so applyFallbackForEmptyResponse's
+			// postCompleteGoalReportSent guard (F18/F28) is active and the
+			// loop-exit condition sees the sent flag.
+			if ts.pendingFinalReportIter {
+				ts.postCompleteGoalReportSent = true
+				ts.pendingFinalReportIter = false
+			}
 			// Phase 12.6.0: empty response → prefer goal.Summary over DefaultResponse
 			// (ordering fix; see applyFallbackForEmptyResponse for the full fallback chain).
 			if finalContent == "" {
@@ -563,6 +579,9 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 								// intentionally skips the pendingRecoveryMessage = archiveMsg set
 								// at lines 564-566 (recovery was already resolved by retry success).
 								_, _ = al.applyDeferredExtend(ts)
+								// Phase 12.44: bump cap for the final-report iter if
+								// complete_goal fired inside the retry chain (F19).
+								al.bumpCapForFinalReportIter(ts)
 								continue
 							default:
 								logger.WarnCF("agent", "Unexpected control signal from goal recovery at restricted phase",
@@ -603,6 +622,10 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				// Without this hook, the staged extend sits forever and
 				// phase never gets the budget it requested.
 				_, _ = al.applyDeferredExtend(ts)
+				// Phase 12.44: bump cap for the final-report iter (F19) — covers
+				// the iter==maxIterCap edge case the pre-loop hook (line 158)
+				// cannot reach (it only runs once at turn start).
+				al.bumpCapForFinalReportIter(ts)
 				continue
 			case ToolControlBreak:
 				// Hard abort: delegate to abortTurn (sets TurnEndStatusAborted)
@@ -662,6 +685,25 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	return result, err
 }
 
+// bumpCapForFinalReportIter (Phase 12.44, F19 fold) extends iterationCap by
+// exactly one when a goal was finalized this turn but the final-report iter
+// has not run yet. This covers the mid-turn complete_goal edge case:
+// complete_goal at iter == maxIterCap → loop top `iter < iterCap` would be
+// FALSE without this bump (the pre-loop hook at line 158 only runs once at
+// turn start, too early for mid-turn finalize).
+//
+// Per-site hook, additive (Phase 12.36 lesson — NO fall-through refactor):
+// called at both ControlContinue exits (retry path + outer body) next to
+// applyDeferredExtend.
+func (al *AgentLoop) bumpCapForFinalReportIter(ts *turnState) {
+	if ts == nil || !ts.goalFinalized || ts.postCompleteGoalReportSent {
+		return
+	}
+	if cap := ts.iteration + 1; cap > ts.iterationCap {
+		ts.iterationCap = cap
+	}
+}
+
 // applyFallbackForEmptyResponse returns the user-facing message to use when
 // turnCoord exits with no assistant prose. Caller must only invoke this when
 // finalContent == "" so we can pick the highest-priority fallback.
@@ -683,6 +725,22 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 //  4. opts.DefaultResponse — last resort; matches the pre-Phase 11 behavior
 //     when LLM hits an empty response with no goal context.
 func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
+	// Phase 12.44 (owner directive 2026-08-03): the final-report iter has
+	// already run (postCompleteGoalReportSent=true) → user đã nhận full
+	// summary từ tool publish. LLM empty → SILENT skip: no DefaultResponse,
+	// no goal.Summary duplicate, no toolLimitResponse. Guard lives INSIDE
+	// the helper because it is called from 2 sites (turn_coord.go ~638 and
+	// ~654) — a per-site guard would leak the duplicate (F18).
+	if ts.postCompleteGoalReportSent {
+		logger.WarnCF("agent", "Final-report iter produced empty text; silent skip (by design)",
+			map[string]any{
+				"agent_id":       ts.agentID,
+				"session_key":   ts.sessionKey,
+				"iteration":     ts.currentIteration(),
+				"iteration_cap": ts.iterationCap,
+			})
+		return ""
+	}
 	// Phase 12.6.0 ordering fix: prefer goal.Summary over DefaultResponse
 	// when goal was finalized without prose. See helper doc above for
 	// full rationale + preference order.

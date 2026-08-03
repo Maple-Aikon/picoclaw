@@ -34,8 +34,18 @@ type turnStateKey struct{}
 // TurnStateAccess is the minimal surface goal tools need from a turn.
 // *agent.turnState satisfies this implicitly (Phase 11: no need to add
 // a named type alias — the methods are enough).
+//
+// Phase 12.44: PublishToUser added for complete_goal self-publish.
+// Best-effort fire-and-forget như mọi outbound khác — VOID, KHÔNG có error
+// path (PublishResponseIfNeeded là void; hệ thống không có fail-path
+// detectable, F14 fold). Goal tools (complete_goal) dùng để self-publish
+// full summary mà không set ResponseHandled (loop continues to the
+// final-report iter).
 type TurnStateAccess interface {
 	MarkGoalFinalized()
+	// PublishToUser sends text directly to the user's channel. Void + best-
+	// effort (system-wide norm — no outbound has a delivery guarantee).
+	PublishToUser(ctx context.Context, text string)
 }
 
 // WithTurnState attaches a TurnStateAccess to ctx. Pipeline execute code
@@ -434,7 +444,7 @@ When to use:
 
 When NOT to use:
 - When your work is done and the user has no pending decision — call complete_goal instead.
-- When you need to wait for user approval, decision, or review before continuing — call complete_goal with a summary describing the wait state. complete_goal accepts any 1-500 char summary; "Waiting for Maple to review X" is a valid summary even when goal work is not yet complete.
+- When you need to wait for user approval, decision, or review before continuing — call complete_goal with a summary describing the wait state. complete_goal accepts any 1-1000 char summary; "Waiting for Maple to review X" is a valid summary even when goal work is not yet complete.
 - Calling goal_progress with empty remaining_steps is rejected to prevent "log then complete_goal at next iter" cycles.
 
 Required field: remaining_steps MUST be non-empty (>= 1 entry). The runtime only grants more iterations when this field is populated.
@@ -651,10 +661,10 @@ func (t *CompleteGoalTool) Description() string {
 
 If no goal exists, or the goal is already completed, the tool returns an invalid_input error. Use set_goal to start a new one before calling this.
 
-Provide a ` + "`summary`" + ` argument (1-500 chars) — the LLM's final user-facing reply. The tool stores it in the archive file as the goal's ` + "`summary`" + ` field. If the LLM has already output a text reply this iteration (assistantText non-empty), that text is sent to the user instead of the summary. Either way, the LLM's final reply is guaranteed to reach the user before the turn loop breaks.
+Provide a ` + "`summary`" + ` argument (1-1000 chars) — the LLM's final user-facing reply. The tool stores it in the archive file as the goal's ` + "`summary`" + ` field (truncated to 1000 chars if longer) and ALSO publishes the FULL summary directly to the user inside the tool call, before the turn loop continues. If the LLM has already output a text reply this iteration (assistantText non-empty), that text is sent to the user instead of the summary. Either way, the LLM's final reply is guaranteed to reach the user before the turn loop breaks.
 
 When to use complete_goal even when goal work is not yet "fully done":
-- When you need user approval, decision, or review before continuing (e.g., "Waiting for Maple to review the 2 SOP candidates"). The summary field accepts any 1-500 char message — including wait-state descriptions. complete_goal is the canonical way to pause for user input; do NOT call goal_progress with empty remaining_steps as a substitute (it is rejected as of Phase 12.20).
+- When you need user approval, decision, or review before continuing (e.g., "Waiting for Maple to review the 2 SOP candidates"). The summary field accepts any 1-1000 char message — including wait-state descriptions. complete_goal is the canonical way to pause for user input; do NOT call goal_progress with empty remaining_steps as a substitute (it is rejected as of Phase 12.20).
 - When all remaining_steps are blocked by something external (human decision, upstream dependency) and there is no more tool work to do in this turn.`
 }
 
@@ -665,8 +675,8 @@ func (t *CompleteGoalTool) Parameters() map[string]any {
 			"summary": map[string]any{
 				"type":        "string",
 				"minLength":   1,
-				"maxLength":   500,
-				"description": "Final user-facing reply (1-500 chars). Saved to goal.Summary in the archive. Used as the final reply to the user when the LLM did not output text on this iteration. If you already output a text reply, that takes precedence.",
+				"maxLength":   MaxGoalSummaryRunes,
+				"description": "Final user-facing reply (1-1000 chars). Published in FULL to the user inside the tool call; the archive stores a copy truncated to 1000 chars if longer. Used as the final reply to the user when the LLM did not output text on this iteration. If you already output a text reply, that takes precedence.",
 			},
 		},
 		"required": []string{"summary"},
@@ -674,6 +684,9 @@ func (t *CompleteGoalTool) Parameters() map[string]any {
 }
 
 func (t *CompleteGoalTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
+	if ctx == nil {
+		return invalidInputForLLM("complete_goal: nil context")
+	}
 	sessionKey, _ := sessionKeyFromCtx(ctx)
 	if sessionKey == "" {
 		return invalidInputForLLM("complete_goal: no session key on context")
@@ -683,10 +696,15 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, args map[string]any) *to
 	// final reply on the LLM's behalf — that would defeat the audit trail.
 	summary := strings.TrimSpace(stringArg(args, "summary"))
 	if summary == "" {
-		return invalidInputForLLM("complete_goal: `summary` is required (1-500 chars). Provide your final user-facing reply.")
+		return invalidInputForLLM("complete_goal: `summary` is required (1-1000 chars). Provide your final user-facing reply.")
 	}
-	if utf8.RuneCountInString(summary) > 500 {
-		return invalidInputForLLM("complete_goal: `summary` exceeds 500 characters (Unicode); shorten your final reply.")
+	// Phase 12.44 (owner decision 2026-08-03): summaries longer than the
+	// wire cap are TRUNCATED for the archive (never rejected) — the FULL
+	// summary still reaches the user via PublishToUser below. Replacing the
+	// Phase 12.28.3 strict-reject (>500) wire gate.
+	archivedSummary := summary
+	if utf8.RuneCountInString(archivedSummary) > MaxGoalSummaryRunes {
+		archivedSummary = truncateRunes(archivedSummary, MaxGoalSummaryRunes)
 	}
 	store := newStoreFromCtx(ctx, t.workspace)
 	// Use ReadAny so a second call (after Archive moved the active file)
@@ -719,7 +737,7 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, args map[string]any) *to
 	completedCount := len(g.Progress)
 	g.Status = StatusCompleted
 	g.UpdatedAt = time.Now().UTC()
-	g.Summary = summary // Phase 11: persist LLM-supplied final reply alongside the archive.
+	g.Summary = archivedSummary // Phase 12.44: archive stores the truncated (≤1000 runes) copy.
 	if err := store.Write(sessionKey, g); err != nil {
 		log.Printf("DEBUG[12.16] complete_goal Write FAILED session=%s name=%s err=%v", sessionKey, g.Name, err)
 		if tr := mapStoreError(err); tr != nil {
@@ -735,6 +753,15 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, args map[string]any) *to
 	}
 	log.Printf("DEBUG[12.16] complete_goal Archive OK session=%s name=%s workspace=%s", sessionKey, g.Name, t.workspace)
 
+	// Phase 12.44 (F14/F15 fold): ordering Write → Archive → Publish →
+	// MarkGoalFinalized (publish-then-flag, reviewer Q-A). User nhận FULL
+	// summary TRƯỚC khi state báo done — nếu ai quan sát goalFinalized=true
+	// thì summary đã ra ngoài. Crash window Archive→Publish = accepted
+	// limitation (microsecond, no outbox by design; MarkGoalFinalized has
+	// NO fail path — in-memory flag + mutex, F21A).
+	if ts := TurnStateFromContext(ctx); ts != nil && summary != "" {
+		ts.PublishToUser(ctx, summary) // FULL summary — no truncate, void, best-effort
+	}
 	// Phase 11: mark the turn as finalized so the iteration loop breaks
 	// immediately after this tool result is processed. Without this, the
 	// runtime would loop back and call the LLM again (with no goal to

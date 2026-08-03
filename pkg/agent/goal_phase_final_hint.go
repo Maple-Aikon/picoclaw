@@ -29,7 +29,7 @@ package agent
 //
 // Hint tells the LLM:
 //   - WHICH phase it is in (Final, iter N).
-//   - ONLY 1 tool is available: complete_goal (idempotent + summary 1-500).
+//   - ONLY 1 tool is available: complete_goal (idempotent + summary 1-1000).
 //   - All OTHER tools are temporarily locked (Phase 11).
 //
 // Returns nil for any non-Final phase so the hint does not bleed.
@@ -40,7 +40,7 @@ package agent
 const goalPhaseFinalHintBodyText = `
 You are in the FINAL phase of this turn. Only 1 tool is now available — complete_goal. All other tools (including set_goal and goal_progress) are permanently locked for this turn.
 
-If you have not already completed this goal, call complete_goal now with a summary describing what was accomplished. The summary field is required (1-500 chars) and is the user-facing final report for this turn.
+If you have not already completed this goal, call complete_goal now with a summary describing what was accomplished. The summary field is required (1-1000 chars) and is the user-facing final report for this turn.
 
 If you have already called complete_goal earlier in this turn, calling it again is safe and idempotent — it returns success without changing state. Do NOT call set_goal or goal_progress; they will be rejected.
 
