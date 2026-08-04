@@ -1,10 +1,10 @@
 package agent
 
 import (
-	"log"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/agent/goal"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 // GoalPhase classifies a turn along the goal-lifecycle axis so the tool
@@ -208,24 +208,27 @@ func unionAllowlist(a, b []string) []string {
 // Fail-closed: frontmatterParseFailed → empty allowlist.
 func resolveAgentToolAllowlistWithPhase(definition AgentContextDefinition, phase GoalPhase) []string {
 	if frontmatterParseFailed(definition) {
-		log.Printf("DEBUG[12.16] resolveAgentToolAllowlistWithPhase phase=%s frontmatterParseFailed=true -> []", phase)
 		return []string{}
 	}
-	if definition.Agent != nil {
-		log.Printf("DEBUG[12.16] resolveAgentToolAllowlistWithPhase phase=%s frontmatterTools=%d", phase, len(definition.Agent.Frontmatter.Tools))
-	} else {
-		log.Printf("DEBUG[12.16] resolveAgentToolAllowlistWithPhase phase=%s agentNil=true", phase)
+
+	// Phase 12.48 plan §3.3 site 1 rewrite: phase override shortcuts now
+	// go through the pkg/tools policy table — single source of truth
+	// (Plan §4.20 L1). ABSOLUTE phases (Set/Final/Checkpoint/PostFinal)
+	// return Allowlist as-is; RELATIVE (Open) falls through to base ∪
+	// BaseAdds. Unknown phase → fall through to base-allowlist logic
+	// below (existing behavior preserved for forward-compat).
+	p := tools.ToolPolicyForPhase(string(phase))
+	if p != nil && p.Allowlist != nil {
+		// ABSOLUTE row — copy Allowlist (must not mutate the table).
+		out := make([]string, len(p.Allowlist))
+		copy(out, p.Allowlist)
+		return out
 	}
 
-	// Phase override shortcuts that DO NOT depend on base allowlist.
-	// GoalPhaseSet and GoalPhaseFinal are absolute — they pin tool
-	// visibility to lifecycle tools regardless of what the agent's
-	// frontmatter declares. This matters for agents whose frontmatter
-	// omits the `tools:` field (which is the default for most agents
-	// — tools are then sourced entirely from MCP/built-in registries).
-	// Pre-fix, returning nil here meant SetAllowlist(nil) cleared the
-	// registry's allowlist entirely, exposing ALL 84 registered tools
-	// to the LLM at iter 1 (Phase 12.3 wire bug observed live).
+	// Pre-Phase 12.48: ABSOLUTE handler inline. Kept as a defensive
+	// fallback in case pkg/tools returns nil Allowlist (RELATIVE row)
+	// for some future phase we forget to flag — absolute override
+	// semantics preserved.
 	switch phase {
 	case GoalPhaseSet:
 		return []string{"set_goal"}
@@ -253,13 +256,34 @@ func resolveAgentToolAllowlistWithPhase(definition AgentContextDefinition, phase
 		return []string{"goal_progress", "complete_goal"}
 	}
 
-	if definition.Agent == nil || !frontmatterDeclaresField(definition, "tools") {
-		// Open/Checkpoint depend on base tools from frontmatter. If no
-		// base is declared, the agent has implicitly opted-in to ALL
-		// registered tools (nil allowlist = no filter on the registry).
-		// Returning nil here preserves backward compat for agents whose
-		// frontmatter omits `tools:` entirely — those rely on built-in
-		// + MCP tool registries, not on frontmatter whitelists.
+	// Plan §3.3 site 1: RELATIVE row (currently Open). Phase override does
+	// NOT change absolute allowlist — base allowlist + lifecycle BaseAdds
+	// define this phase. If the policy table has a RELATIVE row (Allowlist
+	// == nil), honor its BaseAdds.
+	if p != nil && len(p.BaseAdds) > 0 && definition.Agent != nil && frontmatterDeclaresField(definition, "tools") {
+		// Frontmatter declared. Build base ∪ BaseAdds.
+		base := make(map[string]struct{})
+		for _, raw := range definition.Agent.Frontmatter.Tools {
+			trimmed := strings.ToLower(strings.TrimSpace(raw))
+			if trimmed == "" {
+				continue
+			}
+			base[trimmed] = struct{}{}
+		}
+		for _, add := range p.BaseAdds {
+			trimmed := strings.ToLower(strings.TrimSpace(add))
+			if trimmed == "" {
+				continue
+			}
+			base[trimmed] = struct{}{}
+		}
+		return sortedKeys(base)
+	}
+
+	if definition.Agent == nil {
+		// Backward compat: agents without frontmatter rely on registry-wide
+		// visibility. Returning nil here preserves the pre-Phase 12.48
+		// "no `tools:` field declared = no filter" semantics.
 		return nil
 	}
 
@@ -272,30 +296,8 @@ func resolveAgentToolAllowlistWithPhase(definition AgentContextDefinition, phase
 		base[trimmed] = struct{}{}
 	}
 
-	switch phase {
-	case GoalPhaseOpen:
-		// GoalPhaseOpen = "work" phase. LLM has full base tools plus
-		// view_goal (peek at goal state) and complete_goal (early
-		// completion without going through Checkpoint).
-		// IMPORTANT: goal_progress is INTENTIONALLY NOT exposed here
-		// (Phase 11 design decision, validated Phase 12.14/12.23/12.24d).
-		// Self-extending iteration cap from Open would allow LLM to
-		// bypass the cap-burst checkpoint semantics and risk infinite
-		// loops. To extend cap, LLM must reach Checkpoint (iter ==
-		// iterationCap) which exposes goal_progress as a deterministic
-		// one-shot trigger.
-		result := sortedKeys(base)
-		return unionAllowlist(result, []string{"view_goal", "complete_goal"})
-	case GoalPhaseCheckpoint:
-		// GoalPhaseCheckpoint = "extend or complete" phase. Lifecycle-only
-		// allowlist (goal_progress for self-extend, complete_goal for
-		// finalization). ABSOLUTE — base tools not exposed regardless of
-		// frontmatter config.
-		result := sortedKeys(base)
-		return unionAllowlist(result, []string{"goal_progress", "complete_goal"})
-	default:
-		// Unknown phase → degrade to base only (safest default; no
-		// lifecycle tool gets exposed if we cannot classify).
-		return sortedKeys(base)
-	}
+	// Plan §3.3 site 1 rewrite: RELATIVE row was handled above. If we get
+	// here, the phase is unknown to the policy table (or has no BaseAdds).
+	// Degrade to base only (no lifecycle tool gets exposed).
+	return sortedKeys(base)
 }

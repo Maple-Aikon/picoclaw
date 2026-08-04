@@ -319,42 +319,12 @@ func (r *ToolRegistry) IsAllowed(name string) bool {
 	return r.toolAllowedLocked(name)
 }
 
-// isLifecycleToolAllowed enforces which goal lifecycle tool may be called
-// at a given phase, regardless of allowlist membership.
-//
-// Phase 12.31: this is a second gate ON TOP of toolAllowedLocked's
-// allowlist membership check. It catches the case where an agent has
-// no `tools:` frontmatter field (the main Telegram agent), so
-// SetAllowlist(nil) leaves all 85 tools visible at OPEN — including
-// set_goal and goal_progress, which should be restricted by phase.
-//
-// Returns true when the tool may be called at this phase:
-//   - set_goal:       only at SET
-//   - goal_progress:  only at CHECKPOINT
-//   - view_goal:      only at OPEN
-//   - complete_goal:  any non-empty phase (always allowed)
-//   - (other):        always true
-//
-// Empty phase ("") disables the gate entirely — all tools return true
-// for backward compat with SetAllowlist-only callers (e.g., instance.go:113
-// agent init path that does not call SetPhase).
+// isLifecycleToolAllowed — thin shim to IsLifecycleToolAllowed (Plan §3.3
+// site 2 rewrite, T4). Kept for in-package callers that do not want to
+// re-route through the public helper. New code should call
+// IsLifecycleToolAllowed directly.
 func isLifecycleToolAllowed(toolName, phase string) bool {
-	name := strings.ToLower(strings.TrimSpace(toolName))
-	phase = strings.ToLower(strings.TrimSpace(phase))
-	if phase == "" {
-		return true // phase gate disabled — backward compat
-	}
-	switch name {
-	case "set_goal":
-		return phase == "set"
-	case "goal_progress":
-		return phase == "checkpoint"
-	case "view_goal":
-		return phase == "open"
-	case "complete_goal":
-		return true // any non-empty phase
-	}
-	return true
+	return IsLifecycleToolAllowed(toolName, phase)
 }
 
 func (r *ToolRegistry) toolAllowedLocked(name string) bool {
@@ -395,17 +365,34 @@ func (r *ToolRegistry) toolAllowedLocked(name string) bool {
 		// discovery exemption in those phases so the LLM sees exactly the
 		// tools in the allowlist and nothing else.
 		//
-		// Phase 12.18: extended to GoalPhaseCheckpoint too. The LLM has hit
-		// the iteration cap and must either extend (goal_progress) or
-		// finalize (complete_goal) — letting it BM25-search for hidden tools
-		// to keep working defeats the lifecycle gate. Goal user feedback
-		// 2026-07-26: main-turn-4 reported iter 25 (Checkpoint) showing
-		// `tools=3` (goal_progress + complete_goal + tool_search_tool_bm25)
-		// instead of the expected 2. Checkpoint is the same absolute-phase
-		// family as Set/Final — discovery exemption must NOT leak through.
-		if r.phase != "set" && r.phase != "final" && r.phase != "checkpoint" {
+		// Phase 12.48 plan §3.3 site 3 rewrite: discovery suppression now
+		// data-driven via ToolPolicyForPhase.DiscoveryVisible. Hardcoded
+		// phase list `{set, final, checkpoint}` → policy row (single source
+		// of truth). Fail-CLOSED for unknown non-empty phase (R6-F1, L2):
+		// null policy means we cannot prove the exemption is safe — block
+		// the discovery tool rather than leak it. The post_final hard guard
+		// at the top of toolAllowedLocked remains (R4-F2 HIGH, 2 reviewer) —
+		// this rewrite changes the suppression list edit, not the hard guard.
+		//
+		// Empty phase ("") is an explicit backward-compat path: agents that
+		// only ever call SetAllowlist (never SetPhase, e.g., instance.go:113)
+		// keep discovery visible. SetPhase→"" via SetAllowlist clears phase
+		// (TestToolRegistry_SetAllowlistClearsPhase) — that path expects the
+		// legacy "discovery exempt at all phases" behavior.
+		p := ToolPolicyForPhase(r.phase)
+		if p == nil && r.phase != "" {
+			return false // fail-CLOSED (R6-F1) — non-empty unknown phase
+		}
+		if p == nil {
+			// phase == "" → backward-compat path. Pre-Phase 12.5 registry
+			// did not know about phase at all; discovery always exempt.
 			return true
 		}
+		if p.DiscoveryVisible {
+			return true
+		}
+		// DiscoveryVisible=false → fall through to allowlist membership
+		// check below (BM25/Regex either in the allowlist or not).
 	}
 	_, ok := r.allowlist[strings.ToLower(strings.TrimSpace(name))]
 	return ok
