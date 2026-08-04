@@ -146,3 +146,32 @@ func TestGoalCompleteReportHint_WirePath_SuppressedWithoutFlag(t *testing.T) {
 		}
 	}
 }
+
+// Phase 12.47 (T5): the report hint carries the phase header line so the
+// LLM re-orients after the FINAL→POST-FINAL transition (the FINAL-phase
+// hint no longer fires at this iter). Wire path via buildSystemPromptParts.
+func TestGoalCompleteReportHint_PostFinalHeader_WirePath(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+	parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
+		IncludeToolUseRule:     true,
+		GoalPhase:              string(GoalPhasePostFinal),
+		PostCompleteGoalReport: true,
+	})
+	found := false
+	for _, p := range parts {
+		if p.Source.ID == PromptSourceGoalCompleteReportHint {
+			found = true
+			if !strings.Contains(p.Content, "Goal phase: POST-FINAL") {
+				t.Errorf("report hint missing 'Goal phase: POST-FINAL' header; got:\n%s", p.Content)
+			}
+			break
+		}
+	}
+	if !found {
+		ids := make([]string, 0, len(parts))
+		for _, p := range parts {
+			ids = append(ids, string(p.Source.ID))
+		}
+		t.Fatalf("expected report hint at post_final; got parts: %v", ids)
+	}
+}

@@ -23,7 +23,9 @@ package agent
 // far with concrete artifacts, (3) remaining / not done, (4) approach
 // pros/cons, (5) open notes going forward. Anchors via "Tools are now
 // locked. Do NOT call any tools." preserves Phase 12.7 behavior.
-const goalCompleteReportHintText = `Goal complete. The final summary has been recorded.
+const goalCompleteReportHintText = `Goal phase: POST-FINAL.
+
+Goal complete. The final summary has been recorded.
 
 This is your LAST CHANCE to send a final report to the user for this goal. Tools are now locked — do NOT call any tools (including set_goal or complete_goal again). Output a single user-facing report in 5 sections, in this order:
 

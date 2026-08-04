@@ -449,3 +449,15 @@ func TestGoalPhaseCheckpointHint_BuildSystemPromptWithCacheAndSnapshot_WirePath(
 		t.Errorf("BuildSystemPromptWithCacheAndSnapshot should embed GoalSnapshot in CHECKPOINT hint; got:\n%s", got)
 	}
 }
+
+// Phase 12.47 (T5): the FINAL-phase hint must NOT fire at POST-FINAL — the
+// post-complete_goal report iter is now its own phase, the 5-section
+// report hint owns that slot.
+func TestGoalPhaseFinalHint_NilAtPostFinal(t *testing.T) {
+	if got := goalPhaseFinalHintContributor(PromptBuildRequest{
+		GoalPhase:           string(GoalPhasePostFinal),
+		PostCompleteGoalReport: true,
+	}); got != nil {
+		t.Fatalf("FINAL hint must be nil at post_final, got part %q", got.ID)
+	}
+}
