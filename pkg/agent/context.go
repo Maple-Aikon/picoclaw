@@ -227,6 +227,10 @@ func formatToolDiscoveryRule(useBM25, useRegex bool, phase GoalPhase) string {
 		return `5. **Tool Discovery** - At CHECKPOINT phase, tool_search_tool_bm25 and tool_search_tool_regex are locked. Do not search; only call "goal_progress" or "complete_goal" (the only 2 visible tools). Discovery will unlock at your next turn's OPEN phase.`
 	case GoalPhaseFinal:
 		return `5. **Tool Discovery** - At FINAL phase, tool_search_tool_bm25 and tool_search_tool_regex are locked. Do not search; only call "complete_goal" (the only visible tool). Discovery will not unlock this turn.`
+	case GoalPhasePostFinal:
+		// Phase 12.47: discovery locked at POST-FINAL — no tool names
+		// claimed, no search (Phase 12.40.1).
+		return `5. **Tool Discovery** - At POST-FINAL phase, tool discovery is locked. Do not search; output the final report text directly.`
 	}
 
 	var toolNames []string

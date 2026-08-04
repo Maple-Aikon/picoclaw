@@ -22,6 +22,11 @@ func gateSkipMessageForPhase(toolName string, phase GoalPhase) string {
 		return fmt.Sprintf("tool %q is temporarily unavailable. goal_progress and complete_goal are the only available tools — call goal_progress to continue, or complete_goal to finalize. %s", toolName, suffix)
 	case GoalPhaseFinal:
 		return fmt.Sprintf("tool %q is temporarily unavailable. complete_goal is the only available tool — call it to finalize the turn. %s", toolName, suffix)
+	case GoalPhasePostFinal:
+		// Phase 12.47 (D7, E5, F2): state-agnostic tuyệt đối — message lọt
+		// vào history khi strip-failure edge; KHÔNG chứa phase/iter/cap
+		// claims (Phase 12.43 invariant).
+		return fmt.Sprintf("tool %q is temporarily unavailable. No tools are available — output your final report text directly. %s", toolName, suffix)
 	default: // GoalPhaseOpen
 		return fmt.Sprintf("tool %q is temporarily unavailable. Try a different tool, or call complete_goal to finalize the turn. %s", toolName, suffix)
 	}

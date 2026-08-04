@@ -102,6 +102,10 @@ func (c mcpServerPromptContributor) ContributePrompt(
 			availability = "locked at this phase; will unlock at next turn's OPEN phase"
 		case GoalPhaseFinal:
 			availability = "locked at this terminal phase; will not unlock this turn"
+		case GoalPhasePostFinal:
+			// Phase 12.47: no tools at all — same terminal wording, no
+			// tool names claimed (Phase 12.40.1 invariant).
+			availability = "locked at this terminal phase; will not unlock this turn"
 		default:
 			availability = "hidden behind tool discovery until unlocked"
 		}
