@@ -156,14 +156,18 @@ func (p *Pipeline) retryExecuteToolChain(
 		return RetryDecisionRetry, nil
 	})
 	if err != nil {
-		ts.goalArchiveRequested = true
+		if ts.hasGoal() {
+			ts.goalArchiveRequested = true
+		}
 		return ControlBreak, err
 	}
 	if exhausted {
 		// Cap hit while still retrying. Mirror the canonical
 		// handleGoalRecovery OnExhausted (pipeline_llm.go:1173): archive
 		// the goal so the caller finalizes cleanly, then break out.
-		ts.goalArchiveRequested = true
+		if ts.hasGoal() {
+			ts.goalArchiveRequested = true
+		}
 		logger.InfoCF("agent", "retryExecuteToolChain: archive after exhaustion",
 			map[string]any{
 				"agent_id": ts.agent.ID,
@@ -298,7 +302,9 @@ func (p *Pipeline) retryExecuteToolChainOnce(
 	//   - both "" → no error detected → continue normally
 	archiveTool, retryMsg := checkToolExecErrorRecovery(ts, exec)
 	if archiveTool != "" {
-		ts.goalArchiveRequested = true
+		if ts.hasGoal() {
+			ts.goalArchiveRequested = true
+		}
 		logger.InfoCF("agent", "retryExecuteToolChain: tool-exec retries exhausted",
 			map[string]any{
 				"agent_id": ts.agent.ID,
@@ -398,7 +404,9 @@ func (p *Pipeline) recallAndCheckTool(
 	}
 	resp, err := p.RecallLLM(ctx, turnCtx, ts, exec, iteration, helperName, setupFunc)
 	if err != nil || resp == nil {
-		ts.goalArchiveRequested = true
+		if ts.hasGoal() {
+			ts.goalArchiveRequested = true
+		}
 		return ControlBreak, "", err
 	}
 

@@ -374,9 +374,15 @@ func TestCheckToolExecErrorRecovery_NonToolRole(t *testing.T) {
 // Regression-proof for the main-turn-4 failure.
 func TestCheckToolExecErrorRecovery_ExecutionGateFormat_TriggersRecovery(t *testing.T) {
 	ts := newPhase5TurnState(t)
+	// Phase 12.46: gate blocks are stamped with typed ErrInvalidInput by
+	// the ExecuteTools pre-check (pipeline_execute.go). Tool name comes
+	// from the message ToolCallID (prefix-parsing removed with the legacy
+	// execute-then-error path).
+	ts.lastToolResult = toolshared.ErrorResult(`tool "read_file" is temporarily unavailable`).
+		WithErrorKind(toolshared.ErrInvalidInput)
 	exec := &turnExecution{
 		messages: []providers.Message{
-			{Role: "tool", Content: `tool "read_file" is temporarily unavailable (allowed tools: [goal_progress complete_goal])`},
+			{Role: "tool", ToolCallID: "read_file", Content: `tool "read_file" is temporarily unavailable (allowed tools: [goal_progress complete_goal])`},
 		},
 	}
 	tool, msg := checkToolExecErrorRecovery(ts, exec)
@@ -384,7 +390,7 @@ func TestCheckToolExecErrorRecovery_ExecutionGateFormat_TriggersRecovery(t *test
 		t.Fatalf("expected retry (no archive) on first execution-gate rejection, got tool=%q msg=%q", tool, msg)
 	}
 	if ts.toolExecRecoveryAttempts["read_file"] != 1 {
-		t.Fatalf("expected attempt count=1 for read_file (parsed from quoted name), got %d", ts.toolExecRecoveryAttempts["read_file"])
+		t.Fatalf("expected attempt count=1 for read_file (from ToolCallID), got %d", ts.toolExecRecoveryAttempts["read_file"])
 	}
 }
 
@@ -396,12 +402,14 @@ func TestCheckToolExecErrorRecovery_ExecutionGateFormat_TriggersRecovery(t *test
 // complete_goal" instead of "wait and retry the same call".
 func TestCheckToolExecErrorRecovery_ExecutionGateFormat_NotTransient(t *testing.T) {
 	ts := newPhase5TurnState(t)
+	// Phase 12.46: typed ErrInvalidInput from the pre-check. A "timeout"
+	// phrase inside the message must NOT flip IsTransient (typed kind
+	// wins over wording).
+	ts.lastToolResult = toolshared.ErrorResult(`tool "read_file" is temporarily unavailable (timeout waiting on allowed tools)`).
+		WithErrorKind(toolshared.ErrInvalidInput)
 	exec := &turnExecution{
 		messages: []providers.Message{
-			// Phrase the error to include "timeout" so the transient
-			// heuristic WOULD trigger if applied — verifies our explicit
-			// override at the recovery call site.
-			{Role: "tool", Content: `tool "read_file" is temporarily unavailable (timeout waiting on allowed tools)`},
+			{Role: "tool", ToolCallID: "read_file", Content: `tool "read_file" is temporarily unavailable (timeout waiting on allowed tools)`},
 		},
 	}
 	// Force Checkpoint phase so the recovery builder picks the
@@ -1247,9 +1255,12 @@ func TestCheckToolExecErrorRecovery_DoesNotFireOnUnrecoverableErrKind(t *testing
 // T-B5: execution gate rejection — regression for Phase 12.18.
 // ts.lastToolResult.ErrKind == "" + content matches "tool \"X\" is not available"
 // should still fire (registry execution gate doesn't stamp ErrKind).
-func TestCheckToolExecErrorRecovery_StillMatchesExecutionGate(t *testing.T) {
-	ts := newPhase5TurnState(t)
-	// No ts.lastToolResult set — rely on prefix fallback (Phase 12.18 path).
+func TestCheckToolExecErrorRecovery_StillMatchesExecutionGate(t *testing.T) {	ts := newPhase5TurnState(t)
+	// Phase 12.46: the pre-check stamps ErrInvalidInput on gate blocks —
+	// this is the ONLY wire for gate rejections now (legacy prefix path
+	// removed with execute-then-error).
+	ts.lastToolResult = toolshared.ErrorResult(`tool "write_file" is not available in the current phase`).
+		WithErrorKind(toolshared.ErrInvalidInput)
 	exec := &turnExecution{
 		messages: []providers.Message{
 			{Role: "tool", ToolCallID: "write_file", Content: `tool "write_file" is not available in the current phase (allowed tools: [goal_progress, complete_goal])`},
@@ -1259,6 +1270,9 @@ func TestCheckToolExecErrorRecovery_StillMatchesExecutionGate(t *testing.T) {
 	tool, msg := checkToolExecErrorRecovery(ts, exec)
 	if tool != "" && msg == "" {
 		t.Fatalf("Phase 12.18 regression: execution gate rejection should still fire (tool=%q msg=%q)", tool, msg)
+	}
+	if msg == "" {
+		t.Fatalf("expected retry message from typed gate rejection; got tool=%q msg=%q", tool, msg)
 	}
 }
 
@@ -1325,19 +1339,20 @@ func TestCheckToolExecErrorRecovery_PrefixFallbackWhenLastToolResultNil(t *testi
 // registry execution gate rejection has empty ErrKind AND does NOT
 // necessarily match the "Tool execution failed:" prefix — only matches
 // the "tool \"X\" is not available" prefix.
-func TestCheckToolExecErrorRecovery_PrefixFallbackWhenErrKindEmpty(t *testing.T) {
-	ts := newPhase5TurnState(t)
-	// lastToolResult exists but has empty ErrKind (registry execution gate).
+func TestCheckToolExecErrorRecovery_PrefixFallbackWhenErrKindEmpty(t *testing.T) {	ts := newPhase5TurnState(t)
+	// lastToolResult exists but has empty ErrKind — fall back to the
+	// legacy executor prefix "Tool execution failed:" (Phase 12.46: the
+	// gate-prefix fallback is gone; gate blocks are always typed).
 	ts.lastToolResult = &toolshared.ToolResult{IsError: true} // no ErrKind
 	exec := &turnExecution{
 		messages: []providers.Message{
-			{Role: "tool", ToolCallID: "write_file", Content: `tool "write_file" is temporarily unavailable`},
+			{Role: "tool", ToolCallID: "write_file", Content: `Tool execution failed: write_file: permission denied`},
 		},
 	}
 
 	tool, msg := checkToolExecErrorRecovery(ts, exec)
 	if msg == "" {
-		t.Fatalf("Phase 12.18 regression-proof: empty ErrKind + execution gate prefix should fire recovery (got msg=%q tool=%q)", msg, tool)
+		t.Fatalf("Phase 12.18 regression-proof: empty ErrKind + executor prefix should fire recovery (got msg=%q tool=%q)", msg, tool)
 	}
 }
 

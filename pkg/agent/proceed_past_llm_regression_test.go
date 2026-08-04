@@ -36,7 +36,7 @@ type proceedPastLLMRegressionFixture struct {
 	exec     *turnExecution
 }
 
-func newProceedPastLLMFixture(t *testing.T, tc []providers.ToolCall) proceedPastLLMRegressionFixture {
+func newProceedPastLLMFixture(t *testing.T, tc []providers.ToolCall, content string) proceedPastLLMRegressionFixture {
 	t.Helper()
 
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
@@ -68,7 +68,7 @@ func newProceedPastLLMFixture(t *testing.T, tc []providers.ToolCall) proceedPast
 	// L844-847. Setting only normalizedToolCalls would short-circuit the test
 	// at the no-tool-call early return (L839) and never reach L916.
 	exec.response = &providers.LLMResponse{
-		Content:      "",
+		Content:      content,
 		FinishReason: "tool_calls",
 		ToolCalls:    tc,
 	}
@@ -95,7 +95,7 @@ func TestProceedPastLLM_ReturnsControlToolLoop_WhenHasToolCalls(t *testing.T) {
 			},
 		},
 	}
-	fx := newProceedPastLLMFixture(t, tc)
+	fx := newProceedPastLLMFixture(t, tc, "")
 
 	got, err := fx.pipeline.proceedPastLLM(
 		context.Background(),
@@ -124,7 +124,7 @@ func TestProceedPastLLM_ReturnsControlToolLoop_WithMultipleToolCalls(t *testing.
 		{ID: "call_1", Name: "fs.read", Function: &providers.FunctionCall{Name: "fs.read", Arguments: `{"path":"a"}`}},
 		{ID: "call_2", Name: "fs.read", Function: &providers.FunctionCall{Name: "fs.read", Arguments: `{"path":"b"}`}},
 	}
-	fx := newProceedPastLLMFixture(t, tc)
+	fx := newProceedPastLLMFixture(t, tc, "")
 
 	got, err := fx.pipeline.proceedPastLLM(
 		context.Background(),
@@ -150,7 +150,7 @@ func TestProceedPastLLM_ReturnsControlToolLoop_WithMultipleToolCalls(t *testing.
 // branch boundary so the L916 fix can't silently regress into "always
 // return ControlToolLoop when ToolCalls is empty".
 func TestProceedPastLLM_ReturnsControlBreak_WhenNoToolCalls(t *testing.T) {
-	fx := newProceedPastLLMFixture(t, nil) // no tool calls
+	fx := newProceedPastLLMFixture(t, nil, "direct answer text") // no tool calls, direct reply
 
 	got, err := fx.pipeline.proceedPastLLM(
 		context.Background(),

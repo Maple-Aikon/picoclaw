@@ -399,7 +399,10 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 	//     restricted allowlist — iter-bump has no progress signal here.
 	//   - Final with postCompleteGoalReportSent=true: silent (RecoveryNone)
 	//     — goal is finalized + report already sent, no more action possible.
-	if ctx.Phase != string(GoalPhaseOpen) && !ctx.HasToolCalls && !ctx.TextEmpty {
+	// Phase 12.46: SET excluded from restricted text-only recovery — a
+	// direct text reply at SET is a valid turn end (owner decision,
+	// anh Maple 2026-08-03). Restricted = Checkpoint + Final only.
+	if (ctx.Phase == string(GoalPhaseCheckpoint) || ctx.Phase == string(GoalPhaseFinal)) && !ctx.HasToolCalls && !ctx.TextEmpty {
 		if ctx.Phase == string(GoalPhaseFinal) && ctx.PostCompleteGoalReport {
 			return RecoveryNone, ""
 		}
@@ -469,7 +472,9 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 	// carry the message forward via ts.pendingRecoveryMessage, caller at
 	// turn_coord.go bumps iter naturally. NO counter increment — Open has
 	// no per-iter cap because iter-bump is the escalation path.
-	if !ctx.HasToolCalls && !ctx.TextEmpty {
+	// Phase 12.46: explicit GoalPhaseOpen guard — SET text-only falls
+	// through to RecoveryNone (turn ends) and must NOT hit this branch.
+	if ctx.Phase == string(GoalPhaseOpen) && !ctx.HasToolCalls && !ctx.TextEmpty {
 		ts.textOnlyStreak++
 		// Increment within-iteration escalation counters in order.
 		// Phase 12.37 D3: OPEN path uses cap=1+1 (separate from
@@ -579,9 +584,7 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 		tsToolErrKind = ts.lastToolResult.ErrKind
 	}
 	const executorErrPrefix = "Tool execution failed:"
-	const executionGatePrefix = `tool "`
 	isExecutorErr := len(last.Content) >= len(executorErrPrefix) && last.Content[:len(executorErrPrefix)] == executorErrPrefix
-	isExecutionGateErr := len(last.Content) >= len(executionGatePrefix) && last.Content[:len(executionGatePrefix)] == executionGatePrefix
 
 	recoverable := false
 	switch {
@@ -593,29 +596,18 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 			return "", "" // non-recoverable typed error
 		}
 	default:
-		// Legacy / prefix fallback. Two shapes still seen in the wild:
-		// (a) "Tool execution failed:" — legacy executor error wrap.
-		// (b) "tool \"" — Phase 12.3 execution gate rejection
-		//     (registry doesn't stamp ErrKind for these).
-		recoverable = isExecutorErr || isExecutionGateErr
+		// Legacy prefix fallback: "Tool execution failed:" — executor
+		// error wrap (real runtime failures). Phase 12.46: the execution
+		// gate rejection path (`tool "X" is not available...`) is GONE —
+		// ExecuteTools pre-checks IsAllowed at every phase (Phase 12.35 +
+		// 12.37 + 12.46) and stamps ErrInvalidInput, so gate blocks never
+		// reach the executor and never need a prefix match here.
+		recoverable = isExecutorErr
 	}
 	if !recoverable {
 		return "", ""
 	}
-	// Phase 12.18: extract tool name from the message when execution
-	// gate rejected. Format: `tool "X" is not available...` — parse X
-	// from the leading `tool "` quote. Falls back to last.ToolCallID
-	// when the format doesn't yield a quoted name (legacy executor
-	// error uses %q'd tool name in different positions, so
-	// last.ToolCallID is the safer fallback there).
 	toolName := last.ToolCallID
-	if isExecutionGateErr && tsToolErrKind == "" && toolName == "" {
-		// Strip `tool "` prefix and read until next `"`.
-		rest := last.Content[len(executionGatePrefix):]
-		if idx := strings.Index(rest, `"`); idx > 0 {
-			toolName = rest[:idx]
-		}
-	}
 	if toolName == "" {
 		toolName = "unknown"
 	}
@@ -629,9 +621,9 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 		// Phase 12.28.3 Fix B: typed ErrKind wins over prefix heuristic.
 		// ErrTransient / ErrTimeout → IsTransient=true (auto-retry hint).
 		// ErrInvalidInput / unknown typed → IsTransient=false (arg-shape fix).
-		// Empty ErrKind (legacy / execution gate) → fall back to prefix
-		// heuristic (Phase 12.6.1 + 12.18 behavior).
-		IsTransient:   isTransientFromErrKind(tsToolErrKind, last.Content, isExecutionGateErr),
+		// Empty ErrKind (legacy executor) → fall back to prefix heuristic
+		// (Phase 12.6.1 + 12.18 behavior).
+		IsTransient:   isTransientFromErrKind(tsToolErrKind, last.Content),
 		MaxIterations: ts.iterationCap,
 	})
 	if action == RecoveryArchiveGoal {
@@ -785,7 +777,7 @@ func isTransientErrorText(errMsg string) bool {
 //     → fall back to the Phase 12.6.1 prefix heuristic.
 //     Execution-gate rejections are always non-transient (Phase 12.18:
 //     arg changes can't help — the tool is blocked by phase policy).
-func isTransientFromErrKind(kind toolshared.ErrorKind, content string, isExecutionGateErr bool) bool {
+func isTransientFromErrKind(kind toolshared.ErrorKind, content string) bool {
 	switch kind {
 	case toolshared.ErrTransient, toolshared.ErrTimeout:
 		return true
@@ -793,8 +785,8 @@ func isTransientFromErrKind(kind toolshared.ErrorKind, content string, isExecuti
 		return false
 	}
 	// Empty / unknown typed kind — prefix heuristic.
-	if isExecutionGateErr {
-		return false
-	}
+	// Phase 12.46: the execution-gate param is gone (gate blocks are always
+	// typed ErrInvalidInput by the pre-check); the executor-error heuristic
+	// applies.
 	return isTransientErrorText(content)
 }

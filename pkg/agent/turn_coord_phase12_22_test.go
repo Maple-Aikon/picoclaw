@@ -33,6 +33,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/agent/goal"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/tools/shared"
 )
 
 func toolNamesOf(r *providers.LLMResponse) string {
@@ -216,6 +217,8 @@ func TestPhase12_22_CheckpointToolBlock_SameIterRetry(t *testing.T) {
 	ts.toolExecRecoveryAttempts = nil
 
 	startIter := ts.CurrentIteration()
+	// Phase 12.46: pre-check stamps typed ErrInvalidInput on gate blocks.
+	ts.lastToolResult = toolshared.ErrorResult(`tool "read_file" is temporarily unavailable`).WithErrorKind(toolshared.ErrInvalidInput)
 	toolName, msg := checkToolExecErrorRecovery(ts, exec)
 	if toolName != "" {
 		t.Errorf("expected toolName=empty for retry case (Phase 12.18 design), got %q", toolName)

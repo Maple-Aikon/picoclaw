@@ -77,20 +77,23 @@ func TestTextOnlySoftRetry_Checkpoint_ReturnsRetrySameIter_WithCounter(t *testin
 // TestTextOnlySoftRetry_Set_ReturnsRetrySameIter_WithCounter verifies Phase 12.27
 // Set phase is now eligible for text-only recovery (was silent pre-12.27).
 // Phase 12.27.7 lesson: ABSOLUTE allowlist phases need same-iter retry.
-func TestTextOnlySoftRetry_Set_ReturnsRetrySameIter_WithCounter(t *testing.T) {
+// Phase 12.46 (owner decision, anh Maple 2026-08-03): SET text-only gets
+// NO recovery — a direct text reply at SET ends the turn. Supersedes the
+// Phase 12.27/12.37 same-iter retry behavior for SET.
+func TestTextOnlySoftRetry_Set_NoRecovery_Phase12_46(t *testing.T) {
 	ts := newPhase5TurnState(t)
 	ctx := RecoveryContext{Phase: string(GoalPhaseSet), TextEmpty: false, HasToolCalls: false}
 
 	action, msg := evaluateRecovery(ts, ctx)
 
-	if action != RecoveryRetrySameIteration {
-		t.Fatalf("action=%v, want RecoveryRetrySameIteration (exact) — Set is now eligible", action)
+	if action != RecoveryNone {
+		t.Fatalf("action=%v, want RecoveryNone (exact) — SET text-only ends turn", action)
 	}
-	if !strings.HasPrefix(msg, TextOnlySoftRetryMessage) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
-		t.Fatalf("msg=%q, want TextOnlySoftRetryMessage (Set uses ABSOLUTE wire)", msg)
+	if msg != "" {
+		t.Fatalf("msg=%q, want empty (no recovery message at SET text-only)", msg)
 	}
-	if ts.textOnlySoftRetriesDone != 1 {
-		t.Fatalf("textOnlySoftRetriesDone=%d, want 1 (counter incremented)", ts.textOnlySoftRetriesDone)
+	if ts.textOnlySoftRetriesDone != 0 {
+		t.Fatalf("textOnlySoftRetriesDone=%d, want 0 (no counter increment)", ts.textOnlySoftRetriesDone)
 	}
 }
 
@@ -186,14 +189,14 @@ func TestEvaluateRecovery_TextOnly_PhaseOpen_IterBumpResetsCounters(t *testing.T
 func TestTextOnly_ToolCallResetsCounter_Set(t *testing.T) {
 	ts := newPhase5TurnState(t)
 
-	// Call 1: Set + text-only (no tool calls)
+	// Call 1: Set + text-only (no tool calls) — Phase 12.46: no recovery.
 	ctx1 := RecoveryContext{Phase: string(GoalPhaseSet), TextEmpty: false, HasToolCalls: false}
 	action1, _ := evaluateRecovery(ts, ctx1)
-	if action1 != RecoveryRetrySameIteration {
-		t.Fatalf("Call 1 action=%v, want RetrySameIteration (Set is now eligible)", action1)
+	if action1 != RecoveryNone {
+		t.Fatalf("Call 1 action=%v, want RecoveryNone (Set text-only ends turn)", action1)
 	}
-	if ts.textOnlySoftRetriesDone != 1 {
-		t.Fatalf("Call 1: soft=%d, want 1 (counter incremented)", ts.textOnlySoftRetriesDone)
+	if ts.textOnlySoftRetriesDone != 0 {
+		t.Fatalf("Call 1: soft=%d, want 0 (no counter increment at SET)", ts.textOnlySoftRetriesDone)
 	}
 
 	// Call 2: Set + HasToolCalls (LLM calls a tool)

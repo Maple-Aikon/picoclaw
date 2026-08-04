@@ -741,11 +741,14 @@ func (p *Pipeline) proceedPastLLM(
 		// Phase 5: evaluate goal-lifecycle recovery triggers (empty text + text-only streak).
 		// Only fires when a goal is active. RecoveryAction determines whether we
 		// re-invoke LLM in the same iteration, force-complete, or archive.
-		if ts.hasGoal() && !exec.gracefulTerminal {
+		if (ts.hasGoal() || ts.currentGoalPhase() == GoalPhaseSet) && !exec.gracefulTerminal {
 			if action, msg := evaluateRecovery(ts, RecoveryContext{
 				Phase:                  string(ts.currentGoalPhase()),
 				Iteration:              iteration,
-				TextEmpty:              exec.response.Content == "",
+				// Phase 12.46: reasoning-only responses are NOT empty —
+				// the reasoning is promoted to content when a
+				// reasoning_channel_id is configured (see below).
+				TextEmpty:              exec.response.Content == "" && reasoningContent == "",
 				HasToolCalls:           false,
 				MaxIterations:          ts.iterationCap,
 				PostCompleteGoalReport: ts.postCompleteGoalReportSent,
@@ -1294,7 +1297,9 @@ func (p *Pipeline) handleGoalRecovery(
 		}
 
 		// No active goal or graceful terminal — no recovery.
-		if !ts.hasGoal() || exec.gracefulTerminal {
+		// Phase 12.46: SET pre-goal (hasGoal=false, phase=Set) still gets
+		// same-iter retry so empty responses at iter 1 recover cap 3.
+		if (!ts.hasGoal() && ts.currentGoalPhase() != GoalPhaseSet) || exec.gracefulTerminal {
 			return RetryDecisionDone, nil
 		}
 
@@ -1302,7 +1307,7 @@ func (p *Pipeline) handleGoalRecovery(
 		evalCtx := RecoveryContext{
 			Phase:                 string(ts.currentGoalPhase()),
 			Iteration:             iteration,
-			TextEmpty:             exec.response.Content == "",
+			TextEmpty:             exec.response.Content == "" && responseReasoningContent(exec.response) == "",
 			HasToolCalls:          false,
 			MaxIterations:         ts.iterationCap,
 			ToolKnowledgeRegistry: ts.agent.Tools,

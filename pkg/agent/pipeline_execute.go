@@ -19,6 +19,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/sipeed/picoclaw/pkg/tools/shared"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -193,8 +194,14 @@ toolLoop:
 		// is expected to call set_goal first; if it calls any other tool,
 		// the legacy execute-then-error path is the right behavior (LLM
 		// sees the error and learns to call set_goal).
+		// Phase 12.46: pre-check fires at EVERY phase. SET is the entry-point
+		// where the LLM must call set_goal first; when it calls any other
+		// tool, the gate-block now gets the same same-iter retry (cap 3) as
+		// every other phase. The legacy execute-then-error path (IsAllowed
+		// inside ExecuteWithContext → `tool "X"` prefix) is REMOVED (owner
+		// decision, anh Maple 2026-08-03).
 		currentPhase := ts.currentGoalPhase()
-		if ts.agent.Tools != nil && (currentPhase == GoalPhaseOpen || currentPhase == GoalPhaseCheckpoint || currentPhase == GoalPhaseFinal) {
+		if ts.agent.Tools != nil {
 			if !ts.agent.Tools.IsAllowed(toolName) {
 				denyContent := gateSkipMessageForPhase(toolName, currentPhase)
 				al.emitEvent(
@@ -215,25 +222,36 @@ toolLoop:
 					ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
 					ts.recordPersistedMessage(deniedMsg)
 				}
-				// Mark the block on turnState so checkToolExecErrorRecovery
-				// routes to retryLLMForBlockedTool (BLOCKED path) instead of
-				// the tool-exec-error path. Phase 12.35: this is the new
-				// wire-level signal that gates BLOCKED-vs-EXEC distinction.
-				ts.lastToolBlockedByGate = true
 				// lastToolResult is a *tools.ToolResult — synthesize a
-				// minimal one so the recovery gate (which reads ErrKind +
-				// Content prefix) has a uniform surface.
+				// minimal one stamped with typed ErrKind=ErrInvalidInput so
+				// the recovery gate (checkToolExecErrorRecovery, which reads
+				// ErrKind) has a uniform surface and does NOT rely on
+				// error-string prefixes (Bug A, deferred from Phase 12.35).
 				ts.lastToolResult = tools.ErrorResult(denyContent).
-					WithError(fmt.Errorf("tool %q blocked at gate (Phase 12.35)", toolName))
+					WithError(fmt.Errorf("tool %q blocked at gate (Phase 12.35)", toolName)).
+					WithErrorKind(toolshared.ErrInvalidInput)
 				exec.allResponsesHandled = false
+				// Publish tool feedback for gate-blocked calls too — the
+				// legacy execution-gate path (ExecuteWithContext → IsAllowed)
+				// ran inside the tool loop and emitted feedback; the 12.46
+				// pre-check must preserve that so callers waiting on
+				// OutboundChan (and Telegram users) still see the attempt.
+				if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "pico" {
+					fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
+					_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(
+						ts,
+						utils.FormatToolFeedbackMessage(
+							toolName,
+							toolFeedbackExplanationForToolCall(exec.response, tc, messages),
+							toolFeedbackArgsPreviewWithOptions(tc.Arguments, al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(), al.cfg.Agents.Defaults.ToolFeedback.PrettyPrint, al.cfg.Agents.Defaults.ToolFeedback.DisableEscapeHTML),
+						),
+						outboundTurnMessageOptions{kind: messageKindToolFeedback},
+					))
+					fbCancel()
+				}
 				continue
 			}
 		}
-		// Reset the gate-block flag for the next tool (each tool checks
-		// independently; if a previous tool was blocked, don't carry it
-		// over to a sibling tool that may be allowed).
-		ts.lastToolBlockedByGate = false
-
 		if al.hooks != nil {
 			toolReq, decision := al.hooks.BeforeTool(turnCtx, &ToolCallHookRequest{
 				Meta:      ts.eventMeta("runTurn", "turn.tool.before"),

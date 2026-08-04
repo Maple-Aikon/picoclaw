@@ -1023,6 +1023,10 @@ func TestConfiguredStreamingFinalizesWithDefaultResponseWhenContentEmpty(t *test
 		}},
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
+	// Phase 12.46: force OPEN so the empty-response recovery family (SET
+	// pre-goal same-iter retry) does NOT re-invoke the LLM here — this test
+	// pins the streaming fallback path, not recovery behavior.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	got := runConfiguredStreamingTurn(t, al, "pico")
 
@@ -1061,6 +1065,10 @@ func TestConfiguredStreamingToolCallsUseCompleteStreamResponse(t *testing.T) {
 	al := NewAgentLoop(cfg, msgBus, provider)
 	agent := al.GetRegistry().GetDefaultAgent()
 	agent.Tools.Register(&toolLimitTestTool{})
+	// Phase 12.46: force OPEN so the tool call executes normally (SET
+	// pre-goal would gate-block it into the retry chain and burn the
+	// second plan entry) — this test pins the streaming tool-call path.
+	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
 	got := runConfiguredStreamingTurn(t, al, "pico")
 

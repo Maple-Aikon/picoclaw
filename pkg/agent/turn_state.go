@@ -249,7 +249,6 @@ type turnState struct {
 	// path then routes to retryLLMForBlockedTool (Phase 12.22) instead of the
 	// tool-exec-error recovery path (Phase 12.28) — wire must distinguish
 	// BLOCKED-by-gate from EXEC-failed.
-	lastToolBlockedByGate bool // true if the most recent tool was blocked at the gate, not executed
 
 	// Phase 12.33: tracks the GoalPhase value that was current when
 	// messages[0] (system prompt) was last built. Used by

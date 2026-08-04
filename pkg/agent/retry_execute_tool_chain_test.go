@@ -31,7 +31,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sipeed/picoclaw/pkg/agent/goal"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -53,6 +55,12 @@ func setupRetryChainTestTurnState(t *testing.T, al *AgentLoop, pipeline *Pipelin
 	al.SkipGoalArchiveForTest()
 	al.SetGoalPhaseForTest(string(GoalPhaseOpen))
 
+	// Phase 12.46: use an isolated workspace so we can seed an ACTIVE goal
+	// — the retry-chain helper now only sets goalArchiveRequested when
+	// ts.hasGoal() is true (exhaustion without a goal is not an archive).
+	ws := t.TempDir()
+	agent.Workspace = ws
+
 	opts := makeTestProcessOpts("test-retry-chain-session-" + t.Name())
 	ts := newTurnState(agent, opts, turnEventScope{
 		turnID:  "turn-retry-chain-test",
@@ -65,6 +73,26 @@ func setupRetryChainTestTurnState(t *testing.T, al *AgentLoop, pipeline *Pipelin
 	exec, err := pipeline.SetupTurn(context.Background(), ts)
 	if err != nil {
 		t.Fatalf("SetupTurn failed: %v", err)
+	}
+
+	goalStore := goal.NewStore(ws)
+	now := time.Now().UTC()
+	activeGoal := &goal.Goal{
+		Name: "retry-chain-test",
+		Description: goal.Description{
+			Objective:       "test retry chain exhaustion archive",
+			SuccessCriteria: []string{"exhaustion sets goalArchiveRequested"},
+			Cadence:         "as_needed",
+		},
+		Status:    goal.StatusActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := goalStore.Write("test-retry-chain-session-"+t.Name(), activeGoal); err != nil {
+		t.Fatalf("Write goal: %v", err)
+	}
+	if !ts.hasGoal() {
+		t.Fatal("setup error: hasGoal=false; goal file not seeded")
 	}
 
 	return ts, exec

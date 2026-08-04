@@ -453,9 +453,11 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				// exits at iterationCap — otherwise the user sees the
 				// generic toolLimitResponse fallback. Open phase keeps the
 				// historical iter-bump behavior.
-				if ts.hasGoal() {
+				// Phase 12.46: SET pre-goal (hasGoal=false, phase=Set) gets the
+			// same tool-exec/gate-block same-iter recovery as every phase.
+			if ts.hasGoal() || ts.currentGoalPhase() == GoalPhaseSet {
 					archiveTool, archiveMsg := checkToolExecErrorRecovery(ts, exec)
-					if archiveTool != "" {
+					if archiveTool != "" && ts.hasGoal() {
 						ts.goalArchiveRequested = true
 						logger.InfoCF("agent", "Goal archive triggered by tool-exec error retry exhaustion",
 							map[string]any{
@@ -553,14 +555,24 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 								// matching phase-stuck abort reason. Honor
 								// it here so finalizeGoalOnTurnEnd picks up
 								// the right AbortReason.
-								logger.InfoCF("agent", "Goal archive triggered by tool-exec recovery exhaustion at restricted phase",
-									map[string]any{
-										"agent_id":        ts.agent.ID,
-										"phase":           string(currentPhase),
-										"archive_request": ts.goalArchiveRequested,
-									})
-								turnStatus = TurnEndStatusError
-								return turnResult{}, fmt.Errorf("goal archive requested after tool-exec recovery exhaustion (see goal archive log for details)")
+								if ts.goalArchiveRequested {
+									logger.InfoCF("agent", "Goal archive triggered by tool-exec recovery exhaustion at restricted phase",
+										map[string]any{
+											"agent_id":        ts.agent.ID,
+											"phase":           string(currentPhase),
+											"archive_request": ts.goalArchiveRequested,
+										})
+									turnStatus = TurnEndStatusError
+									return turnResult{}, fmt.Errorf("goal archive requested after tool-exec recovery exhaustion (see goal archive log for details)")
+								}
+								// Phase 12.46: retry chain exhausted WITHOUT a goal
+								// (SET pre-goal gate-blocked tool) — nothing was
+								// archived. Break out of the recovery switch and
+								// fall through to the normal post-tool-exec
+								// continuation; the loop exits at iterationCap and
+								// the empty-content fallback publishes the reply.
+								messages = exec.messages
+								break
 							case ControlContinue, ControlToolLoop:
 								// Same-iter retry succeeded — the helper
 								// ALREADY executed any re-picked tool (Step 3

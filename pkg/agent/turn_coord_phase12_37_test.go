@@ -9,44 +9,12 @@ package agent
 
 import (
 	"context"
-	"os"
-	"strings"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/agent/goal"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
-// TestPhase12_37_GatePreCheckScopeCoversOpen is a static wire regression
-// proof for the Phase 12.37 GAP #1 fix. The pre-check at pipeline_execute.go
-// must cover {open, checkpoint, final}; pre-12.37 covered only
-// {checkpoint, final}, leaving OPEN-phase lifecycle-tool blocks unrecovered.
-//
-// Wire expectation: the substring
-//   "currentPhase == GoalPhaseOpen || currentPhase == GoalPhaseCheckpoint || currentPhase == GoalPhaseFinal"
-// appears at the gate pre-check site in pipeline_execute.go.
-func TestPhase12_37_GatePreCheckScopeCoversOpen(t *testing.T) {
-	src, err := os.ReadFile("pipeline_execute.go")
-	if err != nil {
-		t.Fatalf("read pipeline_execute.go: %v", err)
-	}
-	srcStr := string(src)
-
-	const want = "currentPhase == GoalPhaseOpen || currentPhase == GoalPhaseCheckpoint || currentPhase == GoalPhaseFinal"
-	if !strings.Contains(srcStr, want) {
-		t.Errorf("pipeline_execute.go: expected gate pre-check scope %q, got narrower. "+
-			"Phase 12.37 GAP #1 must extend from {checkpoint, final} to {open, checkpoint, final}.",
-			want)
-	}
-
-	// Anti-regression: the OLD scope {checkpoint, final} alone must NOT
-	// appear (would mean only the original Phase 12.35 scope is in effect).
-	const oldScope = "currentPhase == GoalPhaseCheckpoint || currentPhase == GoalPhaseFinal)"
-	if strings.Contains(srcStr, "\t"+oldScope) && !strings.Contains(srcStr, "GoalPhaseOpen ||") {
-		t.Errorf("pipeline_execute.go: gate pre-check still uses Phase 12.35 scope {checkpoint, final} without GoalPhaseOpen. "+
-			"Phase 12.37 GAP #1 fix not applied.")
-	}
-}
 
 // TestPhase12_37_GatePreCheckAtOpen_BlocksLifecycleTool wires an agent at
 // GoalPhaseOpen with a registered tool registry. Verifies that when LLM
@@ -150,11 +118,6 @@ func TestPhase12_37_GatePreCheckAtOpen_BlocksLifecycleTool(t *testing.T) {
 	}
 	if agent.Tools.IsAllowed("goal_progress") {
 		t.Skip("environment has goal_progress allowed at OPEN; lifecycle gate not wired (pre-12.31 setup) — test N/A")
-	}
-
-	// Pre-check: lastToolBlockedByGate should be false before tool exec.
-	if ts.lastToolBlockedByGate {
-		t.Fatalf("setup error: lastToolBlockedByGate already true; stale state")
 	}
 
 	// Run the turn. We don't care about the final outcome (LLM only emits
