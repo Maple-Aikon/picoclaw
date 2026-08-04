@@ -339,6 +339,16 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 	if ctx.Phase == "" || ts.postCompleteGoalReportSent {
 		return RecoveryNone, ""
 	}
+	// Phase 12.47 (F1): POST-FINAL is fully silent — single guard for ALL
+	// triggers (empty/text-only/tool-exec). The goal is archived and the
+	// summary was already published via complete_goal self-publish; the
+	// report iter only emits the final text, any recovery prompt is
+	// redundant. Defensive lock: evaluateRecovery is normally skipped at
+	// post_final by the hasGoal gate (pipeline_llm.go:744), this guard
+	// locks the semantic if that gate ever changes (R5).
+	if ctx.Phase == string(GoalPhasePostFinal) {
+		return RecoveryNone, ""
+	}
 	_ = ctx // keep unused-import guard satisfied
 
 	// Provider transient (Trigger #5): always retry up to cap. Independent
