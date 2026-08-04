@@ -103,6 +103,15 @@ func (ts *turnState) currentGoalPhase() GoalPhase {
 		log.Printf("DEBUG[12.16] currentGoalPhase session=%s phaseOverride=%s", ts.sessionKey, ts.agent.PhaseOverrideForTest)
 		return GoalPhase(ts.agent.PhaseOverrideForTest)
 	}
+	// Phase 12.47 (E3): goal finalized → POST-FINAL, stable until end of
+	// turn. No `!postCompleteGoalReportSent` guard — the phase must not
+	// oscillate back to Final after the post-body marker flips sent=true
+	// (turn-end telemetry/metrics read the phase consistently). Read the
+	// field directly (no shouldEmitPostCompleteGoalReport — it locks ts.mu,
+	// R4). Single-goroutine turn loop → no race (P4/E4).
+	if ts.goalFinalized {
+		return GoalPhasePostFinal
+	}
 	hasG := ts.hasGoal()
 	resolved := ResolveGoalPhase(
 		hasG,

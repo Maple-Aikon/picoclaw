@@ -296,3 +296,69 @@ func sliceContains(s []string, want string) bool {
 
 // Suppress unused import warnings if config changes break a usage.
 var _ = config.Config{}
+
+// TestTurnState_CurrentGoalPhase_PostFinal (Phase 12.47, T1) verifies the
+// POST-FINAL phase wrapper: once ts.goalFinalized is set, currentGoalPhase()
+// returns GoalPhasePostFinal regardless of postCompleteGoalReportSent,
+// iteration position, or goal-file state (E3 — stable phase from
+// MarkGoalFinalized to end of turn; no oscillation back to Final).
+func TestTurnState_CurrentGoalPhase_PostFinal(t *testing.T) {
+	_, agent, workspace := newPhaseTestLoop(t)
+	agent.MaxIterations = 20
+
+	key := "phase-postfinal"
+	writeGoalFile(t, workspace, key, string(goal.StatusActive))
+	mk := func() *turnState {
+		ts := newPhaseTestTurnState(agent, key, workspace)
+		ts.iteration = 5
+		ts.iterationCap = 20
+		return ts
+	}
+
+	t.Run("goalFinalized=true → PostFinal (E3: no !sent guard)", func(t *testing.T) {
+		ts := mk()
+		ts.goalFinalized = true
+		ts.postCompleteGoalReportSent = false
+		if got := ts.currentGoalPhase(); got != GoalPhasePostFinal {
+			t.Fatalf("want PostFinal, got %s", got)
+		}
+	})
+
+	t.Run("goalFinalized=true && sent=true → vẫn PostFinal (no oscillation)", func(t *testing.T) {
+		ts := mk()
+		ts.goalFinalized = true
+		ts.postCompleteGoalReportSent = true
+		if got := ts.currentGoalPhase(); got != GoalPhasePostFinal {
+			t.Fatalf("want PostFinal (stable), got %s", got)
+		}
+	})
+
+	t.Run("ceiling no-complete → Final (không đổi)", func(t *testing.T) {
+		ts := mk()
+		ts.iteration = 25
+		ts.iterationCap = 25
+		ts.maxIterationsCap = 25
+		ts.goalFinalized = false
+		if got := ts.currentGoalPhase(); got != GoalPhaseFinal {
+			t.Fatalf("want Final (ceiling), got %s", got)
+		}
+	})
+
+	t.Run("PhaseOverrideForTest vẫn thắng", func(t *testing.T) {
+		ts := mk()
+		ts.goalFinalized = true
+		agent.PhaseOverrideForTest = "open"
+		defer func() { agent.PhaseOverrideForTest = "" }()
+		if got := ts.currentGoalPhase(); got != GoalPhaseOpen {
+			t.Fatalf("want Open (override thắng), got %s", got)
+		}
+	})
+
+	t.Run("wrapper fire ngay sau MarkGoalFinalized trong cùng body (F6)", func(t *testing.T) {
+		ts := mk()
+		ts.MarkGoalFinalized()
+		if got := ts.currentGoalPhase(); got != GoalPhasePostFinal {
+			t.Fatalf("want PostFinal ngay sau MarkGoalFinalized, got %s", got)
+		}
+	})
+}

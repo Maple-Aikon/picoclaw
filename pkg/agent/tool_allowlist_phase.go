@@ -45,7 +45,17 @@ const (
 	// exceeded MaxIterationsCap. Only [complete_goal] is allowed. No
 	// extension possible — the LLM must finalize the turn.
 	// Phase 11: replaces the old "collapsed to allowlist" trick.
+	// Phase 12.47: after the goal is finalized, currentGoalPhase() returns
+	// GoalPhasePostFinal (below) instead — this constant now fires only
+	// for the ceiling case (goalFinalized=false).
 	GoalPhaseFinal GoalPhase = "final"
+
+	// GoalPhasePostFinal = the post-complete_goal final-report iteration
+	// (Phase 12.47). Reached as soon as ts.goalFinalized is set (wrapper in
+	// currentGoalPhase), regardless of postCompleteGoalReportSent. One
+	// iteration max: allowlist = [] (no tools), recovery is silent, the LLM
+	// only emits the final user-facing report text.
+	GoalPhasePostFinal GoalPhase = "post_final"
 
 	// Phase 11 NOTE: GoalPhaseLock is kept as a synonym of GoalPhaseSet for
 	// backward-compat with older tests/callers. New code should use
@@ -123,7 +133,10 @@ func currentGoalPhase(workspace, sessionKey string, iteration, iterationCap int,
 //	GoalPhaseCheckpoint — iter >= iterationCap AND iterationCap < maxIterationsCap
 //	                      AND goal active AND goalFinalized=false
 //	GoalPhaseFinal      — iter >= maxIterationsCap (>0)
-//	                      OR goalFinalized=true
+//	                      OR goalFinalized=true (Phase 12.47: dead — wrapper
+//	                      returns GoalPhasePostFinal first; kept for tests)
+//	GoalPhasePostFinal  — goalFinalized=true (wrapper in currentGoalPhase,
+//	                      turn_state_goal_phase.go; 1 iter, allowlist=[])
 //
 // Phase 12.30 bug fix: the FINAL-phase predicate used to compare
 // `iterationCap >= maxIterationsCap` (the cap variable, which is
