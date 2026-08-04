@@ -358,6 +358,16 @@ func isLifecycleToolAllowed(toolName, phase string) bool {
 }
 
 func (r *ToolRegistry) toolAllowedLocked(name string) bool {
+	// Phase 12.47 (E2): POST-FINAL has NO tools at all — the LLM only emits
+	// the final user-facing report text. Early-return at the VERY TOP (before
+	// both the lifecycle gate and the allowlist==nil check) so every tool —
+	// non-lifecycle, lifecycle, discovery — is blocked even when
+	// SetAllowlist(nil) (allow-all) was called. Replaces the
+	// discovery-suppression list edit + lifecycle-gate case edit (both
+	// redundant once this fires first).
+	if r.phase == "post_final" {
+		return false
+	}
 	// Phase 12.31: lifecycle-tool phase gate. Runs FIRST so the gate fires
 	// regardless of allowlist state. The allowlist filter alone is insufficient
 	// for the no-`tools:`-field case where SetAllowlist(nil) makes the allowlist

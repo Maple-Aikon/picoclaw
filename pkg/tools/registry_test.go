@@ -1515,3 +1515,67 @@ func TestToolAllowedLocked_LifecycleGate_DoesNotAffectNonLifecycleTools(t *testi
 		}
 	}
 }
+
+// Phase 12.47 (T3 + E2): POST-FINAL early-return at the TOP of
+// toolAllowedLocked blocks EVERY tool — non-lifecycle, discovery, and
+// lifecycle — including when SetAllowlist(nil) (allow-all) was called.
+// One choke point replaces the discovery-suppression + lifecycle-gate
+// edits (both redundant when the early-return fires first).
+func TestToolRegistry_SetPhasePostFinalBlocksAllTools(t *testing.T) {
+	register := func(r *ToolRegistry) {
+		r.Register(newMockTool("execute_bash", "run a command"))
+		r.Register(newMockTool(BM25SearchToolName, "discover hidden tools"))
+		r.Register(newMockTool(RegexSearchToolName, "regex search"))
+		r.Register(newMockTool("complete_goal", "finalize goal"))
+	}
+
+	t.Run("non-lifecycle blocked with empty allowlist", func(t *testing.T) {
+		r := NewToolRegistry()
+		register(r)
+		r.SetAllowlist([]string{})
+		r.SetPhase("post_final")
+		if r.IsAllowed("execute_bash") {
+			t.Fatal("execute_bash must be blocked at post_final")
+		}
+	})
+
+	t.Run("discovery tool blocked", func(t *testing.T) {
+		r := NewToolRegistry()
+		register(r)
+		r.SetAllowlist([]string{})
+		r.SetPhase("post_final")
+		if r.IsAllowed(BM25SearchToolName) || r.IsAllowed(RegexSearchToolName) {
+			t.Fatal("discovery tools must be blocked at post_final")
+		}
+	})
+
+	t.Run("complete_goal blocked", func(t *testing.T) {
+		r := NewToolRegistry()
+		register(r)
+		r.SetAllowlist([]string{})
+		r.SetPhase("post_final")
+		if r.IsAllowed("complete_goal") {
+			t.Fatal("complete_goal must be blocked at post_final")
+		}
+	})
+
+	t.Run("nil allowlist defense (early-return trước nil check)", func(t *testing.T) {
+		r := NewToolRegistry()
+		register(r)
+		r.SetAllowlist(nil) // allow-all
+		r.SetPhase("post_final")
+		if r.IsAllowed("execute_bash") || r.IsAllowed(BM25SearchToolName) || r.IsAllowed("complete_goal") {
+			t.Fatal("all tools must be blocked at post_final even with nil allowlist")
+		}
+	})
+
+	t.Run("projection wire: ToProviderDefs → 0 tools (L1-2)", func(t *testing.T) {
+		r := NewToolRegistry()
+		register(r)
+		r.SetAllowlist(nil)
+		r.SetPhase("post_final")
+		if defs := r.ToProviderDefs(); len(defs) != 0 {
+			t.Fatalf("ToProviderDefs must project 0 tools at post_final, got %d", len(defs))
+		}
+	})
+}
