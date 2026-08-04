@@ -34,6 +34,10 @@ func TestResolveAgentToolAllowlistWithPhase_AllPhases(t *testing.T) {
 			[]string{"complete_goal", "read_file", "view_goal", "write_file"}},
 		{"Checkpoint is absolute (overrides base)", GoalPhaseCheckpoint,
 			[]string{"goal_progress", "complete_goal"}},
+		{"Final pins complete_goal only", GoalPhaseFinal,
+			[]string{"complete_goal"}},
+		{"PostFinal is empty non-nil (no tools at all)", GoalPhasePostFinal,
+			[]string{}},
 		{"Unknown phase degrades to base only", GoalPhase("gibberish"),
 			[]string{"read_file", "write_file"}},
 	}
@@ -42,6 +46,9 @@ func TestResolveAgentToolAllowlistWithPhase_AllPhases(t *testing.T) {
 			got := resolveAgentToolAllowlistWithPhase(def, c.phase)
 			if !reflect.DeepEqual(got, c.want) {
 				t.Fatalf("phase=%s:\n got  %v\n want %v", c.phase, got, c.want)
+			}
+			if c.phase == GoalPhasePostFinal && got == nil {
+				t.Fatalf("PostFinal must return non-nil empty slice (R1), got nil")
 			}
 		})
 	}

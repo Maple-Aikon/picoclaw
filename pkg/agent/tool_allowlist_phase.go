@@ -231,6 +231,12 @@ func resolveAgentToolAllowlistWithPhase(definition AgentContextDefinition, phase
 		return []string{"set_goal"}
 	case GoalPhaseFinal:
 		return []string{"complete_goal"}
+	case GoalPhasePostFinal:
+		// Phase 12.47: POST-FINAL has NO tools at all — the LLM only emits
+		// the final user-facing report text. Non-nil empty slice (R1): a nil
+		// allowlist would mean "allow all" (SetAllowlist(nil) clears the
+		// filter), leaking every registered tool into the report iter.
+		return []string{}
 	case GoalPhaseCheckpoint:
 		// Checkpoint is also absolute: when the iter cap is hit, the LLM
 		// must either extend (goal_progress) or finalize (complete_goal).
