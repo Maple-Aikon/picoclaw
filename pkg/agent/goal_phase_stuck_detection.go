@@ -36,19 +36,26 @@ func computePhaseStuckAbortReasonForPhase(
 	goalProgressFails,
 	completeGoalFails int,
 ) string {
-	switch phase {
-	case GoalPhaseSet:
-		if setGoalFails >= 2 {
-			return GoalPhaseSetStuckAbortReason
-		}
-	case GoalPhaseCheckpoint:
-		if goalProgressFails >= 2 {
-			return GoalPhaseCheckpointStuckAbortReason
-		}
-	case GoalPhaseFinal:
-		if completeGoalFails >= 2 {
-			return GoalPhaseFinalStuckAbortReason
-		}
+	// Phase 12.48b site 8: StuckBucket is the single source of truth for
+	// which counter + abort-reason pair fires when this phase is stuck.
+	// Counter mapping via StuckBucket.CounterField(); reason via
+	// StuckBucket.AbortReason(); both data-driven.
+	policy := PhasePolicyFor(phase)
+	if policy == nil || policy.StuckBucket == StuckNone {
+		return ""
+	}
+	counterField := policy.StuckBucket.CounterField()
+	var count int
+	switch counterField {
+	case "setGoalFailCount":
+		count = setGoalFails
+	case "goalProgressFailCount":
+		count = goalProgressFails
+	case "completeGoalFailCount":
+		count = completeGoalFails
+	}
+	if count >= 2 {
+		return policy.StuckBucket.AbortReason()
 	}
 	return ""
 }

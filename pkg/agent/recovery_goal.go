@@ -235,18 +235,13 @@ const (
 // the iteration cap"). NEVER names a tool, NEVER says what was routable.
 // Tool guidance lives in the per-iter system prompt (Task 3).
 func phaseContextSuffix(phase string) string {
-	switch phase {
-	case string(GoalPhaseSet):
-		return " At the time of this retry, the turn was in the SET phase and the goal had not yet been seeded."
-	case string(GoalPhaseOpen):
-		return " At the time of this retry, the turn was in the OPEN phase."
-	case string(GoalPhaseCheckpoint):
-		return " At the time of this retry, the turn was in the CHECKPOINT phase."
-	case string(GoalPhaseFinal):
-		return " At the time of this retry, the turn was in the FINAL phase."
-	default:
-		return ""
+	// Phase 12.48b site 7: policy-driven lookup. Each phase's ContextSuffix
+	// is the single source of truth for what gets appended to retry
+	// messages. Empty / unknown phase → empty string (no suffix).
+	if policy := PhasePolicyFor(GoalPhase(phase)); policy != nil {
+		return policy.ContextSuffix
 	}
+	return ""
 }
 
 // buildEmptyResponseRetryMessageWithPhase constructs the empty-response
@@ -325,31 +320,21 @@ const (
 // This function is pure (no side effects, no logger writes) so it can be
 // unit-tested without mocking the full pipeline.
 func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, string) {
-	// Out of goal-phase or in post-complete_goal final-report iter (Phase 12.7):
-	// no recovery needed. Caller proceeds normally. We skip recovery because:
-	//   - Phase=Final: tool allowlist is empty; nothing to retry.
-	//   - postCompleteGoalReportSent: the LLM has already completed the goal;
-	//     a text-only retry prompt would be redundant and could spam the user.
-	// Phase 12.15: GoalPhaseFinal is now eligible for tool-exec recovery
-	// (line below), but ONLY when postCompleteGoalReportSent=false. The
-	// post-complete_goal final-report iter is the rare case where the LLM
-	// has already published the user-facing report, so no further retry
-	// prompts should fire. Bare GoalPhaseFinal skips Trigger #3 in the
-	// pre-line check (no `return RecoveryNone` here).
+	// Plan §3.3 site 4 (Phase 12.48b): policy-driven early-return.
+	// PostCompleteGoalReportSent (runtime flag — not in policy) still
+	// supersedes policy for the final-report iter. Empty phase (no
+	// currentGoalPhase() value) = no recovery.
 	if ctx.Phase == "" || ts.postCompleteGoalReportSent {
 		return RecoveryNone, ""
 	}
-	// Phase 12.47 (F1): POST-FINAL is fully silent — single guard for ALL
-	// triggers (empty/text-only/tool-exec). The goal is archived and the
-	// summary was already published via complete_goal self-publish; the
-	// report iter only emits the final text, any recovery prompt is
-	// redundant. Defensive lock: evaluateRecovery is normally skipped at
-	// post_final by the hasGoal gate (pipeline_llm.go:744), this guard
-	// locks the semantic if that gate ever changes (R5).
-	if ctx.Phase == string(GoalPhasePostFinal) {
+	// Resolve policy row (case-insensitive, nil-safe). Empty policy =
+	// fail-CLOSED — unknown phase strings fall back to RecoveryNone.
+	// Site 4 lock: EmptyAction == RecoveryNone ONLY at PostFinal
+	// (R5 invariant — schema-locked at TestPhasePolicy_AgentSide_EmptyActionOnlyRecoveryNoneAtPostFinal).
+	policy := PhasePolicyFor(GoalPhase(ctx.Phase))
+	if policy == nil || policy.EmptyAction == RecoveryNone {
 		return RecoveryNone, ""
 	}
-	_ = ctx // keep unused-import guard satisfied
 
 	// Provider transient (Trigger #5): always retry up to cap. Independent
 	// of goal phase. The existing callLLMCore retry already runs 3 times;
@@ -409,10 +394,17 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 	//     restricted allowlist — iter-bump has no progress signal here.
 	//   - Final with postCompleteGoalReportSent=true: silent (RecoveryNone)
 	//     — goal is finalized + report already sent, no more action possible.
-	// Phase 12.46: SET excluded from restricted text-only recovery — a
-	// direct text reply at SET is a valid turn end (owner decision,
-	// anh Maple 2026-08-03). Restricted = Checkpoint + Final only.
-	if (ctx.Phase == string(GoalPhaseCheckpoint) || ctx.Phase == string(GoalPhaseFinal)) && !ctx.HasToolCalls && !ctx.TextEmpty {
+	// Phase 12.48b site 5: TextOnlyMode-driven dispatch.
+	// Set/Checkpoint/Final → TextOnlyRestricted (2 soft + 1 hard same-iter).
+	// Open → TextOnlyOpenCarry (1 soft + 1 hard next-iter via pendingRecoveryMessage).
+	// Set text-only (direct reply) → TextOnlyOpenSilent — valid turn end.
+	// PostFinal → TextOnlyNone — already handled by early-return above.
+	// Phase 12.46: SET excluded from RESTRICTED text-only — direct text
+	// reply at SET is a valid turn end (owner decision, anh Maple 2026-08-03).
+	if !ctx.HasToolCalls && !ctx.TextEmpty && policy.TextOnlyMode == TextOnlyRestricted {
+		// Final-with-postCompleteGoalReport = silent (Phase 12.27 — runtime
+		// flag, not in policy; the only Phase 12.27 invariant that
+		// overrides the policy table).
 		if ctx.Phase == string(GoalPhaseFinal) && ctx.PostCompleteGoalReport {
 			return RecoveryNone, ""
 		}
@@ -477,14 +469,15 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 	}
 
 	// Open phase: Trigger #2 (text-only) with next-iter carry.
-	// Phase 12 redesign: fire soft prompt first, then hard prompt, then archive.
+	// Phase 12.48b site 5: TextOnlyMode == TextOnlyOpenCarry dispatch.
+	// Fire soft prompt first, then hard prompt, then archive.
 	// At OPEN phase, we use RecoveryRetryNextIteration (NOT RecoveryRetrySameIteration):
 	// carry the message forward via ts.pendingRecoveryMessage, caller at
 	// turn_coord.go bumps iter naturally. NO counter increment — Open has
 	// no per-iter cap because iter-bump is the escalation path.
 	// Phase 12.46: explicit GoalPhaseOpen guard — SET text-only falls
-	// through to RecoveryNone (turn ends) and must NOT hit this branch.
-	if ctx.Phase == string(GoalPhaseOpen) && !ctx.HasToolCalls && !ctx.TextEmpty {
+	// through to RecoveryNone (TextOnlyOpenSilent) and must NOT hit this branch.
+	if !ctx.HasToolCalls && !ctx.TextEmpty && policy.TextOnlyMode == TextOnlyOpenCarry {
 		ts.textOnlyStreak++
 		// Increment within-iteration escalation counters in order.
 		// Phase 12.37 D3: OPEN path uses cap=1+1 (separate from
@@ -693,28 +686,22 @@ func buildToolExecErrorRetryMessage(toolName, errMsg string, isTransient bool, r
 	if isTransient {
 		base += ToolExecErrorTransientHint
 	}
-	// Phase 12.15: append phase-specific redirect hint BEFORE tool knowledge
-	// so the LLM sees the corrective guidance first.
-	// Phase 12.18: extended to GoalPhaseCheckpoint so iter-cap LLM calls
-	// receive explicit guidance to wrap up via goal_progress or
-	// complete_goal (instead of silently looping into cap-hit canned
-	// fallback).
-	switch phase {
-	case string(GoalPhaseSet):
-		base += ToolExecErrorSetPhaseHint
-	case string(GoalPhaseFinal):
-		base += ToolExecErrorFinalPhaseHint
-	case string(GoalPhaseCheckpoint):
-		base += ToolExecErrorCheckpointPhaseHint
-	case string(GoalPhaseOpen):
-		// Phase 12.32: Open phase is RELATIVE — only lifecycle tools
-		// (set_goal / goal_progress) are blocked. Append the OPEN hint
-		// ONLY when the failing tool is one of those — appending to
-		// read_file/exec/etc. errors would mislead (those tools work
-		// fine at OPEN; the error is unrelated to the lifecycle gate).
-		switch toolName {
-		case "set_goal", "goal_progress":
-			base += ToolExecErrorOpenPhaseHint
+	// Phase 12.48b site 6: ToolExecHint lookup via policy table.
+	// ABSOLUTE phases (Set/Checkpoint/Final) carry the hint in policy.ToolExecHint.
+	// OPEN carries the hint in policy.ToolExecHint only when toolName ∈ {set_goal, goal_progress}
+	// (RELATIVE allowlist — appending to read_file/exec errors would mislead).
+	policy := PhasePolicyFor(GoalPhase(phase))
+	if policy != nil && policy.ToolExecHint != "" {
+		if phase == string(GoalPhaseOpen) {
+			// Phase 12.32: Open phase is RELATIVE — only lifecycle tools
+			// (set_goal / goal_progress) need the hint. Other tools
+			// work fine at OPEN; the error is unrelated to the lifecycle gate.
+			if toolName == "set_goal" || toolName == "goal_progress" {
+				base += policy.ToolExecHint
+			}
+		} else {
+			// ABSOLUTE phase — always append the phase-pinned hint.
+			base += policy.ToolExecHint
 		}
 	}
 	if registry == nil {

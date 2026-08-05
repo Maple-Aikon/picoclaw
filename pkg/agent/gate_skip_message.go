@@ -14,20 +14,15 @@ import "fmt"
 // phase. The user-facing message routes to the LLM via tool result and
 // persists in session history (history-poison channel).
 func gateSkipMessageForPhase(toolName string, phase GoalPhase) string {
-	const suffix = "[live state: see system prompt header]"
-	switch phase {
-	case GoalPhaseSet:
-		return fmt.Sprintf("tool %q is temporarily unavailable. set_goal is the only available tool — call it to define the goal. %s", toolName, suffix)
-	case GoalPhaseCheckpoint:
-		return fmt.Sprintf("tool %q is temporarily unavailable. goal_progress and complete_goal are the only available tools — call goal_progress to continue, or complete_goal to finalize. %s", toolName, suffix)
-	case GoalPhaseFinal:
-		return fmt.Sprintf("tool %q is temporarily unavailable. complete_goal is the only available tool — call it to finalize the turn. %s", toolName, suffix)
-	case GoalPhasePostFinal:
-		// Phase 12.47 (D7, E5, F2): state-agnostic tuyệt đối — message lọt
-		// vào history khi strip-failure edge; KHÔNG chứa phase/iter/cap
-		// claims (Phase 12.43 invariant).
-		return fmt.Sprintf("tool %q is temporarily unavailable. No tools are available — output your final report text directly. %s", toolName, suffix)
-	default: // GoalPhaseOpen
-		return fmt.Sprintf("tool %q is temporarily unavailable. Try a different tool, or call complete_goal to finalize the turn. %s", toolName, suffix)
+	// Phase 12.48b site 9: policy-driven lookup. Each phase's GateSkipText
+	// is the template; format with toolName at call site. Lock alias
+	// resolves to SET row via PhasePolicyFor (case-insensitive lookup).
+	// Phase 12.47 (D7, E5, F2): state-agnostic wording at PostFinal —
+	// message lands in history on strip-failure edge; NO phase/iter/cap
+	// claims (Phase 12.43 invariant).
+	policy := PhasePolicyFor(phase)
+	if policy == nil {
+		return ""
 	}
+	return fmt.Sprintf(policy.GateSkipText, toolName)
 }

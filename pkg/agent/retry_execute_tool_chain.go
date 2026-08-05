@@ -109,15 +109,13 @@ func (p *Pipeline) retryExecuteToolChain(
 			// itself is the stuck signal. Set a phase-specific abort
 			// reason so finalizeGoalOnTurnEnd archives with the right
 			// reason (not a generic error).
+			// Phase 12.48b site 12: StuckBucket.AbortReason() is the
+			// single source of truth. Open/PostFinal → "" (no stuck
+			// detection); Set/Checkpoint/Final → phase-specific reason.
 			currentPhase := GoalPhase(phase)
-			switch currentPhase {
-			case GoalPhaseSet:
-				ts.lastPhaseStuckError = GoalPhaseSetStuckAbortReason
-			case GoalPhaseCheckpoint:
-				ts.lastPhaseStuckError = GoalPhaseCheckpointStuckAbortReason
-			case GoalPhaseFinal:
-				ts.lastPhaseStuckError = GoalPhaseFinalStuckAbortReason
-			default:
+			if policy := PhasePolicyFor(currentPhase); policy != nil && policy.StuckBucket != StuckNone {
+				ts.lastPhaseStuckError = policy.StuckBucket.AbortReason()
+			} else {
 				ts.lastPhaseStuckError = computePhaseStuckAbortReasonForPhase(
 					currentPhase, ts.setGoalFailCount, ts.goalProgressFailCount, ts.completeGoalFailCount)
 			}

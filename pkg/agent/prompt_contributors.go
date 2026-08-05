@@ -88,25 +88,15 @@ func (c mcpServerPromptContributor) ContributePrompt(
 
 	availability := "available as native tools"
 	if c.deferred {
-		// Phase 12.29: phase-aware availability text matching the tool
-		// discovery rule emitted by toolDiscoveryPromptContributor. Without
-		// this switch, the LLM at Checkpoint/Final sees "hidden behind
-		// tool discovery until unlocked" — implying unlock via discovery,
-		// but discovery is gated by Phase 12.18 execution gate.
+		// Phase 12.48b site 11: policy-driven lookup via MCPAvailText.
+		// Each phase's row carries the exact phrase; Open +
+		// unlockable-default falls through to "available as native tools".
 		// `GoalPhaseLock` is the same constant value as `GoalPhaseSet`
-		// (per tool_allowlist_phase.go:50), so it falls through to Set.
-		switch GoalPhase(req.GoalPhase) {
-		case GoalPhaseSet:
-			availability = "hidden behind tool discovery; will unlock at next iter in OPEN phase"
-		case GoalPhaseCheckpoint:
-			availability = "locked at this phase; will unlock at next turn's OPEN phase"
-		case GoalPhaseFinal:
-			availability = "locked at this terminal phase; will not unlock this turn"
-		case GoalPhasePostFinal:
-			// Phase 12.47: no tools at all — same terminal wording, no
-			// tool names claimed (Phase 12.40.1 invariant).
-			availability = "locked at this terminal phase; will not unlock this turn"
-		default:
+		// — PhasePolicyFor normalizes the alias (case-insensitive lookup).
+		policy := PhasePolicyFor(GoalPhase(req.GoalPhase))
+		if policy != nil {
+			availability = policy.MCPAvailText
+		} else {
 			availability = "hidden behind tool discovery until unlocked"
 		}
 	}
