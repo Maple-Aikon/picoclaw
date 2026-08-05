@@ -56,6 +56,19 @@ const (
 	// "0" / "false" to disable recall block writing in deployments that
 	// cannot store user content.
 	EnvReplayPromptLog = "PICOCLAW_REPLAY_PROMPT_LOG"
+
+	// EnvAgentStrictPhases opts in to runtime telemetry for unknown-phase
+	// lookups in PhasePolicyFor / ToolPolicyForPhase. When set ("1"/"true"/
+	// "yes"/"on"), every miss is logged + counted as agent_phase_lookup_miss
+	// counter. Production canary mode for the Phase 12.49 strict-mode
+	// rollout. Default: off.
+	EnvAgentStrictPhases = "PICOCLAW_AGENT_STRICT_PHASES"
+
+	// EnvCanaryStructured enables dual text+JSON canary_drift event output.
+	// When set, canary drift events emit BOTH the grep-friendly text format
+	// (back-compat) AND a structured JSON line (forward-compat for Datadog/
+	// Splunk). Default: text-only (legacy consumers).
+	EnvCanaryStructured = "PICOCLAW_CANARY_STRUCTURED"
 )
 
 func GetHome() string {

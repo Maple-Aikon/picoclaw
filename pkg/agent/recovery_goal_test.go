@@ -590,14 +590,7 @@ func TestPhaseContextSuffix_NoToolAvailabilityClaims(t *testing.T) {
 	}
 }
 
-func TestPhaseContextSuffix_UnknownPhaseEmpty(t *testing.T) {
-	if got := phaseContextSuffix(""); got != "" {
-		t.Fatalf("empty phase must yield empty suffix (fail-closed), got: %s", got)
-	}
-	if got := phaseContextSuffix("bogus"); got != "" {
-		t.Fatalf("unknown phase must yield empty suffix, got: %s", got)
-	}
-}
+// moved to recovery_goal_default_test.go to be tagged !strict_phases
 
 // TestBuildEmptyResponseRetryMessage_PhaseContext verifies that the empty-
 // response retry message includes phase-context suffix for ALL 4 phases

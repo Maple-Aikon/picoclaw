@@ -1,3 +1,8 @@
+// Phase 12.49: add build tag `!strict_phases` because this file asserts the
+// lenient "unknown phase degrades to base" behavior which contradicts
+// strict-mode panic. Strict counterpart lives in tool_allowlist_phase_strict_test.go.
+//go:build !strict_phases
+
 package agent
 
 import (

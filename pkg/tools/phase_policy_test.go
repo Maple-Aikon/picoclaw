@@ -13,6 +13,13 @@
 //
 // If you intentionally add/remove a phase, update pkg/phases/phases.go first
 // (which controls AllTokens), then update toolPolicies here.
+//
+// Phase 12.49: add build tag `!strict_phases` because this file asserts
+// fail-OPEN semantics for unknown phases (`TestToolPolicyForPhase_UnknownReturnsNil`)
+// which contradict the strict-mode panic behavior. The strict counterpart
+// lives in `phase_policy_strict_test.go`.
+//go:build !strict_phases
+
 package tools
 
 import (

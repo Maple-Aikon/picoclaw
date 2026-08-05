@@ -12,6 +12,12 @@
 //   8. PhasePolicyFor(nil) and PhasePolicyFor("") return nil.
 //   9. PhasePolicyFor(GoalPhaseLock) returns the SET row (Phase 11 alias).
 //  10. Case-insensitive lookup (Phase 12.1 regression guard).
+//
+// Phase 12.49: add build tag `!strict_phases` because tests 8/9/10 assert
+// default fail-OPEN semantics on unknown inputs which contradict strict-mode
+// panic. Strict counterparts in phase_policy_strict_test.go.
+//go:build !strict_phases
+
 package agent
 
 import (
