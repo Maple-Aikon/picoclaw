@@ -40,7 +40,21 @@ const (
 // This method is idempotent — calling it multiple times on the same goal
 // does NOT bump AbortedAt past the first invocation; subsequent calls
 // return nil silently because the goal is already in StatusAborted state.
+// finalizeGoalOnTurnEnd is the legacy entry point (Phase 12.53a: kept for
+// the 6 non-stuck call sites — panic, hook replay, goal recovery, tool
+// panic). It archives WITHOUT persisting a stuck attempt count; phase-stuck
+// archive paths (finalizePhaseStuckArchive) use
+// finalizeGoalOnTurnEndWithCount so a later turn can render the true
+// "failed N attempt(s)" count.
 func (ts *turnState) finalizeGoalOnTurnEnd(reason string) error {
+	return ts.finalizeGoalOnTurnEndWithCount(reason, 0)
+}
+
+// finalizeGoalOnTurnEndWithCount is the shared implementation. count is the
+// real phase-stuck attempt count to persist into Goal.StuckAttemptCount;
+// 0 means "not a phase-stuck archive" and leaves the field untouched
+// (omitempty → key absent on disk).
+func (ts *turnState) finalizeGoalOnTurnEndWithCount(reason string, count int) error {
 	if ts == nil || ts.agent == nil {
 		return nil
 	}
@@ -90,6 +104,9 @@ func (ts *turnState) finalizeGoalOnTurnEnd(reason string) error {
 	g.AbortedAt = &now
 	g.AbortReason = reason
 	g.UpdatedAt = now
+	if count > 0 {
+		g.StuckAttemptCount = count
+	}
 
 	if err := store.Write(sessionKey, g); err != nil {
 		logger.WarnCF("agent", "finalizeGoalOnTurnEnd: write failed",

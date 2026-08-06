@@ -218,7 +218,7 @@ func finalizePhaseStuckArchive(ts *turnState, phase GoalPhase, msg string) {
 		count = 1
 	}
 	ts.lastPhaseStuckError = fmt.Sprintf("%s (attempts: %d)", msg, count)
-	if err := ts.finalizeGoalOnTurnEnd(abortReason); err != nil {
+	if err := ts.finalizeGoalOnTurnEndWithCount(abortReason, count); err != nil {
 		logger.WarnCF("agent", "finalizePhaseStuckArchive: finalizeGoalOnTurnEnd failed",
 			map[string]any{"error": err.Error()})
 	}

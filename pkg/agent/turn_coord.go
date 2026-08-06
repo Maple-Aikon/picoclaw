@@ -865,11 +865,11 @@ func (al *AgentLoop) phaseStuckFallbackMessage(ts *turnState, g *goal.Goal) stri
 		}
 		switch g.AbortReason {
 		case GoalPhaseSetStuckAbortReason:
-			return fmt.Sprintf(GoalPhaseSetStuckMessage, stuckCountAtLeastOne(ts.setGoalAttemptCount), lastErr)
+			return fmt.Sprintf(GoalPhaseSetStuckMessage, stuckCountAtLeastOne(g.StuckAttemptCount), lastErr)
 		case GoalPhaseCheckpointStuckAbortReason:
-			return fmt.Sprintf(GoalPhaseCheckpointStuckMessage, stuckCountAtLeastOne(ts.goalProgressAttemptCount), lastErr)
+			return fmt.Sprintf(GoalPhaseCheckpointStuckMessage, stuckCountAtLeastOne(g.StuckAttemptCount), lastErr)
 		case GoalPhaseFinalStuckAbortReason:
-			return fmt.Sprintf(GoalPhaseFinalStuckMessage, stuckCountAtLeastOne(ts.completeGoalAttemptCount), lastErr)
+			return fmt.Sprintf(GoalPhaseFinalStuckMessage, stuckCountAtLeastOne(g.StuckAttemptCount), lastErr)
 		}
 	}
 	return ""

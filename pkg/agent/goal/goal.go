@@ -74,6 +74,15 @@ type Goal struct {
 	//   "user_abort", "stale_turn_boundary"
 	// Empty string when status != StatusAborted.
 	AbortReason string `yaml:"abort_reason,omitempty"`
+
+	// StuckAttemptCount is the real number of phase-stuck attempts recorded
+	// when the goal was force-archived with a phase-stuck abort reason
+	// (Phase 12.53a). Persisted so a LATER turn (fresh turnState, in-memory
+	// counters zeroed) still renders the true "failed N attempt(s)"
+	// message instead of the fallback 1. Zero for goals archived via the
+	// legacy finalizeGoalOnTurnEnd path (count not passed) and for
+	// non-stuck archives.
+	StuckAttemptCount int `yaml:"stuck_attempt_count,omitempty"`
 }
 
 // ErrInvalidGoal is returned by Validate when required fields are missing.
