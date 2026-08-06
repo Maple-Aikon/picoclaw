@@ -8,7 +8,7 @@
 // Schema baseline (Phase 12.48 + Plan §3.5 + §4.20 L2):
 //
 //	set         → tools_visible=1
-//	open        → tools_visible=82 (84 total - 2 lifecycle blocked)
+//	open        → tools_visible=82 (86 total - 2 hidden media-gen - 2 lifecycle blocked)
 //	checkpoint  → tools_visible=2  (goal_progress + complete_goal)
 //	final       → tools_visible=1  (complete_goal only)
 //	post_final  → tools_visible=0  (no tools)
@@ -36,7 +36,22 @@ import (
 // canaryExpectedToolsVisible returns the schema-contract tools_visible
 // count for the given phase. Returns 0 for unknown phases (drift = no-op).
 //
-// Baseline values frozen post-Phase 12.48 (Plan §3.5).
+// Baseline values:
+//   set         → 1
+//   open        → 83 (Phase 12.50 §3.5b F1: 82→83, post-media-gen MCP server)
+//   checkpoint  → 2  (goal_progress + complete_goal)
+//   final       → 1  (complete_goal only)
+//   post_final  → 0  (no tools)
+//
+// Math for OPEN: production registry 86 tools (20 built-in core + 64 MCP
+// non-deferred + 2 hidden media-gen via RegisterHidden) - 2 hidden media-gen
+// (deferred=yes, TTL=0, filtered by `!IsCore && TTL<=0` at ToProviderDefs)
+// = 84 to LLM - 2 lifecycle (set_goal/goal_progress blocked by Phase 12.31
+// IsLifecycleToolAllowed at OPEN) = 82 visible.
+//
+// `agent_inject.go:17` is a `RegisterTool` helper, NOT a registered tool —
+// plan §3.5b F1 over-counted +1. Live verified 2026-08-06 main-turn-1: 82
+// visible = baseline 82, no drift. Plan §3.5b F1 baseline 83 was stale.
 func canaryExpectedToolsVisible(phase string) int {
 	switch phase {
 	case phases.PhaseSet:       // "set"
@@ -59,11 +74,17 @@ func canaryExpectedToolsVisible(phase string) int {
 //
 // `total` is the full registered tool count (informational; used in
 // the canary event payload). `visible` is the post-allowlist count.
+// `iter` is the current iteration index (1-based, 0 = unknown).
 // `turnID` and `sessionKey` are passed through for log correlation.
+//
+// Phase 12.50 F2: `iter` added for grep correlation with other turn
+// events (phase_start, llm_call, llm_response, etc.). Downstream
+// canary pipelines can now correlate drift with the exact iter that
+// caused it.
 //
 // PICOCLAW_CANARY_STRUCTURED=1 → emits a JSON-formatted line alongside
 // the text log (or instead of, in TBD future where text is removed).
-func CanaryCheckToolsVisible(phase string, total, visible int, turnID, sessionKey string) {
+func CanaryCheckToolsVisible(phase string, total, visible int, iter int, turnID, sessionKey string) {
 	expected := canaryExpectedToolsVisible(phase)
 	if expected == 0 {
 		// Unknown phase → no baseline → drift can't be measured. Skip.
@@ -72,18 +93,21 @@ func CanaryCheckToolsVisible(phase string, total, visible int, turnID, sessionKe
 	if visible == expected {
 		return
 	}
-	emitCanaryDrift(phase, total, visible, expected, turnID, sessionKey)
+	emitCanaryDrift(phase, total, visible, expected, iter, turnID, sessionKey)
 }
 
 // emitCanaryDrift emits one warn log + (optionally) one JSON line.
 // Centralized so the dual-output format stays consistent.
-func emitCanaryDrift(phase string, total, visible, expected int, turnID, sessionKey string) {
+//
+// Phase 12.50 F2: `iter` threaded through fields map + JSON builder.
+func emitCanaryDrift(phase string, total, visible, expected int, iter int, turnID, sessionKey string) {
 	fields := map[string]any{
 		"event":           "canary_drift",
 		"phase":           phase,
 		"tools_total":     total,
 		"tools_visible":   visible,
 		"expected_visible": expected,
+		"iter":            iter,
 		"turn_id":         turnID,
 		"session_key":     sessionKey,
 	}
@@ -91,17 +115,17 @@ func emitCanaryDrift(phase string, total, visible, expected int, turnID, session
 
 	// Optional structured JSON output for downstream canary pipelines.
 	if isCanaryStructuredEnabled() {
-		emitCanaryDriftJSON(phase, total, visible, expected, turnID, sessionKey)
+		emitCanaryDriftJSON(phase, total, visible, expected, iter, turnID, sessionKey)
 	}
 }
 
 // emitCanaryDriftJSON serializes one canary_drift event as a single
-// JSON line written to the same logger sink. Used by Phase 12.50+
-// production canary alert pipeline (R15, deferred).
-func emitCanaryDriftJSON(phase string, total, visible, expected int, turnID, sessionKey string) {
-	// Lightweight JSON encoding (avoid pulling encoding/json for hot-path).
-	// Caller logs via DebugCF with a "json_payload" field.
-	line := buildCanaryDriftJSONLine(phase, total, visible, expected, turnID, sessionKey)
+// JSON line written to the same logger sink. Used for production
+// canary alert pipeline (R15, deferred).
+//
+// Phase 12.50 F2: `iter` added to JSON payload for correlation.
+func emitCanaryDriftJSON(phase string, total, visible, expected int, iter int, turnID, sessionKey string) {
+	line := buildCanaryDriftJSONLine(phase, total, visible, expected, iter, turnID, sessionKey)
 	logger.DebugCF("agent", "canary_drift_json", map[string]any{
 		"event":   "canary_drift",
 		"payload": line,
@@ -110,9 +134,12 @@ func emitCanaryDriftJSON(phase string, total, visible, expected int, turnID, ses
 
 // buildCanaryDriftJSONLine returns a single-line JSON object.
 // Uses simple concat to avoid hot-path encoding/json overhead.
-func buildCanaryDriftJSONLine(phase string, total, visible, expected int, turnID, sessionKey string) string {
+//
+// Phase 12.50 F2: `iter` field added between expected_visible and
+// turn_id (matches fields map order in emitCanaryDrift).
+func buildCanaryDriftJSONLine(phase string, total, visible, expected int, iter int, turnID, sessionKey string) string {
 	var b strings.Builder
-	b.Grow(len(phase) + len(turnID) + len(sessionKey) + 128)
+	b.Grow(len(phase) + len(turnID) + len(sessionKey) + 144)
 	b.WriteString(`{"event":"canary_drift","phase":`)
 	quoteJSON(&b, phase)
 	b.WriteString(`,"tools_total":`)
@@ -121,6 +148,8 @@ func buildCanaryDriftJSONLine(phase string, total, visible, expected int, turnID
 	writeInt(&b, visible)
 	b.WriteString(`,"expected_visible":`)
 	writeInt(&b, expected)
+	b.WriteString(`,"iter":`)
+	writeInt(&b, iter)
 	b.WriteString(`,"turn_id":`)
 	quoteJSON(&b, turnID)
 	b.WriteString(`,"session_key":`)
