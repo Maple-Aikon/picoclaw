@@ -151,6 +151,20 @@ func (p *Pipeline) retryExecuteToolChain(
 		if ts.pendingRecoveryMessage == "" {
 			return RetryDecisionDone, nil
 		}
+		// Phase 12.51a Site 3: Open-phase guard. evaluateRecovery returns
+		// RecoveryRetryNextIteration for Open text-only (Phase 12.46 +
+		// 12.47 spec: next-iter carry). Site 1's routeTextOnlyThroughRecovery
+		// helper arms pendingRecoveryMessage for BOTH
+		// RecoveryRetrySameIteration AND RecoveryRetryNextIteration. Without
+		// this guard, Open would incorrectly continue BoundedRetry and
+		// burn the 3-attempt budget on the next-iter carry path. Verify
+		// the phase is RESTRICTED before continuing (Set/Checkpoint/Final).
+		// Use the same-package PhasePolicyFor helper for AgentPhasePolicy
+		// (ToolVisibilityPolicy in pkg/tools doesn't carry TextOnlyMode).
+		policy := PhasePolicyFor(GoalPhase(phase))
+		if policy == nil || policy.TextOnlyMode != TextOnlyRestricted {
+			return RetryDecisionDone, nil
+		}
 		return RetryDecisionRetry, nil
 	})
 	if err != nil {
@@ -163,7 +177,13 @@ func (p *Pipeline) retryExecuteToolChain(
 		// Cap hit while still retrying. Mirror the canonical
 		// handleGoalRecovery OnExhausted (pipeline_llm.go:1173): archive
 		// the goal so the caller finalizes cleanly, then break out.
+		// Phase 12.51a F12 fix: also call recordPhaseStuckArchive so
+		// computePhaseStuckAbortReasonForPhase returns the matching
+		// StuckBucket (e.g. GoalPhaseCheckpointStuckAbortReason). Without
+		// this, AbortReason="" → phaseStuckFallbackMessage returns "" →
+		// fall-through to toolLimitResponse (main-turn-19 bug tái diễn).
 		if ts.hasGoal() {
+			ts.recordPhaseStuckArchive(GoalPhase(phase), "BoundedRetry exhausted")
 			ts.goalArchiveRequested = true
 		}
 		logger.InfoCF("agent", "retryExecuteToolChain: archive after exhaustion",
@@ -211,10 +231,16 @@ func (p *Pipeline) retryExecuteToolChainOnce(
 		recoveryHint, allowedTools,
 		func(firstTool string) Control {
 			if firstTool == "" {
-				// Text-only or malformed tool call → success (Path 2
-				// arm i, :1476-1482). Caller skips Step 3/4 via the
-				// G4 guard below.
-				return ControlToolLoop
+				// Phase 12.51a Site 1: route text-only through
+				// routeTextOnlyThroughRecovery helper which calls
+				// evaluateRecovery. Restricted phases (Set/Checkpoint/Final)
+				// now fire same-iter recovery (2 soft + 1 hard) per
+				// Phase 12.46 + 12.47 spec. Open continues to use
+				// next-iter carry path. PostFinal + Final+postReport
+				// stay silent.
+				return p.routeTextOnlyThroughRecovery(
+					ts, exec, iteration, phase, recoveryHint,
+				)
 			}
 			allowAll := len(allowedTools) == 0
 			if allowAll {
@@ -262,10 +288,14 @@ func (p *Pipeline) retryExecuteToolChainOnce(
 	// tool calls) after a tool-exec error is SUCCESS — skip Step 3/4 so
 	// we don't re-read the stale tool error at messages[len-1] and re-arm
 	// a retry loop (which would burn 3 attempts and archive a healthy
-	// goal). C9b: clear pendingRecoveryMessage so BoundedRetry exits
-	// (RetryDecisionDone) instead of retrying.
+	// goal). Phase 12.51a Site 2: REMOVED the `ts.pendingRecoveryMessage
+	// = ""` line. Site 1's routeTextOnlyThroughRecovery helper now arms
+	// the recovery hint for restricted-phase retry (Phase 12.46 spec).
+	// Clearing here would prematurely drop the armed hint before
+	// BoundedRetry gets a chance to retry. The clear site at lines
+	// 332-336 (Phase 12.28 Task 7, pre-existing) handles Path 4
+	// success-path AFTER Step 3 tool exec returns.
 	if len(exec.normalizedToolCalls) == 0 {
-		ts.pendingRecoveryMessage = ""
 		return ControlToolLoop, nil
 	}
 
@@ -498,3 +528,74 @@ func (p *Pipeline) recallAndCheckTool(
 // for Path 4's hardcoded break policy. Phase 12.42 (G3) replaced that policy
 // with the phase-aware mirror of Path 2's arms (re-prompt with the original
 // recoveryHint), so this helper is dead code — removed.
+
+// routeTextOnlyThroughRecovery (Phase 12.51a) routes a text-only LLM
+// response through evaluateRecovery to enforce the phase-aware recovery
+// matrix from Phase 12.46 + 12.47. Mirrors what handleGoalRecovery +
+// proceedPastLLM already do. Returns Control* matching the recovery action.
+//
+// Returns Control* semantics:
+//   - ControlToolLoop: RecoveryRetrySameIteration (restricted phase,
+//     continue BoundedRetry) OR RecoveryRetryNextIteration (Open carry,
+//     caller-loop advances iter) OR RecoveryNone (Set text-only valid
+//     turn end OR PostFinal silent)
+//   - ControlBreak: RecoveryArchiveGoal (3 attempts exhausted). Sets
+//     ts.goalArchiveRequested=true + bumps phase-stuck counter via
+//     recordPhaseStuckArchive so phaseStuckFallbackMessage returns the
+//     right user-facing stuck message.
+func (p *Pipeline) routeTextOnlyThroughRecovery(
+	ts *turnState,
+	exec *turnExecution,
+	iteration int,
+	phase string,
+	recoveryHint string,
+) Control {
+	// Phase 12.46 reasoning-only filter (pipeline_llm.go:1316 reference):
+	// reasoning-only responses (<reasoning>...</reasoning> without final
+	// text) are NOT text-empty — the LLM produced a thought-trace. Strip
+	// tags first, then check. Without this filter, MiniMax-M3 reasoning-only
+	// outputs incorrectly trigger text-only recovery → same-iter retry
+	// → archive goal. Mirror the filter at pipeline_llm.go:1316.
+	textEmpty := exec.response != nil &&
+		exec.response.Content == "" &&
+		responseReasoningContent(exec.response) == ""
+	action, msg := evaluateRecovery(ts, RecoveryContext{
+		Phase:                  phase,
+		Iteration:              iteration,
+		TextEmpty:              textEmpty,
+		HasToolCalls:           false,
+		PostCompleteGoalReport: ts.postCompleteGoalReportSent,
+		MaxIterations:          ts.iterationCap,
+	})
+	switch action {
+	case RecoveryRetrySameIteration:
+		// Restricted phases (Set/Checkpoint/Final). Arm the recovery
+		// hint for the next BoundedRetry attempt. The Site 3 wrapper
+		// guard verifies TextOnlyMode==TextOnlyRestricted before
+		// continuing BoundedRetry.
+		ts.pendingRecoveryMessage = msg
+		return ControlToolLoop
+	case RecoveryRetryNextIteration:
+		// Open (RELATIVE). Arm msg; Site 3 guard exits BoundedRetry so
+		// caller-loop can advance iter (carry). matches Phase 12.27 D3.
+		ts.pendingRecoveryMessage = msg
+		return ControlToolLoop
+	case RecoveryArchiveGoal:
+		// Recovery exhausted (3 attempts) OR PostFinal. Stamp
+		// phase-stuck counter via dedicated helper
+		// `recordPhaseStuckArchive(phase)` so phaseStuckFallbackMessage
+		// returns the right user-facing message at
+		// applyFallbackForEmptyResponse branch 2 (Phase 12.13 sticky).
+		// The helper preserves the per-call increment-by-1 pattern at
+		// recordPhaseStuckToolFail/recordPhaseStuckToolAllowedBlock and
+		// adds a SEPARATE archive-event semantic (counter crosses
+		// threshold in one shot so AbortReason fires correctly).
+		if ts.hasGoal() {
+			ts.recordPhaseStuckArchive(GoalPhase(phase), msg)
+			ts.goalArchiveRequested = true
+		}
+		return ControlBreak
+	default: // RecoveryNone — Set text-only valid turn end OR PostFinal
+		return ControlToolLoop
+	}
+}

@@ -129,3 +129,55 @@ func recordPhaseStuckToolAllowedBlockInPhase(ts *turnState, phase GoalPhase, too
 	// so a runtime rejection is unexpected and not tracked here. Recovery
 	// will still trigger via checkToolExecErrorRecovery (Phase 12.11).
 }
+
+// recordPhaseStuckArchive (Phase 12.51a)
+
+// recordPhaseStuckArchive (Phase 12.51a) — called when an archive event
+// fires (BoundedRetry exhausted at a restricted phase). Sets the
+// phase-stuck counter to the threshold value (>= 2) in one shot via
+// the `if count < 2 { count = 2 }` pattern so
+// computePhaseStuckAbortReasonForPhase returns the matching StuckBucket
+// abort reason.
+//
+// Distinct from recordPhaseStuckToolFail/recordPhaseStuckToolAllowedBlock:
+// those track PER-FAILURE increments (each tool failure = +1), this
+// helper tracks PER-ARCHIVE events (one archive event = threshold met).
+// Per-failure and per-archive are different semantic units; mixing them
+// would break the dual-purpose counter role (Phase 12.51 R10 F01 fix).
+//
+// Phase 12.51 R10 F01 design: counters are TEMPORARILY dual-purpose
+// (failed-attempt count + archive-event marker). Phase 12.52 will split
+// into `failedAttempts` + `archiveEvents` to remove the ambiguity.
+//
+// lastPhaseStuckError preservation: if per-fail increments already
+// stamped a richer error message (e.g. "tool X not allowed"), the
+// archive event does NOT overwrite it. The richer per-fail message is
+// more informative than the generic archive event message.
+func (ts *turnState) recordPhaseStuckArchive(phase GoalPhase, errMsg string) {
+	switch phase {
+	case GoalPhaseSet:
+		if ts.setGoalFailCount < 2 {
+			ts.setGoalFailCount = 2
+		}
+		if ts.lastPhaseStuckError == "" {
+			ts.lastPhaseStuckError = errMsg
+		}
+	case GoalPhaseCheckpoint:
+		if ts.goalProgressFailCount < 2 {
+			ts.goalProgressFailCount = 2
+		}
+		if ts.lastPhaseStuckError == "" {
+			ts.lastPhaseStuckError = errMsg
+		}
+	case GoalPhaseFinal:
+		if ts.completeGoalFailCount < 2 {
+			ts.completeGoalFailCount = 2
+		}
+		if ts.lastPhaseStuckError == "" {
+			ts.lastPhaseStuckError = errMsg
+		}
+	}
+	// GoalPhaseOpen / GoalPhasePostFinal: no phase-stuck semantics — archive
+	// event in Open uses generic GoalAbortReasonBexhausted, archive event
+	// in PostFinal is silent (computePhaseStuckAbortReason returns "").
+}

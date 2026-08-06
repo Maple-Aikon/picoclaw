@@ -258,23 +258,27 @@ func TestRetryExecuteToolChain_Step4_NoToolSelected_StopsAtStep2(t *testing.T) {
 
 	ctrl, err := p.retryExecuteToolChain(
 		context.Background(), context.Background(), ts, exec, 1,
-		"hint", []string{"set_goal"}, "checkpoint")
+		"hint", []string{"set_goal"}, "open")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	// Phase 12.42 (G3/G4): text-only is SUCCESS — mirror Path 2 arm i.
-	// Old contract (Task 3 stub) broke on text-only; new contract returns
-	// ControlToolLoop and clears pendingRecoveryMessage (C9b) so
-	// BoundedRetry exits without burning attempts.
+	// Phase 12.51a: text-only at Open phase = next-iter carry (per
+	// Phase 12.46 + 12.47 spec). Phase was "checkpoint" pre-12.51a which
+	// returned ControlToolLoop (success) — that changed because Phase
+	// 12.51a routes text-only through evaluateRecovery which now fires
+	// same-iter retry at restricted phases. Use phase="open" to preserve
+	// the original test intent (text-only is success at Open phase).
 	if ctrl != ControlToolLoop {
-		t.Errorf("expected ControlToolLoop (text-only success), got %v", ctrl)
+		t.Errorf("expected ControlToolLoop (Open text-only carry), got %v", ctrl)
 	}
 	// ExecuteTools MUST NOT have been called (G4 guard: no tool calls).
 	if fake.callCount != 0 {
 		t.Errorf("expected ExecuteTools NOT called (text-only), got callCount=%d", fake.callCount)
 	}
-	if ts.pendingRecoveryMessage != "" {
-		t.Errorf("expected pendingRecoveryMessage cleared (C9b), got %q", ts.pendingRecoveryMessage)
+	// pendingRecoveryMessage armed for Open next-iter carry (Phase 12.27 D3)
+	// — Phase 12.51a Site 1 helper arms it via evaluateRecovery.
+	if ts.pendingRecoveryMessage == "" {
+		t.Errorf("expected pendingRecoveryMessage armed (Open carry), got empty")
 	}
 }
 
@@ -301,19 +305,22 @@ func TestRetryExecuteToolChain_Step5_InnerBreakPropagates(t *testing.T) {
 
 	ctrl, err := p.retryExecuteToolChain(
 		context.Background(), context.Background(), ts, exec, 1,
-		"hint", []string{"set_goal"}, "checkpoint")
+		"hint", []string{"set_goal"}, "open")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	// Phase 12.42 (G3/G4): text-only maps to ControlToolLoop success
-	// (mirror Path 2 arm i), never ControlBreak. ControlBreak is now
-	// reserved for Step 3 executor breaks + exhaustion.
+	// Phase 12.51a: text-only at Open phase = next-iter carry (per
+	// Phase 12.46 + 12.47 spec). Phase was "checkpoint" pre-12.51a which
+	// returned ControlToolLoop (success) — that changed because Phase
+	// 12.51a routes text-only through evaluateRecovery which now fires
+	// same-iter retry at restricted phases. Use phase="open" to preserve
+	// the original test intent (text-only is success at Open phase).
 	if ctrl != ControlToolLoop {
-		t.Errorf("expected ControlToolLoop (text-only success), got %v", ctrl)
+		t.Errorf("expected ControlToolLoop (Open text-only carry), got %v", ctrl)
 	}
-	// No archive requested (text-only is not exhaustion).
+	// No archive requested at Open (text-only carry, not exhaustion).
 	if ts.goalArchiveRequested {
-		t.Errorf("expected goalArchiveRequested=false (text-only is not exhaustion), got true")
+		t.Errorf("expected goalArchiveRequested=false (Open text-only is carry), got true")
 	}
 	// ExecuteTools MUST NOT have been called (G4 guard).
 	if fake.callCount != 0 {
@@ -421,27 +428,20 @@ func TestRetryExecuteToolChain_LLMCalledWithHint(t *testing.T) {
 		t.Fatalf("expected ts.iteration unchanged (3), got %d", ts.iteration)
 	}
 
-	// Assertion 3: stub returns a non-zero Control (the only zero-valued
-	// Control is ControlContinue, which means "jump to top of turn
-	// loop" — not what this stub ever returns). Wrong-tool branch
-	// returns ControlBreak; right-tool branch returns ControlToolLoop.
-	if ctrl == ControlContinue {
-		t.Fatalf("expected a non-zero Control (ControlBreak or ControlToolLoop), got %v", ctrl)
+	// Assertion 3: Phase 12.51a change. Pre-12.51a: text-only at
+	// Checkpoint returned ControlBreak (wrong-tool branch). Phase 12.51a
+	// routes text-only through evaluateRecovery which fires same-iter
+	// retry 3x (RecordingProvider returns text-only each time), then
+	// archives. So expected: ControlBreak with goalArchiveRequested=true.
+	if ctrl != ControlBreak {
+		t.Errorf("expected ControlBreak (Phase 12.51a: 3 attempts exhausted → archive), got %v", ctrl)
 	}
-	_ = ctrl
-
-	// Assertion 4 (wrong-tool branch only): when the LLM picks a tool
-	// that is not in the allowlist (or no tool at all), the stub
-	// re-arms ts.pendingRecoveryMessage with a phase-aware hint that
-	// mentions the phase name and the allowed tools. recordingProvider
-	// returns no ToolCalls, so we land here.
-	if ctrl == ControlBreak {
-		if ts.pendingRecoveryMessage == "" {
-			t.Fatal("expected ts.pendingRecoveryMessage to be re-armed on wrong-tool branch")
-		}
-		if !strings.Contains(ts.pendingRecoveryMessage, phaseName) {
-			t.Fatalf("expected phase %q in re-armed hint, got %q", phaseName, ts.pendingRecoveryMessage)
-		}
+	if !ts.goalArchiveRequested {
+		t.Errorf("expected goalArchiveRequested=true after 3 attempts exhausted, got false")
+	}
+	// recordPhaseStuckArchive bumped goalProgressFailCount to 2 (threshold)
+	if ts.goalProgressFailCount != 2 {
+		t.Errorf("expected goalProgressFailCount=2 after exhausted, got %d", ts.goalProgressFailCount)
 	}
 }
 

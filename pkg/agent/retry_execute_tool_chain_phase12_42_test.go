@@ -73,8 +73,17 @@ func TestP1242_W2W15_WrongToolRepromptsThenExecutesOnce(t *testing.T) {
 	}
 }
 
-// W3 — text-only after a tool-exec error → success (ControlToolLoop), NO retry-loop,
-// NO execute, pendingRecoveryMessage cleared (G4 guard + C9b).
+// W3 — text-only after a tool-exec error: Phase 12.51a change.
+//
+// Pre-12.51a: text-only after error at Checkpoint = success (ControlToolLoop),
+// no retry, no execute, pendingRecoveryMessage cleared (G4/C9b).
+//
+// Phase 12.51a: text-only at Checkpoint now fires same-iter retry 3x
+// (2 soft + 1 hard) per Phase 12.46 + 12.47 spec. Use phase="open"
+// to preserve the original test intent: at Open phase, text-only
+// = next-iter carry (NOT archive, NOT retry-loop). The carry uses
+// pendingRecoveryMessage (Phase 12.27 D3) — Phase 12.51a Site 1 helper
+// arms it via evaluateRecovery's RecoveryRetryNextIteration branch.
 func TestP1242_W3_TextOnlyAfterErrorIsSuccess(t *testing.T) {
 	provider := &phase12_36TestProvider{responses: []*providers.LLMResponse{
 		{Content: "", ToolCalls: []providers.ToolCall{{Name: "goal_progress", Arguments: map[string]any{"remaining_steps": []any{"x"}}}}, FinishReason: "stop"},
@@ -90,21 +99,26 @@ func TestP1242_W3_TextOnlyAfterErrorIsSuccess(t *testing.T) {
 	p.SetToolExecutor(fake)
 	ts, exec := setupRetryChainTestTurnState(t, al, p)
 
-	ctrl, err := p.retryExecuteToolChain(context.Background(), context.Background(), ts, exec, 2, "RETRY_HINT", []string{"goal_progress"}, "checkpoint")
+	// Phase 12.51a: use phase="open" (carry, not retry) to preserve W3's
+	// original test intent. Pre-12.51a used "checkpoint" which is now
+	// restricted-phase retry.
+	ctrl, err := p.retryExecuteToolChain(context.Background(), context.Background(), ts, exec, 2, "RETRY_HINT", []string{"goal_progress"}, "open")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if ctrl != ControlToolLoop {
-		t.Fatalf("W3: text-only after error must be success (ControlToolLoop), got %v (current code breaks)", ctrl)
+		t.Fatalf("W3: text-only after error at Open = ControlToolLoop (carry), got %v (Phase 12.51a Open carry)", ctrl)
 	}
 	if fake.callCount != 1 {
 		t.Errorf("W3: executor callCount == %d, want 1 (attempt 1 text-only must NOT execute)", fake.callCount)
 	}
 	if ts.goalArchiveRequested {
-		t.Errorf("W3: must not archive on text-only success")
+		t.Errorf("W3: must not archive on Open text-only carry")
 	}
-	if ts.pendingRecoveryMessage != "" {
-		t.Errorf("W3: pendingRecoveryMessage = %q, want empty (C9b: clear on success exit)", ts.pendingRecoveryMessage)
+	// Phase 12.51a: pendingRecoveryMessage is now ARMED by Site 1 helper
+	// for next-iter carry (Phase 12.27 D3). Pre-12.51a cleared it (C9b).
+	if ts.pendingRecoveryMessage == "" {
+		t.Errorf("W3: pendingRecoveryMessage should be armed for Open carry (Phase 12.27 D3), got empty")
 	}
 }
 
@@ -140,9 +154,16 @@ func TestP1242_W4_AllowAllGateBlockedExhaustsToArchive(t *testing.T) {
 	}
 }
 
-// W13+W14 — mixed sequence: iter1 error→text-only (success, counter=1, no archive);
-// iter boundary resets counter; iter2 3 consecutive errors → archive. Proves
-// "consecutive same-iter" semantics + counter ownership at iter boundary.
+// W13+W14 — mixed sequence: Phase 12.51a change.
+//
+// Pre-12.51a: iter1 tool success → text-only = exit success (ControlToolLoop),
+// counter=1, no archive; iter boundary resets counter; iter2 3 consecutive
+// errors → archive (even though cap not hit).
+//
+// Phase 12.51a: text-only at Checkpoint now fires same-iter retry 3x
+// per Phase 12.46 + 12.47 spec. Use phase="open" to preserve the
+// original test intent (text-only is success at Open phase — verify
+// counter ownership + iter-boundary reset).
 func TestP1242_W13W14_MixedSequenceAndIterBoundary(t *testing.T) {
 	provider := &phase12_36TestProvider{responses: []*providers.LLMResponse{
 		// iter1: attempt 0 tool call, attempt 1 text-only
@@ -166,16 +187,16 @@ func TestP1242_W13W14_MixedSequenceAndIterBoundary(t *testing.T) {
 	p.SetToolExecutor(fake)
 	ts, exec := setupRetryChainTestTurnState(t, al, p)
 
-	// ---- iter1: error → text-only → success ----
-	ctrl1, err := p.retryExecuteToolChain(context.Background(), context.Background(), ts, exec, 2, "RETRY_HINT", []string{"goal_progress"}, "checkpoint")
+	// ---- iter1: error → text-only → success (Phase 12.51a Open carry) ----
+	ctrl1, err := p.retryExecuteToolChain(context.Background(), context.Background(), ts, exec, 2, "RETRY_HINT", []string{"goal_progress"}, "open")
 	if err != nil {
 		t.Fatalf("iter1 unexpected error: %v", err)
 	}
 	if ctrl1 != ControlToolLoop {
-		t.Fatalf("W13: iter1 must exit success (ControlToolLoop) after text-only, got %v", ctrl1)
+		t.Fatalf("W13: iter1 must exit success (ControlToolLoop) after text-only at Open, got %v", ctrl1)
 	}
 	if ts.goalArchiveRequested {
-		t.Errorf("W13: iter1 must NOT archive")
+		t.Errorf("W13: iter1 must NOT archive at Open")
 	}
 	if got := ts.toolExecRecoveryAttempts["goal_progress"]; got != 1 {
 		t.Errorf("W13: iter1 counter == %d, want 1 (text-only must not reset nor increment)", got)
@@ -195,8 +216,12 @@ func TestP1242_W13W14_MixedSequenceAndIterBoundary(t *testing.T) {
 	if !ts.goalArchiveRequested {
 		t.Errorf("W14: goalArchiveRequested not set after iter2 exhaustion")
 	}
-	if got := ts.toolExecRecoveryAttempts["goal_progress"]; got != 3 {
-		t.Errorf("W14: iter2 counter == %d, want 3", got)
+	// Phase 12.51a: counter == 2 because checkToolExecErrorRecovery
+	// returns ArchiveGoal when counter is about to reach Cap (not after).
+	// Flow: counter<2 → RetrySame (counter++); counter==2 → ArchiveGoal
+	// (no increment). Final counter = 2.
+	if got := ts.toolExecRecoveryAttempts["goal_progress"]; got != 2 {
+		t.Errorf("W14: iter2 counter == %d, want 2 (Cap-1, archive fires before 3rd increment)", got)
 	}
 }
 
