@@ -803,18 +803,13 @@ func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
 	if msg := al.phaseStuckFallbackMessage(ts, g); msg != "" {
 		return msg
 	}
-	// Phase 12.51b: defense-in-depth at iter=cap boundary. If we exited
-	// the loop at CHECKPOINT/FINAL with an active goal that hasn't been
-	// finalized yet, surface a phase-specific retry prompt instead of
-	// the generic toolLimitResponse. This catches:
-	//   - LLM that escaped Phase 12.51a's Path 4 wire loop entirely
-	//     (e.g., pre-goal or post-archive stale state)
-	//   - Path 4 archive path that didn't stage a phase-stuck message
-	//     (e.g., aggressive Phase 12.23 cleanup archived first)
-	// Phase 12.40 invariant: NO iteration-cap claims in LLM-visible text.
-	// Phase 12.46 invariant: SET text-only stays silent — do not include
-	// Set in this branch.
-	if ts.currentIteration() >= ts.iterationCap && hasActiveGoal && !ts.goalFinalized && !ts.postCompleteGoalReportSent {
+	// Phase 12.51b: defense-in-depth at iter=cap boundary — if we exited the
+	// loop at CHECKPOINT/FINAL with an active unfinalized goal, surface a
+	// phase-specific retry prompt instead of the generic toolLimitResponse
+	// (catches LLM escapes from Phase 12.51a Path 4 + aggressive Phase 12.23
+	// cleanup). Phase 12.40 invariant: no cap claims; Phase 12.46: SET
+	// text-only stays silent — Set is excluded below by design.
+	if ts.currentIteration() > 1 && ts.currentIteration() >= ts.iterationCap && hasActiveGoal && !ts.goalFinalized && !ts.postCompleteGoalReportSent {
 		// Phase 12.52a Item B: resolve the phase from the cached goal —
 		// ts.currentGoalPhase() would trigger a second store read via
 		// ts.hasGoal() and break the single-read invariant.

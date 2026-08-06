@@ -68,6 +68,24 @@ func (b StuckBucket) CounterField() string {
 	return ""
 }
 
+// counterTarget (Phase 12.53b Item B) returns a POINTER to the phase's
+// attempt counter on ts, or nil for StuckNone. Replaces the two
+// phase-keyed switches (recordPhaseStuckToolAllowedBlockInPhase + the
+// stamp inside finalizePhaseStuckArchive) with one data-driven lookup
+// next to CounterField(). Pointer identity lets callers mutate the
+// counter in place (`*c++`) without duplicating the phase mapping.
+func (b StuckBucket) counterTarget(ts *turnState) *int {
+	switch b {
+	case StuckSet:
+		return &ts.setGoalAttemptCount
+	case StuckCheckpoint:
+		return &ts.goalProgressAttemptCount
+	case StuckFinal:
+		return &ts.completeGoalAttemptCount
+	}
+	return nil
+}
+
 // TextOnlyMode classifies how the text-only recovery trigger should behave
 // at a given phase.
 type TextOnlyMode int

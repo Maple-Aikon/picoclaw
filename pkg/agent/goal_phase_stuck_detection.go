@@ -123,16 +123,14 @@ func (ts *turnState) recordPhaseStuckToolAllowedBlock(toolName, errMsg string) {
 // pure counter logic without spinning up a full AgentLoop. Same package,
 // same function body otherwise.
 func recordPhaseStuckToolAllowedBlockInPhase(ts *turnState, phase GoalPhase, toolName, enrichedMsg string) {
-	switch phase {
-	case GoalPhaseSet:
-		ts.setGoalAttemptCount++
-		ts.lastPhaseStuckError = enrichedMsg
-	case GoalPhaseCheckpoint:
-		ts.goalProgressAttemptCount++
-		ts.lastPhaseStuckError = enrichedMsg
-	case GoalPhaseFinal:
-		ts.completeGoalAttemptCount++
-		ts.lastPhaseStuckError = enrichedMsg
+	// Phase 12.53b Item B: data-driven counter via StuckBucket.counterTarget
+	// (replaces the phase-keyed switch). Phase without a bucket → no-op,
+	// matching the old default switch behavior.
+	if policy := PhasePolicyFor(phase); policy != nil {
+		if c := policy.StuckBucket.counterTarget(ts); c != nil {
+			*c++
+			ts.lastPhaseStuckError = enrichedMsg
+		}
 	}
 	// GoalPhaseOpen: no phase-stuck semantics — full tool set is allowed,
 	// so a runtime rejection is unexpected and not tracked here. Recovery
@@ -159,7 +157,6 @@ func recordPhaseStuckToolAllowedBlockInPhase(ts *turnState, phase GoalPhase, too
 // Before the split, the count was ratcheted to 2 (dual-purpose) which
 // inflated the user-facing "failed N times" display; the flag removes
 // the ambiguity and the count stays honest.
-// into `failedAttempts` + `archiveEvents` to remove the ambiguity.
 //
 // Phase 12.51a.1 F02 fix: OVERWRITE lastPhaseStuckError (do NOT preserve).
 // Rationale: the bare StuckBucket constant (e.g. "goal_stuck_v1_continuation")
@@ -206,22 +203,47 @@ func finalizePhaseStuckArchive(ts *turnState, phase GoalPhase, msg string) {
 	// *AttemptCount counters are zeroed — phaseStuckFallbackMessage renders
 	// both, and the count shown in a later turn must be the true one.
 	// recordPhaseStuckArchive already bumped the counter to >= 1.
-	var count int
-	switch phase {
-	case GoalPhaseSet: // GoalPhaseLock aliases "set" — same case
-		count = ts.setGoalAttemptCount
-	case GoalPhaseCheckpoint:
-		count = ts.goalProgressAttemptCount
-	case GoalPhaseFinal:
-		count = ts.completeGoalAttemptCount
-	default:
-		count = 1
-	}
+	// Phase 12.53b Item B: count via stuckCountForArchive (data-driven,
+	// F4: phase without a bucket → 0 → omitempty leaves the field absent).
+	count := stuckCountForArchive(ts, phase)
 	ts.lastPhaseStuckError = fmt.Sprintf("%s (attempts: %d)", msg, count)
 	if err := ts.finalizeGoalOnTurnEndWithCount(abortReason, count); err != nil {
 		logger.WarnCF("agent", "finalizePhaseStuckArchive: finalizeGoalOnTurnEnd failed",
 			map[string]any{"error": err.Error()})
 	}
+}
+
+// stuckCountForArchive (Phase 12.53b Item B) returns the attempt counter
+// for the phase's stuck bucket, or 0 for phases without a bucket
+// (StuckNone — Open/PostFinal). 0 flows into finalizeGoalOnTurnEndWithCount
+// as "not a phase-stuck archive" (omitempty → field absent on disk),
+// replacing the old stamp default of 1 (F4 behavior change, T7c-tested).
+func stuckCountForArchive(ts *turnState, phase GoalPhase) int {
+	policy := PhasePolicyFor(phase)
+	if policy == nil || policy.StuckBucket == StuckNone {
+		return 0
+	}
+	if c := policy.StuckBucket.counterTarget(ts); c != nil {
+		return *c
+	}
+	return 0
+}
+
+// stuckArchiveParams (Phase 12.53b D-F1 / F3) resolves the archive abort
+// reason + stuck count from ONE phase snapshot so the persisted count and
+// the reason cannot drift (Phase 12.52c F-B lesson). handleGoalRecovery's
+// two archive sites (OnExhausted + RecoveryArchiveGoal) both call this;
+// non-phase-stuck phases return defaultReason + 0 (no field stamped).
+func (ts *turnState) stuckArchiveParams(defaultReason string) (string, int) {
+	phase := ts.currentGoalPhase()
+	abortReason := defaultReason
+	if phaseStuckReason := computePhaseStuckAbortReasonForPhase(phase,
+		ts.setGoalAttemptCount, ts.setGoalArchiveFlag,
+		ts.goalProgressAttemptCount, ts.goalProgressArchiveFlag,
+		ts.completeGoalAttemptCount, ts.completeGoalArchiveFlag); phaseStuckReason != "" {
+		abortReason = phaseStuckReason
+	}
+	return abortReason, stuckCountForArchive(ts, phase)
 }
 
 func (ts *turnState) recordPhaseStuckArchive(phase GoalPhase, errMsg string) {
