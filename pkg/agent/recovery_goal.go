@@ -211,6 +211,19 @@ const (
 	// would mislead. The hint directs the LLM to pivot to complete_goal
 	// rather than retry the blocked lifecycle tool.
 	ToolExecErrorOpenPhaseHint = " `set_goal` is LOCKED at OPEN phase (it only fires at the SET phase / iter 1). `goal_progress` is CHECKPOINT-only (it only fires at a checkpoint). At OPEN, only `view_goal` and `complete_goal` are available for lifecycle operations. Pivot to `complete_goal` with a non-empty `summary` (1-1000 chars) when the work is done, or call other non-lifecycle tools. Do NOT retry the same blocked lifecycle tool."
+
+	// Phase 12.51b — Checkpoint/Final iter=cap escape hatch.
+	// Defense-in-depth at the iter=cap boundary. State-agnostic per
+	// Phase 12.40 spirit: NO iteration-cap claims (claims go stale after
+	// extension/phase transition and poison history). Tool names + 3-path
+	// decision tree OK for LLM-actionable text. Message persists to
+	// history via pipeline_finalize.go:51-53 — wording must remain valid
+	// across subsequent turns. Set/Open behavior unchanged: Set text-only
+	// is silent (valid turn end), Open text-only falls through to
+	// toolLimitResponse (Phase 12.27 D3 carry semantics).
+	ToolLimitCheckpointRetryMessage = "You have reached a checkpoint. Your available tools are `goal_progress` (extend) and `complete_goal` (finalize). Choose: (a) save checkpoint with remaining steps, (b) end turn with a wait-state summary, (c) end turn with an accomplishment summary."
+
+	ToolLimitFinalRetryMessage = "You have reached the final phase. Your available tool is `complete_goal` (finalize with a 1-1000 character summary)."
 )
 
 // phaseContextSuffix returns a short past-tense description of the goal

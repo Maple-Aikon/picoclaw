@@ -786,6 +786,28 @@ func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
 	if msg := al.phaseStuckFallbackMessage(ts); msg != "" {
 		return msg
 	}
+	// Phase 12.51b: defense-in-depth at iter=cap boundary. If we exited
+	// the loop at CHECKPOINT/FINAL with an active goal that hasn't been
+	// finalized yet, surface a phase-specific retry prompt instead of
+	// the generic toolLimitResponse. This catches:
+	//   - LLM that escaped Phase 12.51a's Path 4 wire loop entirely
+	//     (e.g., pre-goal or post-archive stale state)
+	//   - Path 4 archive path that didn't stage a phase-stuck message
+	//     (e.g., aggressive Phase 12.23 cleanup archived first)
+	// Phase 12.40 invariant: NO iteration-cap claims in LLM-visible text.
+	// Phase 12.46 invariant: SET text-only stays silent — do not include
+	// Set in this branch.
+	if ts.currentIteration() >= ts.iterationCap && ts.hasGoal() && !ts.goalFinalized && !ts.postCompleteGoalReportSent {
+		switch ts.currentGoalPhase() {
+		case GoalPhaseCheckpoint:
+			return ToolLimitCheckpointRetryMessage
+		case GoalPhaseFinal:
+			return ToolLimitFinalRetryMessage
+		}
+		// Open/Set/PostFinal/PostFinal fall through to toolLimitResponse
+		// by design: Open carries via next iter (Phase 12.27 D3),
+		// Set/PostFinal are valid turn ends (Phase 12.46/12.47 spec).
+	}
 	if ts.currentIteration() >= ts.iterationCap {
 		return toolLimitResponse
 	}
