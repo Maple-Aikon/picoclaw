@@ -382,9 +382,9 @@ func TestPhase12_22_CheckpointToolBlock_Exhaustion_ArchivesWithPhaseStuckReason(
 	if strings.Contains(strings.ToLower(ts.lastPhaseStuckError), "checkpoint") {
 		t.Errorf("expected NO phase enum literal in lastPhaseStuckError (Phase 12.43), got %q", ts.lastPhaseStuckError)
 	}
-	if ts.lastPhaseStuckError != GoalPhaseCheckpointStuckAbortReason {
-		t.Errorf("expected lastPhaseStuckError to be Checkpoint abort reason %q, got %q",
-			GoalPhaseCheckpointStuckAbortReason, ts.lastPhaseStuckError)
+	if ts.lastPhaseStuckError != "BoundedRetry exhausted" {
+		t.Errorf("expected lastPhaseStuckError = %q (Phase 12.51a.1 F02: recordPhaseStuckArchive msg wins over OnExhausted bare constant), got %q",
+			"BoundedRetry exhausted", ts.lastPhaseStuckError)
 	}
 }
 

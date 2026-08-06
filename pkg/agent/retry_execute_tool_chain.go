@@ -161,8 +161,20 @@ func (p *Pipeline) retryExecuteToolChain(
 		// the phase is RESTRICTED before continuing (Set/Checkpoint/Final).
 		// Use the same-package PhasePolicyFor helper for AgentPhasePolicy
 		// (ToolVisibilityPolicy in pkg/tools doesn't carry TextOnlyMode).
+		//
+		// Phase 12.51a.1 F05-doubt fix: fail-CLOSED on unknown phase.
+		// PhasePolicyFor(unknown) returns nil (with a canary warn). Pre-fix
+		// guard treated nil policy as "exit early" → RetryDecisionDone →
+		// silent success → text-only silently dropped. New guard returns
+		// RetryDecisionAbort so the caller can decide (currently surfaces
+		// as ControlBreak via the inner Result → caller-loop aware).
 		policy := PhasePolicyFor(GoalPhase(phase))
-		if policy == nil || policy.TextOnlyMode != TextOnlyRestricted {
+		if policy == nil {
+			logger.WarnCF("agent", "retryExecuteToolChain: unknown phase, failing closed",
+				map[string]any{"phase": phase})
+			return RetryDecisionAbort, nil
+		}
+		if policy.TextOnlyMode != TextOnlyRestricted {
 			return RetryDecisionDone, nil
 		}
 		return RetryDecisionRetry, nil
@@ -292,9 +304,11 @@ func (p *Pipeline) retryExecuteToolChainOnce(
 	// = ""` line. Site 1's routeTextOnlyThroughRecovery helper now arms
 	// the recovery hint for restricted-phase retry (Phase 12.46 spec).
 	// Clearing here would prematurely drop the armed hint before
-	// BoundedRetry gets a chance to retry. The clear site at lines
-	// 332-336 (Phase 12.28 Task 7, pre-existing) handles Path 4
-	// success-path AFTER Step 3 tool exec returns.
+	// BoundedRetry gets a chance to retry. The post-Step 3 success-path
+	// clear site at lines 365-367 (Phase 12.28 Task 7, pre-existing)
+	// handles the Path 4 success case AFTER the executor returns
+	// without appending any messages (filter-everything path) OR after
+	// Step 4 sees no executor error.
 	if len(exec.normalizedToolCalls) == 0 {
 		return ControlToolLoop, nil
 	}

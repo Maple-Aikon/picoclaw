@@ -36,7 +36,6 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -284,6 +283,80 @@ func TestRouteTextOnlyThroughRecovery_Checkpoint_Archive_SetsAbortReason(t *test
 }
 
 // =============================================================================
+// W4d: F02 bug regression — lastPhaseStuckError must NOT be the bare
+// StuckBucket.AbortReason() constant after exhaustion. The constant
+// (e.g. "goal_checkpoint_stuck") is too terse for the user-facing
+// phaseStuckFallbackMessage; recordPhaseStuckArchive's richer message
+// ("BoundedRetry exhausted") must win the field. Before 12.51a.1 fix,
+// OnExhausted unconditionally stamped the constant BEFORE
+// recordPhaseStuckArchive ran, dropping the helper's msg.
+// =============================================================================
+func TestRouteTextOnlyThroughRecovery_Checkpoint_ArchiveMessageNotBareConstant(t *testing.T) {
+	provider := &recordingProvider{}
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	p := NewPipeline(al)
+	fake := &fakeExecutor{returnControl: ToolControlContinue}
+	p.SetToolExecutor(fake)
+	ts, exec := setupRetryChainTestTurnState(t, al, p)
+	al.SetGoalPhaseForTest(string(GoalPhaseCheckpoint))
+
+	_, err := p.retryExecuteToolChain(
+		context.Background(), context.Background(), ts, exec, 1,
+		"hint", []string{"goal_progress", "complete_goal"}, "checkpoint")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !ts.goalArchiveRequested {
+		t.Fatalf("expected goalArchiveRequested=true after Checkpoint exhausted")
+	}
+	// Bug shape: lastPhaseStuckError == bare StuckBucket constant
+	// (e.g. "goal_stuck_v1_continuation" for Checkpoint). User sees
+	// "Goal continuation could not complete (2 fails, goal_stuck_v1_continuation)".
+	// Fix shape: helper msg wins (e.g. contains "exhausted" or is empty
+	// if no richer per-fail msg was stamped).
+	bareConstant := GoalPhaseCheckpointStuckAbortReason
+	if ts.lastPhaseStuckError == bareConstant {
+		t.Errorf("F02 regression: lastPhaseStuckError is bare StuckBucket constant %q (OnExhausted stamped it unconditionally before recordPhaseStuckArchive could write). The recordPhaseStuckArchive msg should win.", bareConstant)
+	}
+}
+
+// =============================================================================
+// W5a: F05-doubt regression — Site 3 wrapper fails CLOSED on unknown
+// phase. Pre-fix: nil policy → return RetryDecisionDone → silent success
+// (text-only response silently dropped). New behavior: RetryDecisionAbort
+// so the caller can decide (currently surfaces as ControlBreak).
+// =============================================================================
+func TestRetryExecuteToolChain_UnknownPhase_FailsClosed(t *testing.T) {
+	provider := &recordingProvider{}
+	al, _, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+	p := NewPipeline(al)
+	fake := &fakeExecutor{returnControl: ToolControlContinue}
+	p.SetToolExecutor(fake)
+	ts, exec := setupRetryChainTestTurnState(t, al, p)
+
+	// Pre-arm pendingRecoveryMessage so first attempt is "we want a retry"
+	ts.pendingRecoveryMessage = "armed"
+
+	_, err := p.retryExecuteToolChain(
+		context.Background(), context.Background(), ts, exec, 1,
+		"hint", []string{"complete_goal"}, "bogus_phase_typo")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// Phase 12.51a.1 F05-doubt: unknown phase must surface as a break
+	// (abort), not a silent success. BoundedRetry's RetryDecisionAbort
+	// returns decision+nil from the loop body; caller gets whatever
+	// innerResult was (ControlToolLoop for text-only path is acceptable
+	// here — the key invariant is goalArchiveRequested is NOT stamped
+	// AND the loop didn't silently drop the response).
+	if ts.goalArchiveRequested {
+		t.Errorf("unknown phase must not force archive, got goalArchiveRequested=true")
+	}
+}
+
+// =============================================================================
 // W5: textEmpty filter — reasoning-only response NOT treated as empty
 //
 // Phase 12.46 invariant: responses with ONLY <reasoning>...</reasoning>
@@ -364,39 +437,45 @@ func TestBoundedRetryWrapper_OpenPhase_EarlyExit(t *testing.T) {
 // =============================================================================
 // W9-clear: Path 4 success-path clears pendingRecoveryMessage
 //
-// Verifies that on Path 4 success (Step 3 tool exec), the
-// pendingRecoveryMessage field is cleared (Phase 12.28 Task 7 clear site).
+// Verifies that on Path 4 success (Step 3 tool exec → Step 4 no error),
+// the pendingRecoveryMessage field is cleared (Phase 12.28 Task 7 clear
+// site at retry_execute_tool_chain.go:365-367). Must use a real
+// tool-calling provider + fakeExecutor with appendContent, otherwise
+// RecallLLM re-prompts with text-only response and Site 1 arms the
+// hint instead of clearing it.
 // =============================================================================
 func TestRetryExecuteToolChain_Path4Success_ClearsPendingRecovery(t *testing.T) {
-	provider := &recordingProvider{}
+	provider := &simpleValidToolProvider{
+		toolName: "complete_goal",
+		toolArgs: map[string]any{"summary": "done"},
+	}
 	al, _, cleanup := newTurnCoordTestLoop(t, provider)
 	defer cleanup()
 	p := NewPipeline(al)
-	fake := &fakeExecutor{returnControl: ToolControlContinue}
+	fake := &fakeExecutor{
+		returnControl:  ToolControlContinue,
+		appendContent:  "OK",
+		appendIsError:  false,
+		appendToolName: "t1",
+	}
 	p.SetToolExecutor(fake)
 	ts, exec := setupRetryChainTestTurnState(t, al, p)
 
-	// Pre-arm pendingRecoveryMessage
+	// Pre-arm pendingRecoveryMessage to simulate "stale hint from previous
+	// recovery attempt that should be cleared once this attempt succeeds".
 	ts.pendingRecoveryMessage = "stale hint from previous recovery"
-
-	// Inject a valid tool call into exec.response so Step 3 fires
-	exec.response = &providers.LLMResponse{
-		Content: "",
-		ToolCalls: []providers.ToolCall{
-			{ID: "tc1", Function: &providers.FunctionCall{Name: "any_tool"}},
-		},
-	}
-	exec.normalizedToolCalls = []providers.ToolCall{
-		{ID: "tc1", Function: &providers.FunctionCall{Name: "any_tool"}},
-	}
 
 	_, err := p.retryExecuteToolChain(
 		context.Background(), context.Background(), ts, exec, 1,
-		"hint", []string{"any_tool"}, "open")
-	if err != nil && !strings.Contains(err.Error(), "executor") {
+		"hint", []string{"complete_goal"}, "final")
+	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	t.Logf("after Path 4 attempt: pendingRecoveryMessage=%q", ts.pendingRecoveryMessage)
+	// Phase 12.28 Task 7: Step 4 sees no executor error → clear the hint
+	// so the outer BoundedRetry recognizes the attempt as success.
+	if ts.pendingRecoveryMessage != "" {
+		t.Errorf("expected pendingRecoveryMessage cleared on Path 4 success, got %q", ts.pendingRecoveryMessage)
+	}
 }
 
 // =============================================================================

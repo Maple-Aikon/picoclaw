@@ -149,31 +149,35 @@ func recordPhaseStuckToolAllowedBlockInPhase(ts *turnState, phase GoalPhase, too
 // (failed-attempt count + archive-event marker). Phase 12.52 will split
 // into `failedAttempts` + `archiveEvents` to remove the ambiguity.
 //
-// lastPhaseStuckError preservation: if per-fail increments already
-// stamped a richer error message (e.g. "tool X not allowed"), the
-// archive event does NOT overwrite it. The richer per-fail message is
-// more informative than the generic archive event message.
+// Phase 12.51a.1 F02 fix: OVERWRITE lastPhaseStuckError (do NOT preserve).
+// Rationale: the bare StuckBucket constant (e.g. "goal_stuck_v1_continuation")
+// that OnExhausted stamps first is too terse for the user-facing
+// phaseStuckFallbackMessage. The archive event msg ("BoundedRetry
+// exhausted at phase checkpoint") is richer and is what the user should
+// see. recordPhaseStuckToolFail/recordPhaseStuckToolAllowedBlock still
+// preserve (they fire BEFORE archive, when the error context is fresh);
+// archive is the terminal event and should win.
 func (ts *turnState) recordPhaseStuckArchive(phase GoalPhase, errMsg string) {
 	switch phase {
 	case GoalPhaseSet:
 		if ts.setGoalFailCount < 2 {
 			ts.setGoalFailCount = 2
 		}
-		if ts.lastPhaseStuckError == "" {
+		if errMsg != "" {
 			ts.lastPhaseStuckError = errMsg
 		}
 	case GoalPhaseCheckpoint:
 		if ts.goalProgressFailCount < 2 {
 			ts.goalProgressFailCount = 2
 		}
-		if ts.lastPhaseStuckError == "" {
+		if errMsg != "" {
 			ts.lastPhaseStuckError = errMsg
 		}
 	case GoalPhaseFinal:
 		if ts.completeGoalFailCount < 2 {
 			ts.completeGoalFailCount = 2
 		}
-		if ts.lastPhaseStuckError == "" {
+		if errMsg != "" {
 			ts.lastPhaseStuckError = errMsg
 		}
 	}

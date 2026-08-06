@@ -223,9 +223,15 @@ func TestRetryExecuteToolChain_T9_2_RestrictedPhase_ExhaustionArchivesWithPhaseS
 		t.Errorf("expected goalArchiveRequested=true after exhaustion, got false")
 	}
 	// Phase-stuck reason must be stamped for finalizeGoalOnTurnEnd.
-	wantReason := GoalPhaseCheckpointStuckAbortReason
+	// Phase 12.51a.1 F02 fix: recordPhaseStuckArchive now overwrites the
+	// OnExhausted bare constant with the richer "BoundedRetry exhausted"
+	// msg, which becomes the user-visible phaseStuckFallbackMessage
+	// context. Counter is still 2 (threshold) via the same helper, so
+	// computePhaseStuckAbortReasonForPhase still returns the bare
+	// constant for archive filename purposes.
+	wantReason := "BoundedRetry exhausted"
 	if ts.lastPhaseStuckError != wantReason {
-		t.Errorf("expected lastPhaseStuckError=%q, got %q",
+		t.Errorf("expected lastPhaseStuckError=%q (recordPhaseStuckArchive msg wins per 12.51a.1), got %q",
 			wantReason, ts.lastPhaseStuckError)
 	}
 	// Sanity check: re-verify the wire constants used by finalize helpers.
