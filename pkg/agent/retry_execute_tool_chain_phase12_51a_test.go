@@ -72,8 +72,8 @@ func TestRouteTextOnlyThroughRecovery_SetPhase_ReturnsRecoveryNone(t *testing.T)
 	if ts.goalArchiveRequested {
 		t.Errorf("expected goalArchiveRequested=false at Set text-only, got true")
 	}
-	if ts.setGoalFailCount != 0 {
-		t.Errorf("expected setGoalFailCount=0 at Set text-only, got %d", ts.setGoalFailCount)
+	if ts.setGoalAttemptCount != 0 {
+		t.Errorf("expected setGoalAttemptCount=0 at Set text-only, got %d", ts.setGoalAttemptCount)
 	}
 	if fake.callCount != 0 {
 		t.Errorf("expected ExecuteTools NOT called, got callCount=%d", fake.callCount)
@@ -105,8 +105,11 @@ func TestRouteTextOnlyThroughRecovery_Checkpoint_ThreeAttempts_ArchivesGoal(t *t
 	if !ts.goalArchiveRequested {
 		t.Errorf("expected goalArchiveRequested=true after exhaustion, got false")
 	}
-	if ts.goalProgressFailCount != 2 {
-		t.Errorf("expected goalProgressFailCount=2 after recordPhaseStuckArchive, got %d", ts.goalProgressFailCount)
+	if ts.goalProgressAttemptCount != 1 {
+		t.Errorf("expected goalProgressAttemptCount=1 after recordPhaseStuckArchive (max-1, no ratchet), got %d", ts.goalProgressAttemptCount)
+	}
+	if !ts.goalProgressArchiveFlag {
+		t.Errorf("expected goalProgressArchiveFlag=true after recordPhaseStuckArchive")
 	}
 	if ts.lastPhaseStuckError == "" {
 		t.Errorf("expected lastPhaseStuckError set, got empty")
@@ -141,8 +144,11 @@ func TestRouteTextOnlyThroughRecovery_Final_ThreeAttempts_ArchivesGoal(t *testin
 	if !ts.goalArchiveRequested {
 		t.Errorf("expected goalArchiveRequested=true, got false")
 	}
-	if ts.completeGoalFailCount != 2 {
-		t.Errorf("expected completeGoalFailCount=2 after recordPhaseStuckArchive, got %d", ts.completeGoalFailCount)
+	if ts.completeGoalAttemptCount != 1 {
+		t.Errorf("expected completeGoalAttemptCount=1 after recordPhaseStuckArchive (max-1, no ratchet), got %d", ts.completeGoalAttemptCount)
+	}
+	if !ts.completeGoalArchiveFlag {
+		t.Errorf("expected completeGoalArchiveFlag=true after recordPhaseStuckArchive")
 	}
 }
 
@@ -187,44 +193,58 @@ func TestRecordPhaseStuckArchive_BumpsCounterToThreshold(t *testing.T) {
 	ts, _ := setupRetryChainTestTurnState(t, al, NewPipeline(al))
 
 	// Initial state: counter=0
-	if ts.goalProgressFailCount != 0 {
-		t.Fatalf("setup error: goalProgressFailCount=%d, expected 0", ts.goalProgressFailCount)
+	if ts.goalProgressAttemptCount != 0 {
+		t.Fatalf("setup error: goalProgressAttemptCount=%d, expected 0", ts.goalProgressAttemptCount)
 	}
 
 	// Fire helper for Checkpoint
 	ts.recordPhaseStuckArchive(GoalPhaseCheckpoint, "test err msg")
-	if ts.goalProgressFailCount != 2 {
-		t.Errorf("expected goalProgressFailCount=2 after recordPhaseStuckArchive(Checkpoint), got %d", ts.goalProgressFailCount)
+	// Phase 12.52a split: archive sets max(1) — the REAL per-failure count
+	// stays honest (no ratchet to 2); the archive signal moves to the flag.
+	if ts.goalProgressAttemptCount != 1 {
+		t.Errorf("expected goalProgressAttemptCount=1 after recordPhaseStuckArchive(Checkpoint), got %d", ts.goalProgressAttemptCount)
+	}
+	if !ts.goalProgressArchiveFlag {
+		t.Errorf("expected goalProgressArchiveFlag=true after recordPhaseStuckArchive(Checkpoint)")
 	}
 	if ts.lastPhaseStuckError != "test err msg" {
 		t.Errorf("expected lastPhaseStuckError='test err msg', got %q", ts.lastPhaseStuckError)
 	}
 
-	// Idempotency: fire again, counter stays at 2 (max pattern, not +=)
+	// Idempotency: fire again, counter stays at 1 (max pattern, not +=), flag stays true
 	ts.recordPhaseStuckArchive(GoalPhaseCheckpoint, "another msg")
-	if ts.goalProgressFailCount != 2 {
-		t.Errorf("expected goalProgressFailCount=2 (idempotent max), got %d", ts.goalProgressFailCount)
+	if ts.goalProgressAttemptCount != 1 {
+		t.Errorf("expected goalProgressAttemptCount=1 (idempotent max), got %d", ts.goalProgressAttemptCount)
+	}
+	if !ts.goalProgressArchiveFlag {
+		t.Errorf("expected goalProgressArchiveFlag=true (idempotent flag)")
 	}
 
 	// If counter was already > 2 (e.g. legitimate failures), archive event
 	// preserves the higher value
-	ts.goalProgressFailCount = 5
+	ts.goalProgressAttemptCount = 5
 	ts.recordPhaseStuckArchive(GoalPhaseCheckpoint, "preserve")
-	if ts.goalProgressFailCount != 5 {
-		t.Errorf("expected goalProgressFailCount=5 (preserved existing), got %d", ts.goalProgressFailCount)
+	if ts.goalProgressAttemptCount != 5 {
+		t.Errorf("expected goalProgressAttemptCount=5 (preserved existing), got %d", ts.goalProgressAttemptCount)
 	}
 
 	// Other phases
-	ts.setGoalFailCount = 0
+	ts.setGoalAttemptCount = 0
 	ts.recordPhaseStuckArchive(GoalPhaseSet, "set err")
-	if ts.setGoalFailCount != 2 {
-		t.Errorf("expected setGoalFailCount=2 after recordPhaseStuckArchive(Set), got %d", ts.setGoalFailCount)
+	if ts.setGoalAttemptCount != 1 {
+		t.Errorf("expected setGoalAttemptCount=1 after recordPhaseStuckArchive(Set), got %d", ts.setGoalAttemptCount)
+	}
+	if !ts.setGoalArchiveFlag {
+		t.Errorf("expected setGoalArchiveFlag=true after recordPhaseStuckArchive(Set)")
 	}
 
-	ts.completeGoalFailCount = 0
+	ts.completeGoalAttemptCount = 0
 	ts.recordPhaseStuckArchive(GoalPhaseFinal, "final err")
-	if ts.completeGoalFailCount != 2 {
-		t.Errorf("expected completeGoalFailCount=2 after recordPhaseStuckArchive(Final), got %d", ts.completeGoalFailCount)
+	if ts.completeGoalAttemptCount != 1 {
+		t.Errorf("expected completeGoalAttemptCount=1 after recordPhaseStuckArchive(Final), got %d", ts.completeGoalAttemptCount)
+	}
+	if !ts.completeGoalArchiveFlag {
+		t.Errorf("expected completeGoalArchiveFlag=true after recordPhaseStuckArchive(Final)")
 	}
 }
 
@@ -250,8 +270,11 @@ func TestRouteTextOnlyThroughRecovery_Checkpoint_ArchivePath_BumpsCounters(t *te
 	if !ts.goalArchiveRequested {
 		t.Errorf("expected goalArchiveRequested=true after Checkpoint exhausted, got false")
 	}
-	if ts.goalProgressFailCount != 2 {
-		t.Errorf("expected goalProgressFailCount=2, got %d", ts.goalProgressFailCount)
+	if ts.goalProgressAttemptCount != 1 {
+		t.Errorf("expected goalProgressAttemptCount=1 (max-1, no ratchet), got %d", ts.goalProgressAttemptCount)
+	}
+	if !ts.goalProgressArchiveFlag {
+		t.Errorf("expected goalProgressArchiveFlag=true after exhaustion")
 	}
 }
 
@@ -277,8 +300,11 @@ func TestRouteTextOnlyThroughRecovery_Checkpoint_Archive_SetsAbortReason(t *test
 	if !ts.goalArchiveRequested {
 		t.Fatalf("expected goalArchiveRequested=true")
 	}
-	if ts.goalProgressFailCount < 2 {
-		t.Errorf("expected goalProgressFailCount>=2 (threshold for AbortReason), got %d", ts.goalProgressFailCount)
+	if ts.goalProgressAttemptCount < 1 {
+		t.Errorf("expected goalProgressAttemptCount>=1, got %d", ts.goalProgressAttemptCount)
+	}
+	if !ts.goalProgressArchiveFlag {
+		t.Errorf("expected goalProgressArchiveFlag=true (AbortReason threshold is the archive flag in 12.52a)")
 	}
 }
 
@@ -397,8 +423,11 @@ func TestRouteTextOnlyThroughRecovery_ReasoningOnlyNotEmpty(t *testing.T) {
 	if !ts.goalArchiveRequested {
 		t.Errorf("expected goalArchiveRequested=true after 3 text-only attempts, got false")
 	}
-	if ts.goalProgressFailCount != 2 {
-		t.Errorf("expected goalProgressFailCount=2 after exhausted reasoning-only at Checkpoint, got %d", ts.goalProgressFailCount)
+	if ts.goalProgressAttemptCount != 1 {
+		t.Errorf("expected goalProgressAttemptCount=1 after exhausted reasoning-only at Checkpoint (max-1), got %d", ts.goalProgressAttemptCount)
+	}
+	if !ts.goalProgressArchiveFlag {
+		t.Errorf("expected goalProgressArchiveFlag=true after exhausted reasoning-only at Checkpoint")
 	}
 	// Critical: textOnlySoftRetriesDone was INCREMENTED (text-only path,
 	// not empty-response path). If reasoning-only leaked to empty-response

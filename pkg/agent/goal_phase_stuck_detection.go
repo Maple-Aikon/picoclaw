@@ -7,8 +7,10 @@ import "fmt"
 // When the goal is about to be archived (OnExhausted or RecoveryArchiveGoal),
 // we need to decide whether the failure was a phase-specific lifecycle tool
 // failure (Goal-Set, Goal-Checkpoint, Goal-Final) vs a generic recovery
-// exhaustion. If the phase-stuck counter (setGoalFailCount,
-// goalProgressFailCount, completeGoalFailCount) is >= 2, we stamp the
+// exhaustion. If the phase-stuck archive flag (setGoalArchiveFlag,
+// goalProgressArchiveFlag, completeGoalArchiveFlag) is set, or the
+// per-failure attempt count (setGoalAttemptCount, goalProgressAttemptCount,
+// completeGoalAttemptCount) is >= 2, we stamp the
 // abort_reason with the phase-specific value so applyFallbackForEmptyResponse
 // can return a user-facing message that names the phase.
 
@@ -19,22 +21,24 @@ import "fmt"
 func (ts *turnState) computePhaseStuckAbortReason() string {
 	return computePhaseStuckAbortReasonForPhase(
 		ts.currentGoalPhase(),
-		ts.setGoalFailCount,
-		ts.goalProgressFailCount,
-		ts.completeGoalFailCount,
+		ts.setGoalAttemptCount, ts.setGoalArchiveFlag,
+		ts.goalProgressAttemptCount, ts.goalProgressArchiveFlag,
+		ts.completeGoalAttemptCount, ts.completeGoalArchiveFlag,
 	)
 }
 
 // computePhaseStuckAbortReasonForPhase is the static helper split out
 // from computePhaseStuckAbortReason so tests can exercise the pure
 // threshold logic without spinning up a full AgentLoop. Returns the
-// matching GoalPhase*StuckAbortReason if the count >= 2 for that phase;
-// empty string otherwise.
+// matching GoalPhase*StuckAbortReason if the phase's archive flag is set
+// (Phase 12.52a split) OR the count >= 2 (legacy gate preserved for the
+// handleGoalRecovery path, which stamps the reason from per-failure
+// counts without a recordPhaseStuckArchive call); empty string otherwise.
 func computePhaseStuckAbortReasonForPhase(
 	phase GoalPhase,
-	setGoalFails,
-	goalProgressFails,
-	completeGoalFails int,
+	setGoalFails int, setGoalArchived bool,
+	goalProgressFails int, goalProgressArchived bool,
+	completeGoalFails int, completeGoalArchived bool,
 ) string {
 	// Phase 12.48b site 8: StuckBucket is the single source of truth for
 	// which counter + abort-reason pair fires when this phase is stuck.
@@ -46,15 +50,16 @@ func computePhaseStuckAbortReasonForPhase(
 	}
 	counterField := policy.StuckBucket.CounterField()
 	var count int
+	var archived bool
 	switch counterField {
-	case "setGoalFailCount":
-		count = setGoalFails
-	case "goalProgressFailCount":
-		count = goalProgressFails
-	case "completeGoalFailCount":
-		count = completeGoalFails
+	case "setGoalAttemptCount":
+		count, archived = setGoalFails, setGoalArchived
+	case "goalProgressAttemptCount":
+		count, archived = goalProgressFails, goalProgressArchived
+	case "completeGoalAttemptCount":
+		count, archived = completeGoalFails, completeGoalArchived
 	}
-	if count >= 2 {
+	if archived || count >= 2 {
 		return policy.StuckBucket.AbortReason()
 	}
 	return ""
@@ -69,13 +74,13 @@ func computePhaseStuckAbortReasonForPhase(
 func (ts *turnState) recordPhaseStuckToolFail(toolName, errMsg string) {
 	switch toolName {
 	case "set_goal":
-		ts.setGoalFailCount++
+		ts.setGoalAttemptCount++
 		ts.lastPhaseStuckError = errMsg
 	case "goal_progress":
-		ts.goalProgressFailCount++
+		ts.goalProgressAttemptCount++
 		ts.lastPhaseStuckError = errMsg
 	case "complete_goal":
-		ts.completeGoalFailCount++
+		ts.completeGoalAttemptCount++
 		ts.lastPhaseStuckError = errMsg
 	}
 }
@@ -116,13 +121,13 @@ func (ts *turnState) recordPhaseStuckToolAllowedBlock(toolName, errMsg string) {
 func recordPhaseStuckToolAllowedBlockInPhase(ts *turnState, phase GoalPhase, toolName, enrichedMsg string) {
 	switch phase {
 	case GoalPhaseSet:
-		ts.setGoalFailCount++
+		ts.setGoalAttemptCount++
 		ts.lastPhaseStuckError = enrichedMsg
 	case GoalPhaseCheckpoint:
-		ts.goalProgressFailCount++
+		ts.goalProgressAttemptCount++
 		ts.lastPhaseStuckError = enrichedMsg
 	case GoalPhaseFinal:
-		ts.completeGoalFailCount++
+		ts.completeGoalAttemptCount++
 		ts.lastPhaseStuckError = enrichedMsg
 	}
 	// GoalPhaseOpen: no phase-stuck semantics — full tool set is allowed,
@@ -130,23 +135,26 @@ func recordPhaseStuckToolAllowedBlockInPhase(ts *turnState, phase GoalPhase, too
 	// will still trigger via checkToolExecErrorRecovery (Phase 12.11).
 }
 
-// recordPhaseStuckArchive (Phase 12.51a)
-
-// recordPhaseStuckArchive (Phase 12.51a) — called when an archive event
+// recordPhaseStuckArchive (Phase 12.52a) — called when an archive event
 // fires (BoundedRetry exhausted at a restricted phase). Sets the
-// phase-stuck counter to the threshold value (>= 2) in one shot via
-// the `if count < 2 { count = 2 }` pattern so
-// computePhaseStuckAbortReasonForPhase returns the matching StuckBucket
-// abort reason.
+// phase's ArchiveFlag (bool) so computePhaseStuckAbortReasonForPhase
+// returns the matching StuckBucket abort reason, and guarantees the
+// AttemptCount is at least 1 (idempotent-max pattern: `if count < 1 { count = 1 }`)
+// so the user-facing "failed N attempt(s)" message never reads 0.
 //
 // Distinct from recordPhaseStuckToolFail/recordPhaseStuckToolAllowedBlock:
 // those track PER-FAILURE increments (each tool failure = +1), this
-// helper tracks PER-ARCHIVE events (one archive event = threshold met).
+// helper tracks PER-ARCHIVE events (one archive event = flag set).
 // Per-failure and per-archive are different semantic units; mixing them
 // would break the dual-purpose counter role (Phase 12.51 R10 F01 fix).
 //
-// Phase 12.51 R10 F01 design: counters are TEMPORARILY dual-purpose
-// (failed-attempt count + archive-event marker). Phase 12.52 will split
+// Phase 12.52a: counters SPLIT into *AttemptCount (per-failure increments)
+// + *ArchiveFlag (bool, set at archive). The original R10 F01 design
+// proposed `archiveEvents` (event count); a bool suffices because archive
+// is terminal — at most one archive event per turn per phase (Q3=A chốt).
+// Before the split, the count was ratcheted to 2 (dual-purpose) which
+// inflated the user-facing "failed N times" display; the flag removes
+// the ambiguity and the count stays honest.
 // into `failedAttempts` + `archiveEvents` to remove the ambiguity.
 //
 // Phase 12.51a.1 F02 fix: OVERWRITE lastPhaseStuckError (do NOT preserve).
@@ -160,23 +168,26 @@ func recordPhaseStuckToolAllowedBlockInPhase(ts *turnState, phase GoalPhase, too
 func (ts *turnState) recordPhaseStuckArchive(phase GoalPhase, errMsg string) {
 	switch phase {
 	case GoalPhaseSet:
-		if ts.setGoalFailCount < 2 {
-			ts.setGoalFailCount = 2
+		if ts.setGoalAttemptCount < 1 {
+			ts.setGoalAttemptCount = 1
 		}
+		ts.setGoalArchiveFlag = true
 		if errMsg != "" {
 			ts.lastPhaseStuckError = errMsg
 		}
 	case GoalPhaseCheckpoint:
-		if ts.goalProgressFailCount < 2 {
-			ts.goalProgressFailCount = 2
+		if ts.goalProgressAttemptCount < 1 {
+			ts.goalProgressAttemptCount = 1
 		}
+		ts.goalProgressArchiveFlag = true
 		if errMsg != "" {
 			ts.lastPhaseStuckError = errMsg
 		}
 	case GoalPhaseFinal:
-		if ts.completeGoalFailCount < 2 {
-			ts.completeGoalFailCount = 2
+		if ts.completeGoalAttemptCount < 1 {
+			ts.completeGoalAttemptCount = 1
 		}
+		ts.completeGoalArchiveFlag = true
 		if errMsg != "" {
 			ts.lastPhaseStuckError = errMsg
 		}

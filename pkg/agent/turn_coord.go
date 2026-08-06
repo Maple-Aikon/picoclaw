@@ -210,9 +210,12 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		// Phase 12.13: reset phase-stuck counters at iteration boundary so
 		// a fresh iteration gets a clean slate. Same lifecycle as the
 		// sibling counters above (reset on iter bump).
-		ts.setGoalFailCount = 0
-		ts.goalProgressFailCount = 0
-		ts.completeGoalFailCount = 0
+		ts.setGoalAttemptCount = 0
+		ts.goalProgressAttemptCount = 0
+		ts.completeGoalAttemptCount = 0
+		ts.setGoalArchiveFlag = false
+		ts.goalProgressArchiveFlag = false
+		ts.completeGoalArchiveFlag = false
 		// Phase 2: reset SignatureFailureTracker counters at turn boundary so
 		// a new turn starts with a fresh escalation slate. Mirrors the
 		// nanobot "per-run scope" pattern (Decision 4) and matches the
@@ -762,18 +765,32 @@ func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
 			})
 		return ""
 	}
+	// Phase 12.52a Item B (DOUBT-F1+F2, SIMP-F1): read the goal store
+	// exactly ONCE — after the guard above — and reuse the pointer for
+	// all three consumers (goal.Summary, phase-stuck message, branch-1.5
+	// hasGoal). Previously up to 3 reads per call (ReadAny ×2 + hasGoal).
+	var st goalReader
+	if al.goalStoreOverride != nil {
+		st = al.goalStoreOverride
+	} else if s := al.goalStore(); s != nil {
+		st = s
+	}
+	var g *goal.Goal
+	if st != nil {
+		if gg, err := st.ReadAny(ts.sessionKey); err == nil && gg != nil {
+			g = gg
+		}
+	}
+	hasActiveGoal := g != nil && g.Status == goal.StatusActive
+
 	// Phase 12.6.0 ordering fix: prefer goal.Summary over DefaultResponse
 	// when goal was finalized without prose. See helper doc above for
 	// full rationale + preference order.
 	goalSummary := ""
 	hadGoal := false
-	if ts.goalFinalized && ts.assistantText == "" {
-		if st := al.goalStore(); st != nil {
-			if g, err := st.ReadAny(ts.sessionKey); err == nil && g != nil && g.Summary != "" {
-				goalSummary = g.Summary
-				hadGoal = true
-			}
-		}
+	if ts.goalFinalized && ts.assistantText == "" && g != nil && g.Summary != "" {
+		goalSummary = g.Summary
+		hadGoal = true
 	}
 	log.Printf("DEBUG[12.16] applyFallbackForEmptyResponse session=%s goalFinalized=%v assistantText=%q hadGoal=%v goalSummaryLen=%d iter=%d iterCap=%d ts.iteration=%d", ts.sessionKey, ts.goalFinalized, ts.assistantText, hadGoal, len(goalSummary), ts.currentIteration(), ts.iterationCap, ts.iteration)
 	if goalSummary != "" {
@@ -783,7 +800,7 @@ func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
 	// We only show this when the goal was archived with a phase-stuck
 	// abort_reason AND the LLM did not produce a free-form prose reply
 	// (assistantText == ""). Format: title + fail count + last error.
-	if msg := al.phaseStuckFallbackMessage(ts); msg != "" {
+	if msg := al.phaseStuckFallbackMessage(ts, g); msg != "" {
 		return msg
 	}
 	// Phase 12.51b: defense-in-depth at iter=cap boundary. If we exited
@@ -797,8 +814,17 @@ func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
 	// Phase 12.40 invariant: NO iteration-cap claims in LLM-visible text.
 	// Phase 12.46 invariant: SET text-only stays silent — do not include
 	// Set in this branch.
-	if ts.currentIteration() >= ts.iterationCap && ts.hasGoal() && !ts.goalFinalized && !ts.postCompleteGoalReportSent {
-		switch ts.currentGoalPhase() {
+	if ts.currentIteration() >= ts.iterationCap && hasActiveGoal && !ts.goalFinalized && !ts.postCompleteGoalReportSent {
+		// Phase 12.52a Item B: resolve the phase from the cached goal —
+		// ts.currentGoalPhase() would trigger a second store read via
+		// ts.hasGoal() and break the single-read invariant.
+		phase := GoalPhaseOpen
+		if ts.agent != nil && ts.agent.PhaseOverrideForTest != "" {
+			phase = GoalPhase(ts.agent.PhaseOverrideForTest)
+		} else {
+			phase = ResolveGoalPhase(hasActiveGoal, ts.iteration, ts.iterationCap, ts.maxIterationsCap, ts.goalFinalized)
+		}
+		switch phase {
 		case GoalPhaseCheckpoint:
 			return ToolLimitCheckpointRetryMessage
 		case GoalPhaseFinal:
@@ -814,25 +840,31 @@ func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
 	return ts.opts.DefaultResponse
 }
 
+// goalReader is the subset of *goal.Store that applyFallbackForEmptyResponse
+// needs. The interface lets tests inject a counting wrapper (Phase 12.52a
+// Item B: single ReadAny per call).
+type goalReader interface {
+	ReadAny(sessionKey string) (*goal.Goal, error)
+}
+
 // phaseStuckFallbackMessage (Phase 12.13) returns the matching phase-stuck
 // message if the goal was archived with a phase-stuck abort_reason. Returns
 // empty string if the goal has no phase-stuck abort_reason.
-func (al *AgentLoop) phaseStuckFallbackMessage(ts *turnState) string {
-	if st := al.goalStore(); st != nil {
-		if g, err := st.ReadAny(ts.sessionKey); err == nil && g != nil &&
-			g.Status == goal.StatusAborted && g.AbortReason != "" {
-			lastErr := ts.lastPhaseStuckError
-			if lastErr == "" {
-				lastErr = "(unknown — see goal archive log)"
-			}
-			switch g.AbortReason {
-			case GoalPhaseSetStuckAbortReason:
-				return fmt.Sprintf(GoalPhaseSetStuckMessage, ts.setGoalFailCount, lastErr)
-			case GoalPhaseCheckpointStuckAbortReason:
-				return fmt.Sprintf(GoalPhaseCheckpointStuckMessage, ts.goalProgressFailCount, lastErr)
-			case GoalPhaseFinalStuckAbortReason:
-				return fmt.Sprintf(GoalPhaseFinalStuckMessage, ts.completeGoalFailCount, lastErr)
-			}
+// Phase 12.52a Item B: takes the already-loaded *goal.Goal (nil-safe)
+// instead of re-reading the store.
+func (al *AgentLoop) phaseStuckFallbackMessage(ts *turnState, g *goal.Goal) string {
+	if g != nil && g.Status == goal.StatusAborted && g.AbortReason != "" {
+		lastErr := ts.lastPhaseStuckError
+		if lastErr == "" {
+			lastErr = "(unknown — see goal archive log)"
+		}
+		switch g.AbortReason {
+		case GoalPhaseSetStuckAbortReason:
+			return fmt.Sprintf(GoalPhaseSetStuckMessage, ts.setGoalAttemptCount, lastErr)
+		case GoalPhaseCheckpointStuckAbortReason:
+			return fmt.Sprintf(GoalPhaseCheckpointStuckMessage, ts.goalProgressAttemptCount, lastErr)
+		case GoalPhaseFinalStuckAbortReason:
+			return fmt.Sprintf(GoalPhaseFinalStuckMessage, ts.completeGoalAttemptCount, lastErr)
 		}
 	}
 	return ""

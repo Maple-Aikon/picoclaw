@@ -39,9 +39,9 @@ type StuckBucket int
 
 const (
 	StuckNone       StuckBucket = iota
-	StuckSet                    // setGoalFailCount
-	StuckCheckpoint             // goalProgressFailCount
-	StuckFinal                  // completeGoalFailCount
+	StuckSet                    // setGoalAttemptCount (display) + setGoalArchiveFlag (archive signal)
+	StuckCheckpoint             // goalProgressAttemptCount (display) + goalProgressArchiveFlag (archive signal)
+	StuckFinal                  // completeGoalAttemptCount (display) + completeGoalArchiveFlag (archive signal)
 )
 
 func (b StuckBucket) AbortReason() string {
@@ -59,11 +59,11 @@ func (b StuckBucket) AbortReason() string {
 func (b StuckBucket) CounterField() string {
 	switch b {
 	case StuckSet:
-		return "setGoalFailCount"
+		return "setGoalAttemptCount"
 	case StuckCheckpoint:
-		return "goalProgressFailCount"
+		return "goalProgressAttemptCount"
 	case StuckFinal:
-		return "completeGoalFailCount"
+		return "completeGoalAttemptCount"
 	}
 	return ""
 }

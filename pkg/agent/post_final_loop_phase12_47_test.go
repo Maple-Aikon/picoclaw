@@ -109,9 +109,9 @@ func TestPhase12_47_T8b_ProviderErrorPersistent_NoInfiniteLoop(t *testing.T) {
 
 func TestPhase12_47_T9a_PostFinal_StuckNoOp(t *testing.T) {
 	ts := newPhase5TurnState(t)
-	before := ts.setGoalFailCount + ts.goalProgressFailCount + ts.completeGoalFailCount
+	before := ts.setGoalAttemptCount + ts.goalProgressAttemptCount + ts.completeGoalAttemptCount
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhasePostFinal, "complete_goal", "boom")
-	after := ts.setGoalFailCount + ts.goalProgressFailCount + ts.completeGoalFailCount
+	after := ts.setGoalAttemptCount + ts.goalProgressAttemptCount + ts.completeGoalAttemptCount
 	if after != before {
 		t.Fatalf("stuck counters phải không đổi tại post_final (before=%d after=%d)", before, after)
 	}

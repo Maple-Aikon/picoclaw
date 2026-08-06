@@ -23,16 +23,16 @@ import (
 
 // TestRecordPhaseStuckToolAllowedBlockInPhase_Checkpoint_IncrementsGoalProgressCounter
 // is the regression-proof for Phase 12.21 Fix B: blocking write_file at
-// GoalPhaseCheckpoint increments goalProgressFailCount (not silently dropped).
+// GoalPhaseCheckpoint increments goalProgressAttemptCount (not silently dropped).
 func TestRecordPhaseStuckToolAllowedBlockInPhase_Checkpoint_IncrementsGoalProgressCounter(t *testing.T) {
 	ts := &turnState{}
-	if ts.goalProgressFailCount != 0 {
-		t.Fatalf("precondition: counter should be 0, got %d", ts.goalProgressFailCount)
+	if ts.goalProgressAttemptCount != 0 {
+		t.Fatalf("precondition: counter should be 0, got %d", ts.goalProgressAttemptCount)
 	}
 	enrichedMsg := `called tool "write_file" but only allowed tools are the phase-specific lifecycle tools`
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhaseCheckpoint, "write_file", enrichedMsg)
-	if ts.goalProgressFailCount != 1 {
-		t.Fatalf("goalProgressFailCount=%d want=1 — IsAllowed block at Checkpoint did NOT increment counter", ts.goalProgressFailCount)
+	if ts.goalProgressAttemptCount != 1 {
+		t.Fatalf("goalProgressAttemptCount=%d want=1 — IsAllowed block at Checkpoint did NOT increment counter", ts.goalProgressAttemptCount)
 	}
 	if !strings.Contains(ts.lastPhaseStuckError, "write_file") {
 		t.Errorf("lastPhaseStuckError missing tool name: %q", ts.lastPhaseStuckError)
@@ -47,8 +47,8 @@ func TestRecordPhaseStuckToolAllowedBlockInPhase_Set_IncrementsSetGoalCounter(t 
 	ts := &turnState{}
 	enrichedMsg := `called tool "web_search" but only allowed tools are the phase-specific lifecycle tools`
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhaseSet, "web_search", enrichedMsg)
-	if ts.setGoalFailCount != 1 {
-		t.Fatalf("setGoalFailCount=%d want=1 — IsAllowed block at Set did NOT increment counter", ts.setGoalFailCount)
+	if ts.setGoalAttemptCount != 1 {
+		t.Fatalf("setGoalAttemptCount=%d want=1 — IsAllowed block at Set did NOT increment counter", ts.setGoalAttemptCount)
 	}
 	// Phase 12.43: enrichedMsg no longer contains phase enum literal.
 }
@@ -59,8 +59,8 @@ func TestRecordPhaseStuckToolAllowedBlockInPhase_Final_IncrementsCompleteGoalCou
 	ts := &turnState{}
 	enrichedMsg := `called tool "read_file" but only allowed tools are the phase-specific lifecycle tools`
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhaseFinal, "read_file", enrichedMsg)
-	if ts.completeGoalFailCount != 1 {
-		t.Fatalf("completeGoalFailCount=%d want=1 — IsAllowed block at Final did NOT increment counter", ts.completeGoalFailCount)
+	if ts.completeGoalAttemptCount != 1 {
+		t.Fatalf("completeGoalAttemptCount=%d want=1 — IsAllowed block at Final did NOT increment counter", ts.completeGoalAttemptCount)
 	}
 	// Phase 12.43: enrichedMsg no longer contains phase enum literal.
 }
@@ -74,9 +74,9 @@ func TestRecordPhaseStuckToolAllowedBlockInPhase_Open_NoIncrement(t *testing.T) 
 	ts := &turnState{}
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhaseOpen, "any_tool",
 		`called tool "any_tool" but only allowed tools are the phase-specific lifecycle tools`)
-	if ts.setGoalFailCount != 0 || ts.goalProgressFailCount != 0 || ts.completeGoalFailCount != 0 {
+	if ts.setGoalAttemptCount != 0 || ts.goalProgressAttemptCount != 0 || ts.completeGoalAttemptCount != 0 {
 		t.Fatalf("Open phase should NOT increment any phase-stuck counter, got set=%d prog=%d comp=%d",
-			ts.setGoalFailCount, ts.goalProgressFailCount, ts.completeGoalFailCount)
+			ts.setGoalAttemptCount, ts.goalProgressAttemptCount, ts.completeGoalAttemptCount)
 	}
 }
 
@@ -97,10 +97,10 @@ func TestRecordPhaseStuckToolAllowedBlockInPhase_TwiceTriggersStuckArchiveMessag
 	ts := &turnState{}
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhaseCheckpoint, "write_file", "block 1")
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhaseCheckpoint, "web_search", "block 2")
-	if ts.goalProgressFailCount != 2 {
-		t.Fatalf("goalProgressFailCount=%d want=2", ts.goalProgressFailCount)
+	if ts.goalProgressAttemptCount != 2 {
+		t.Fatalf("goalProgressAttemptCount=%d want=2", ts.goalProgressAttemptCount)
 	}
-	got := computePhaseStuckAbortReasonForPhase(GoalPhaseCheckpoint, ts.setGoalFailCount, ts.goalProgressFailCount, ts.completeGoalFailCount)
+	got := computePhaseStuckAbortReasonForPhase(GoalPhaseCheckpoint, ts.setGoalAttemptCount, ts.setGoalArchiveFlag, ts.goalProgressAttemptCount, ts.goalProgressArchiveFlag, ts.completeGoalAttemptCount, ts.completeGoalArchiveFlag)
 	if got != GoalPhaseCheckpointStuckAbortReason {
 		t.Fatalf("computePhaseStuckAbortReasonForPhase=%q want=%q — 2 IsAllowed blocks at Checkpoint should escalate to stuck-message",
 			got, GoalPhaseCheckpointStuckAbortReason)
@@ -109,30 +109,43 @@ func TestRecordPhaseStuckToolAllowedBlockInPhase_TwiceTriggersStuckArchiveMessag
 
 // TestComputePhaseStuckAbortReasonForPhase_AllPhasesAtThreshold covers
 // the threshold-flap matrix: counter < 2 → empty, counter == 2 → stuck
-// reason, counter > 2 → still stuck reason (no upper cap).
+// reason, counter > 2 → still stuck reason (no upper cap). Phase 12.52a:
+// an archive flag on the phase-under-test's own counter also yields the
+// reason even when count < 2 (recordPhaseStuckArchive max(1) semantic).
 func TestComputePhaseStuckAbortReasonForPhase_AllPhasesAtThreshold(t *testing.T) {
 	tests := []struct {
 		name       string
 		phase      GoalPhase
 		set, prog, comp int
+		archived   bool // applies to the phase-under-test's own counter
 		wantReason string
 	}{
-		{"Set_0", GoalPhaseSet, 0, 0, 0, ""},
-		{"Set_1", GoalPhaseSet, 1, 0, 0, ""},
-		{"Set_2", GoalPhaseSet, 2, 0, 0, GoalPhaseSetStuckAbortReason},
-		{"Set_3", GoalPhaseSet, 3, 0, 0, GoalPhaseSetStuckAbortReason},
-		{"Checkpoint_1", GoalPhaseCheckpoint, 0, 1, 0, ""},
-		{"Checkpoint_2", GoalPhaseCheckpoint, 0, 2, 0, GoalPhaseCheckpointStuckAbortReason},
-		{"Final_2", GoalPhaseFinal, 0, 0, 2, GoalPhaseFinalStuckAbortReason},
-		{"Open_2", GoalPhaseOpen, 0, 0, 0, ""},
-		{"EmptyPhase_2", GoalPhase(""), 0, 0, 0, ""},
+		{"Set_0", GoalPhaseSet, 0, 0, 0, false, ""},
+		{"Set_1", GoalPhaseSet, 1, 0, 0, false, ""},
+		{"Set_2", GoalPhaseSet, 2, 0, 0, false, GoalPhaseSetStuckAbortReason},
+		{"Set_3", GoalPhaseSet, 3, 0, 0, false, GoalPhaseSetStuckAbortReason},
+		{"Set_archived_count1", GoalPhaseSet, 1, 0, 0, true, GoalPhaseSetStuckAbortReason},
+		{"Set_archived_count0", GoalPhaseSet, 0, 0, 0, true, GoalPhaseSetStuckAbortReason},
+		{"Checkpoint_1", GoalPhaseCheckpoint, 0, 1, 0, false, ""},
+		{"Checkpoint_2", GoalPhaseCheckpoint, 0, 2, 0, false, GoalPhaseCheckpointStuckAbortReason},
+		{"Checkpoint_archived_count1", GoalPhaseCheckpoint, 0, 1, 0, true, GoalPhaseCheckpointStuckAbortReason},
+		{"Final_2", GoalPhaseFinal, 0, 0, 2, false, GoalPhaseFinalStuckAbortReason},
+		{"Final_archived_count1", GoalPhaseFinal, 0, 0, 1, true, GoalPhaseFinalStuckAbortReason},
+		{"Open_2", GoalPhaseOpen, 0, 0, 0, false, ""},
+		{"Open_archived", GoalPhaseOpen, 0, 0, 0, true, ""},
+		{"EmptyPhase_2", GoalPhase(""), 0, 0, 0, false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := computePhaseStuckAbortReasonForPhase(tt.phase, tt.set, tt.prog, tt.comp)
+			got := computePhaseStuckAbortReasonForPhase(
+				tt.phase,
+				tt.set, tt.archived && tt.phase == GoalPhaseSet,
+				tt.prog, tt.archived && tt.phase == GoalPhaseCheckpoint,
+				tt.comp, tt.archived && tt.phase == GoalPhaseFinal,
+			)
 			if got != tt.wantReason {
-				t.Fatalf("set=%d prog=%d comp=%d phase=%q → %q want=%q",
-					tt.set, tt.prog, tt.comp, tt.phase, got, tt.wantReason)
+				t.Fatalf("set=%d prog=%d comp=%d archived=%v phase=%q → %q want=%q",
+					tt.set, tt.prog, tt.comp, tt.archived, tt.phase, got, tt.wantReason)
 			}
 		})
 	}
@@ -149,8 +162,8 @@ func TestRecordPhaseStuckToolFail_OriginalContractStillHolds(t *testing.T) {
 	ts.recordPhaseStuckToolFail("set_goal", "missing name")
 	ts.recordPhaseStuckToolFail("goal_progress", "missing remaining_steps")
 	ts.recordPhaseStuckToolFail("complete_goal", "missing summary")
-	if ts.setGoalFailCount != 1 || ts.goalProgressFailCount != 1 || ts.completeGoalFailCount != 1 {
+	if ts.setGoalAttemptCount != 1 || ts.goalProgressAttemptCount != 1 || ts.completeGoalAttemptCount != 1 {
 		t.Fatalf("recordPhaseStuckToolFail contract regressed: set=%d prog=%d comp=%d",
-			ts.setGoalFailCount, ts.goalProgressFailCount, ts.completeGoalFailCount)
+			ts.setGoalAttemptCount, ts.goalProgressAttemptCount, ts.completeGoalAttemptCount)
 	}
 }

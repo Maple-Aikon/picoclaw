@@ -581,19 +581,19 @@ func TestPhase12_22_SingleIterCheckpoint_LowCap_ReachesArchive(t *testing.T) {
 
 // Sanity: confirm phase-stuck detection runs in pipeline_execute.go after
 // the IsAllowed block (Phase 12.21 Fix B). This is the wire that triggers
-// ts.recordPhaseStuckToolAllowedBlock which feeds ts.goalProgressFailCount
+// ts.recordPhaseStuckToolAllowedBlock which feeds ts.goalProgressAttemptCount
 // and ts.lastPhaseStuckError — both consumed by Phase 12.22's archive
 // path.
 func TestPhase12_22_PhaseStuckDetection_RunsAfterIsAllowedBlock(t *testing.T) {
 	// Phase 12.21 Fix B wires ts.recordPhaseStuckToolAllowedBlock in
 	// pipeline_execute.go:362-365 (IsAllowed block path). This counter
-	// feeds ts.lastPhaseStuckError + ts.goalProgressFailCount, which
+	// feeds ts.lastPhaseStuckError + ts.goalProgressAttemptCount, which
 	// Phase 12.22 consumes to trigger same-iter BoundedRetry or archive
 	// after exhaustion. This is a compile-time sanity check that the
 	// fields exist on turnState.
 	ts := &turnState{}
-	if ts.goalProgressFailCount != 0 {
-		t.Errorf("goalProgressFailCount should default to 0, got %d", ts.goalProgressFailCount)
+	if ts.goalProgressAttemptCount != 0 {
+		t.Errorf("goalProgressAttemptCount should default to 0, got %d", ts.goalProgressAttemptCount)
 	}
 	if ts.lastPhaseStuckError != "" {
 		t.Errorf("lastPhaseStuckError should default to empty, got %q", ts.lastPhaseStuckError)

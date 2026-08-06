@@ -19,7 +19,7 @@ package agent
 // set_goal failed 2+ times consecutively in GoalPhaseSet. The LLM
 // likely wrapped args in {"raw": "..."} or omitted required fields.
 // %d = fail count, %s = last error message.
-const GoalPhaseSetStuckMessage = `⚠️ Goal setup could not complete — ` + "`set_goal`" + ` failed %d times in a row.
+const GoalPhaseSetStuckMessage = `⚠️ Goal setup could not complete — ` + "`set_goal`" + ` failed %d attempt(s) and the goal was archived.
 
 **Last error**: %s
 
@@ -27,9 +27,9 @@ const GoalPhaseSetStuckMessage = `⚠️ Goal setup could not complete — ` + "
 
 **Try again**: send a new message and PicoClaw will re-attempt with a fresh turn. The new hint will include the exact arg shape.`
 
-// GoalPhaseCheckpointStuckMessage — goal_progress failed 2+ times in
-// GoalPhaseCheckpoint (iteration cap reached but not yet at ceiling).
-const GoalPhaseCheckpointStuckMessage = `⚠️ Goal continuation could not complete — ` + "`goal_progress`" + ` failed %d times in a row.
+// GoalPhaseCheckpointStuckMessage — goal_progress archive flag set (or
+// count >= 2) in GoalPhaseCheckpoint (iteration cap reached but not yet at ceiling).
+const GoalPhaseCheckpointStuckMessage = `⚠️ Goal continuation could not complete — ` + "`goal_progress`" + ` failed %d attempt(s) and the goal was archived.
 
 **Last error**: %s
 
@@ -37,9 +37,9 @@ const GoalPhaseCheckpointStuckMessage = `⚠️ Goal continuation could not comp
 
 **Try again**: send a new message. PicoClaw will either continue the goal with a fresh progress report, or finalize the goal via complete_goal.`
 
-// GoalPhaseFinalStuckMessage — complete_goal failed 2+ times in
-// GoalPhaseFinal (iteration >= maxIterationsCap).
-const GoalPhaseFinalStuckMessage = `⚠️ Goal finalization could not complete — ` + "`complete_goal`" + ` failed %d times in a row.
+// GoalPhaseFinalStuckMessage — complete_goal archive flag set (or
+// count >= 2) in GoalPhaseFinal (iteration >= maxIterationsCap).
+const GoalPhaseFinalStuckMessage = `⚠️ Goal finalization could not complete — ` + "`complete_goal`" + ` failed %d attempt(s) and the goal was archived.
 
 **Last error**: %s
 

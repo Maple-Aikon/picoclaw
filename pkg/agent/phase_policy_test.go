@@ -187,9 +187,9 @@ func TestStuckBucket_AbortReasonCanonical(t *testing.T) {
 func TestStuckBucket_CounterFieldCanonical(t *testing.T) {
 	cases := map[StuckBucket]string{
 		StuckNone:       "",
-		StuckSet:        "setGoalFailCount",
-		StuckCheckpoint: "goalProgressFailCount",
-		StuckFinal:      "completeGoalFailCount",
+		StuckSet:        "setGoalAttemptCount",
+		StuckCheckpoint: "goalProgressAttemptCount",
+		StuckFinal:      "completeGoalAttemptCount",
 	}
 	for b, want := range cases {
 		if got := b.CounterField(); got != want {

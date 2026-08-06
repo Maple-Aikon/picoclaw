@@ -79,79 +79,76 @@ func TestRecordPhaseStuckToolFail(t *testing.T) {
 
 	ts.recordPhaseStuckToolFail("set_goal", "missing required property name")
 	ts.recordPhaseStuckToolFail("set_goal", "missing required property name")
-	if ts.setGoalFailCount != 2 {
-		t.Errorf("after 2 set_goal fails, counter should be 2, got %d", ts.setGoalFailCount)
+	if ts.setGoalAttemptCount != 2 {
+		t.Errorf("after 2 set_goal fails, counter should be 2, got %d", ts.setGoalAttemptCount)
 	}
 	if ts.lastPhaseStuckError != "missing required property name" {
 		t.Errorf("lastPhaseStuckError should track last error, got %q", ts.lastPhaseStuckError)
 	}
 
 	ts.recordPhaseStuckToolFail("goal_progress", "missing required field completed_steps")
-	if ts.goalProgressFailCount != 1 {
-		t.Errorf("goal_progress counter should be 1, got %d", ts.goalProgressFailCount)
+	if ts.goalProgressAttemptCount != 1 {
+		t.Errorf("goal_progress counter should be 1, got %d", ts.goalProgressAttemptCount)
 	}
 
 	ts.recordPhaseStuckToolFail("complete_goal", "summary too short")
 	ts.recordPhaseStuckToolFail("complete_goal", "summary too short")
 	ts.recordPhaseStuckToolFail("complete_goal", "summary too short")
-	if ts.completeGoalFailCount != 3 {
-		t.Errorf("complete_goal counter should be 3, got %d", ts.completeGoalFailCount)
+	if ts.completeGoalAttemptCount != 3 {
+		t.Errorf("complete_goal counter should be 3, got %d", ts.completeGoalAttemptCount)
 	}
 
 	// Unknown tool should not affect any counter
 	ts.recordPhaseStuckToolFail("read_file", "some error")
-	if ts.setGoalFailCount != 2 || ts.goalProgressFailCount != 1 || ts.completeGoalFailCount != 3 {
+	if ts.setGoalAttemptCount != 2 || ts.goalProgressAttemptCount != 1 || ts.completeGoalAttemptCount != 3 {
 		t.Errorf("unknown tool should not affect counters, got set_goal=%d goal_progress=%d complete_goal=%d",
-			ts.setGoalFailCount, ts.goalProgressFailCount, ts.completeGoalFailCount)
+			ts.setGoalAttemptCount, ts.goalProgressAttemptCount, ts.completeGoalAttemptCount)
 	}
 }
 
 // TestComputePhaseStuckAbortReason_RequiresPhaseAndCounter — only fires when
-// the current phase matches the failing counter AND counter >= 2.
+// the current phase matches its StuckBucket AND (archive flag set OR
+// count >= 2). Phase 12.52a: the flag carries the archive signal (set by
+// recordPhaseStuckArchive), the count stays a real per-failure count.
 func TestComputePhaseStuckAbortReason_RequiresPhaseAndCounter(t *testing.T) {
 	cases := []struct {
-		name          string
-		phase         GoalPhase
-		setGoalCount  int
-		progressCount int
-		completeCount int
-		want          string
+		name              string
+		phase             GoalPhase
+		setGoalCount      int
+		setGoalArchived   bool
+		progressCount     int
+		progressArchived  bool
+		completeCount     int
+		completeArchived  bool
+		want              string
 	}{
-		{"Set phase + set_goal fail 1x → no", GoalPhaseSet, 1, 0, 0, ""},
-		{"Set phase + set_goal fail 2x → yes", GoalPhaseSet, 2, 0, 0, GoalPhaseSetStuckAbortReason},
-		{"Set phase + set_goal fail 3x → yes", GoalPhaseSet, 3, 0, 0, GoalPhaseSetStuckAbortReason},
-		{"Checkpoint + goal_progress fail 2x → yes", GoalPhaseCheckpoint, 0, 2, 0, GoalPhaseCheckpointStuckAbortReason},
-		{"Final + complete_goal fail 2x → yes", GoalPhaseFinal, 0, 0, 2, GoalPhaseFinalStuckAbortReason},
-		{"Open phase + set_goal fail 5x → no (wrong phase)", GoalPhaseOpen, 5, 0, 0, ""},
-		{"Checkpoint + set_goal fail 5x → no (wrong tool)", GoalPhaseCheckpoint, 5, 0, 0, ""},
+		{"Set phase + set_goal fail 1x → no", GoalPhaseSet, 1, false, 0, false, 0, false, ""},
+		{"Set phase + set_goal fail 2x → yes", GoalPhaseSet, 2, false, 0, false, 0, false, GoalPhaseSetStuckAbortReason},
+		{"Set phase + set_goal fail 3x → yes", GoalPhaseSet, 3, false, 0, false, 0, false, GoalPhaseSetStuckAbortReason},
+		{"Set phase + archived after 1 fail → yes (flag)", GoalPhaseSet, 1, true, 0, false, 0, false, GoalPhaseSetStuckAbortReason},
+		{"Set phase + archived with 0 fails → yes (flag only)", GoalPhaseSet, 0, true, 0, false, 0, false, GoalPhaseSetStuckAbortReason},
+		{"Checkpoint + goal_progress fail 2x → yes", GoalPhaseCheckpoint, 0, false, 2, false, 0, false, GoalPhaseCheckpointStuckAbortReason},
+		{"Checkpoint + goal_progress archived after 1 fail → yes", GoalPhaseCheckpoint, 0, false, 1, true, 0, false, GoalPhaseCheckpointStuckAbortReason},
+		{"Final + complete_goal fail 2x → yes", GoalPhaseFinal, 0, false, 0, false, 2, false, GoalPhaseFinalStuckAbortReason},
+		{"Final + complete_goal archived after 1 fail → yes", GoalPhaseFinal, 0, false, 0, false, 1, true, GoalPhaseFinalStuckAbortReason},
+		{"Open phase + set_goal archived → no (wrong phase)", GoalPhaseOpen, 0, true, 0, false, 0, false, ""},
+		{"Checkpoint + set_goal archived → no (wrong tool)", GoalPhaseCheckpoint, 0, true, 0, false, 0, false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ts2 := &turnState{
-				setGoalFailCount:      tc.setGoalCount,
-				goalProgressFailCount: tc.progressCount,
-				completeGoalFailCount: tc.completeCount,
-			}
-			// Manually compute the expected behavior (matches the logic in
-			// computePhaseStuckAbortReason but bypasses the currentGoalPhase call).
-			var got string
-			switch tc.phase {
-			case GoalPhaseSet:
-				if ts2.setGoalFailCount >= 2 {
-					got = GoalPhaseSetStuckAbortReason
-				}
-			case GoalPhaseCheckpoint:
-				if ts2.goalProgressFailCount >= 2 {
-					got = GoalPhaseCheckpointStuckAbortReason
-				}
-			case GoalPhaseFinal:
-				if ts2.completeGoalFailCount >= 2 {
-					got = GoalPhaseFinalStuckAbortReason
-				}
-			}
+			got := computePhaseStuckAbortReasonForPhase(
+				tc.phase,
+				tc.setGoalCount, tc.setGoalArchived,
+				tc.progressCount, tc.progressArchived,
+				tc.completeCount, tc.completeArchived,
+			)
 			if got != tc.want {
-				t.Errorf("phase=%s set_goal=%d goal_progress=%d complete_goal=%d → got %q, want %q",
-					tc.phase, tc.setGoalCount, tc.progressCount, tc.completeCount, got, tc.want)
+				t.Errorf("phase=%s set=%d/%v progress=%d/%v complete=%d/%v → got %q, want %q",
+					tc.phase,
+					tc.setGoalCount, tc.setGoalArchived,
+					tc.progressCount, tc.progressArchived,
+					tc.completeCount, tc.completeArchived,
+					got, tc.want)
 			}
 		})
 	}
@@ -184,7 +181,7 @@ func TestApplyFallbackForEmptyResponse_PhaseStuckSet_Preferred(t *testing.T) {
 		context: newTurnContext(nil, nil, nil),
 	})
 	ts.sessionKey = sessionKey
-	ts.setGoalFailCount = 2
+	ts.setGoalAttemptCount = 2
 	ts.lastPhaseStuckError = "missing required property name"
 
 	got := al.applyFallbackForEmptyResponse(ts)
@@ -227,7 +224,7 @@ func TestApplyFallbackForEmptyResponse_PhaseStuckCheckpoint_Preferred(t *testing
 		context: newTurnContext(nil, nil, nil),
 	})
 	ts.sessionKey = sessionKey
-	ts.goalProgressFailCount = 2
+	ts.goalProgressAttemptCount = 2
 	ts.lastPhaseStuckError = "missing required field completed_steps"
 
 	got := al.applyFallbackForEmptyResponse(ts)
@@ -267,7 +264,7 @@ func TestApplyFallbackForEmptyResponse_PhaseStuckFinal_Preferred(t *testing.T) {
 		context: newTurnContext(nil, nil, nil),
 	})
 	ts.sessionKey = sessionKey
-	ts.completeGoalFailCount = 2
+	ts.completeGoalAttemptCount = 2
 	ts.lastPhaseStuckError = "summary too short"
 
 	got := al.applyFallbackForEmptyResponse(ts)
@@ -314,7 +311,7 @@ func TestApplyFallbackForEmptyResponse_GoalSummaryStillTakesPriority(t *testing.
 	ts.sessionKey = sessionKey
 	ts.goalFinalized = true
 	ts.assistantText = ""
-	ts.setGoalFailCount = 5 // even with high counter, Summary wins
+	ts.setGoalAttemptCount = 5 // even with high counter, Summary wins
 
 	got := al.applyFallbackForEmptyResponse(ts)
 	if got != wantSummary {

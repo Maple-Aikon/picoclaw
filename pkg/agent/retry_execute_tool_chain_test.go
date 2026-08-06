@@ -439,9 +439,13 @@ func TestRetryExecuteToolChain_LLMCalledWithHint(t *testing.T) {
 	if !ts.goalArchiveRequested {
 		t.Errorf("expected goalArchiveRequested=true after 3 attempts exhausted, got false")
 	}
-	// recordPhaseStuckArchive bumped goalProgressFailCount to 2 (threshold)
-	if ts.goalProgressFailCount != 2 {
-		t.Errorf("expected goalProgressFailCount=2 after exhausted, got %d", ts.goalProgressFailCount)
+	// Phase 12.52a: recordPhaseStuckArchive keeps the REAL attempt count
+	// (max(count,1), no ratchet to 2) and sets the archive flag.
+	if ts.goalProgressAttemptCount != 1 {
+		t.Errorf("expected goalProgressAttemptCount=1 after exhausted (real count), got %d", ts.goalProgressAttemptCount)
+	}
+	if !ts.goalProgressArchiveFlag {
+		t.Errorf("expected goalProgressArchiveFlag=true after archive, got false")
 	}
 }
 

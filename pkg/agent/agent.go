@@ -89,6 +89,12 @@ type AgentLoop struct {
 	// before the first iter, blocking all non-[set_goal] tools at the
 	// execution gate. Production callers MUST leave this false.
 	skipGoalArchiveOnTurnStart atomic.Bool
+
+	// goalStoreOverride, when non-nil (tests only), replaces
+	// al.goalStore() inside applyFallbackForEmptyResponse so the
+	// goal-store read count is observable (Phase 12.52a Item B).
+	// Production callers MUST leave nil.
+	goalStoreOverride goalReader
 }
 
 // SkipGoalArchiveForTest disables the per-turn archive hook on this agent.
@@ -105,6 +111,13 @@ func (al *AgentLoop) SkipGoalArchiveForTest() {
 			agent.SkipGoalArchiveForTest = true
 		}
 	}
+}
+
+// SetGoalStoreOverrideForTest injects a goal-store reader for tests that
+// count goal-store reads in applyFallbackForEmptyResponse (Phase 12.52a
+// Item B). Production callers must not call this.
+func (al *AgentLoop) SetGoalStoreOverrideForTest(st goalReader) {
+	al.goalStoreOverride = st
 }
 
 // SetGoalPhaseForTest forces a specific goal phase for every registered

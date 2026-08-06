@@ -117,7 +117,7 @@ func (p *Pipeline) retryExecuteToolChain(
 				ts.lastPhaseStuckError = policy.StuckBucket.AbortReason()
 			} else {
 				ts.lastPhaseStuckError = computePhaseStuckAbortReasonForPhase(
-					currentPhase, ts.setGoalFailCount, ts.goalProgressFailCount, ts.completeGoalFailCount)
+					currentPhase, ts.setGoalAttemptCount, ts.setGoalArchiveFlag, ts.goalProgressAttemptCount, ts.goalProgressArchiveFlag, ts.completeGoalAttemptCount, ts.completeGoalArchiveFlag)
 			}
 			logger.InfoCF("agent", "retryExecuteToolChain: attempts exhausted",
 				map[string]any{

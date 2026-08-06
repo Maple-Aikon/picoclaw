@@ -118,20 +118,20 @@ func policyDrivenContextSuffix(phase GoalPhase) string {
 // Site 8: computePhaseStuckAbortReasonForPhase uses StuckBucket.
 func TestSite8_StuckReason_PolicyDriven(t *testing.T) {
 	// Set/Checkpoint/Final → return stuck reason when count >= 2.
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseSet, 2, 0, 0); got != GoalPhaseSetStuckAbortReason {
+	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseSet, 2, false, 0, false, 0, false); got != GoalPhaseSetStuckAbortReason {
 		t.Errorf("Set stuck: got %q, want %q", got, GoalPhaseSetStuckAbortReason)
 	}
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseCheckpoint, 0, 2, 0); got != GoalPhaseCheckpointStuckAbortReason {
+	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseCheckpoint, 0, false, 2, false, 0, false); got != GoalPhaseCheckpointStuckAbortReason {
 		t.Errorf("Checkpoint stuck: got %q, want %q", got, GoalPhaseCheckpointStuckAbortReason)
 	}
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseFinal, 0, 0, 2); got != GoalPhaseFinalStuckAbortReason {
+	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseFinal, 0, false, 0, false, 2, false); got != GoalPhaseFinalStuckAbortReason {
 		t.Errorf("Final stuck: got %q, want %q", got, GoalPhaseFinalStuckAbortReason)
 	}
 	// Open/PostFinal → empty (no stuck detection).
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseOpen, 5, 5, 5); got != "" {
+	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseOpen, 5, true, 5, true, 5, true); got != "" {
 		t.Errorf("Open stuck: should be empty, got %q", got)
 	}
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhasePostFinal, 5, 5, 5); got != "" {
+	if got := computePhaseStuckAbortReasonForPhase(GoalPhasePostFinal, 5, true, 5, true, 5, true); got != "" {
 		t.Errorf("PostFinal stuck: should be empty, got %q", got)
 	}
 }

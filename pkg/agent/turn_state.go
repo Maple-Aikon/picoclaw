@@ -290,9 +290,18 @@ type turnState struct {
 	// is set to the phase-specific value (goal_set_stuck,
 	// goal_checkpoint_stuck, goal_final_stuck) so applyFallbackForEmptyResponse
 	// can return a user-facing message that names the phase.
-	setGoalFailCount         int // consecutive set_goal invalid arguments in Set phase
-	goalProgressFailCount    int // consecutive goal_progress invalid arguments in Checkpoint phase
-	completeGoalFailCount    int // consecutive complete_goal invalid arguments in Final phase
+	setGoalAttemptCount         int  // consecutive set_goal invalid arguments in Set phase
+	goalProgressAttemptCount    int  // consecutive goal_progress invalid arguments in Checkpoint phase
+	completeGoalAttemptCount    int  // consecutive complete_goal invalid arguments in Final phase
+	// Phase 12.52a (R10 F01 split): archive flags separate the "was the goal
+	// archived at this phase" signal (bool) from the real per-failure attempt
+	// count above. Before the split, the counters were dual-purpose: the
+	// archive path ratcheted them to 2 so the abort-reason threshold fired,
+	// which inflated the user-facing "failed N times" display. Now the flag
+	// carries the archive signal and the count stays honest.
+	setGoalArchiveFlag          bool
+	goalProgressArchiveFlag     bool
+	completeGoalArchiveFlag     bool
 
 	// lastPhaseStuckError (Phase 12.13) — last error message from the
 	// phase-specific lifecycle tool. Set whenever a phase-stuck counter
