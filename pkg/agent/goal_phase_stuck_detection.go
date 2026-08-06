@@ -1,6 +1,10 @@
 package agent
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/sipeed/picoclaw/pkg/logger"
+)
 
 // Phase 12.13 — phase-stuck detection helpers.
 //
@@ -165,6 +169,36 @@ func recordPhaseStuckToolAllowedBlockInPhase(ts *turnState, phase GoalPhase, too
 // see. recordPhaseStuckToolFail/recordPhaseStuckToolAllowedBlock still
 // preserve (they fire BEFORE archive, when the error context is fresh);
 // archive is the terminal event and should win.
+// finalizePhaseStuckArchive (Phase 12.52b F1 — post-ship code-review
+// finding) is the archive-event helper used by the tool-exec retry chain.
+// It records the phase-stuck archive signal AND finalizes the goal on
+// disk with the matching abort reason in the same turn.
+//
+// Why this exists: before 12.52b, retryExecuteToolChain only called
+// recordPhaseStuckArchive (flag + counts) and set goalArchiveRequested —
+// but computePhaseStuckAbortReason() had NO caller in that path (only
+// handleGoalRecovery at pipeline_llm.go:1246/1347 did). phaseStuckFallbackMessage
+// reads g.AbortReason from the goal FILE, so the goal was left StatusActive
+// in-turn, got archived later as stale_turn_boundary, and the user-facing
+// stuck message never fired (main-turn-19 bug class; plan-vs-code mismatch
+// of the 12.51a F12 fix).
+//
+// Mirror of handleGoalRecovery OnExhausted (pipeline_llm.go:1240-1254).
+func finalizePhaseStuckArchive(ts *turnState, phase GoalPhase, msg string) {
+	if !ts.hasGoal() {
+		return
+	}
+	ts.recordPhaseStuckArchive(phase, msg)
+	abortReason := GoalAbortReasonBexhausted + ":tool_exec"
+	if phaseStuckReason := ts.computePhaseStuckAbortReason(); phaseStuckReason != "" {
+		abortReason = phaseStuckReason
+	}
+	if err := ts.finalizeGoalOnTurnEnd(abortReason); err != nil {
+		logger.WarnCF("agent", "finalizePhaseStuckArchive: finalizeGoalOnTurnEnd failed",
+			map[string]any{"error": err.Error()})
+	}
+}
+
 func (ts *turnState) recordPhaseStuckArchive(phase GoalPhase, errMsg string) {
 	switch phase {
 	case GoalPhaseSet:

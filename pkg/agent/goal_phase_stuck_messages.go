@@ -16,7 +16,7 @@ package agent
 // error message makes the failure mode actionable.
 
 // GoalPhaseSetStuckMessage — return when the goal was archived because
-// set_goal failed 2+ times consecutively in GoalPhaseSet. The LLM
+// set_goal archive flag set (or count >= 2) in GoalPhaseSet. The LLM
 // likely wrapped args in {"raw": "..."} or omitted required fields.
 // %d = fail count, %s = last error message.
 const GoalPhaseSetStuckMessage = `⚠️ Goal setup could not complete — ` + "`set_goal`" + ` failed %d attempt(s) and the goal was archived.

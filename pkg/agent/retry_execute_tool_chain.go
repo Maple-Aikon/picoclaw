@@ -195,7 +195,7 @@ func (p *Pipeline) retryExecuteToolChain(
 		// this, AbortReason="" → phaseStuckFallbackMessage returns "" →
 		// fall-through to toolLimitResponse (main-turn-19 bug tái diễn).
 		if ts.hasGoal() {
-			ts.recordPhaseStuckArchive(GoalPhase(phase), "BoundedRetry exhausted")
+			finalizePhaseStuckArchive(ts, GoalPhase(phase), "BoundedRetry exhausted")
 			ts.goalArchiveRequested = true
 		}
 		logger.InfoCF("agent", "retryExecuteToolChain: archive after exhaustion",
@@ -605,7 +605,7 @@ func (p *Pipeline) routeTextOnlyThroughRecovery(
 		// adds a SEPARATE archive-event semantic (counter crosses
 		// threshold in one shot so AbortReason fires correctly).
 		if ts.hasGoal() {
-			ts.recordPhaseStuckArchive(GoalPhase(phase), msg)
+			finalizePhaseStuckArchive(ts, GoalPhase(phase), msg)
 			ts.goalArchiveRequested = true
 		}
 		return ControlBreak
