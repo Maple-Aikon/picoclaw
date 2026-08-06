@@ -182,6 +182,36 @@ func AgentDebugPhaseStart(turnID, sessionKey string, iter int, phase GoalPhase, 
 	})
 }
 
+// AgentDebugPhaseStartPreInit logs a pre-init phase_start event for the
+// case when the agent registry hasn't been populated yet (e.g., during
+// test fixtures that call logging helpers before agent init completes).
+//
+// Phase 12.50 §3.7 R15 + ROUND5-Q3=A fold: wrapper signature INCLUDES
+// `phase GoalPhase` for log correlation (matches existing wrapper shape
+// at AgentDebugPhaseStart). Pre-init phase may be empty string ("no
+// phase yet") which is still informative.
+//
+// Fields: turn_id, session_key, iter, phase, registry_count=0. Event
+// name = "phase_start_pre_init" (distinct from "phase_start" so
+// downstream grep/dashboards can filter pre-init events separately).
+//
+// Pattern note (ROUND4-C5): agent_debug.go uses per-event wrapper
+// functions (AgentDebugPhaseStart, AgentDebugLLMCall, etc.) — NOT a
+// "catalog map". Adding wrappers for new event types follows the same
+// pattern.
+func AgentDebugPhaseStartPreInit(turnID, sessionKey string, iter int, phase GoalPhase) {
+	if !agentDebugEnabled.Load() {
+		return
+	}
+	agentDebugf("phase_start_pre_init", map[string]any{
+		"turn_id":        turnID,
+		"session_key":    sessionKey,
+		"iter":           iter,
+		"phase":          string(phase),
+		"registry_count": 0,
+	})
+}
+
 // AgentDebugLLMCall logs the LLM request event with tool names.
 // toolsVisible is the count the LLM actually sees this iter (after
 // phase-allowlist projection). Compare against tools_total on the

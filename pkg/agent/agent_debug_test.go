@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 // osGetenvImpl + osSetenvImpl are small indirection shims used by the
@@ -129,4 +132,58 @@ func os_Getenv(key string) string {
 
 func os_Setenv(key, value string) {
 	osSetenvImpl(key, value)
+}
+
+// TestAgentDebugPhaseStartPreInit_WrapperExists verifies Phase 12.50 T17:
+// the pre-init phase_start event has its own wrapper function (pattern is
+// per-event wrappers like AgentDebugPhaseStart, NOT a "catalog map").
+//
+// ROUND5-Q3=A fold: signature INCLUDES `phase GoalPhase` for log correlation.
+// Even when phase="" (no phase yet), the field is informational.
+//
+// Wrapper emits an event with these fields when debug is enabled:
+//   turn_id, session_key, iter, phase, registry_count
+// Event name = "phase_start_pre_init" (distinct from "phase_start" so
+// downstream grep/dashboards can filter pre-init events separately).
+func TestAgentDebugPhaseStartPreInit_WrapperExists(t *testing.T) {
+	prev := IsAgentDebugEnabled()
+	defer SetAgentDebugEnabled(prev)
+	SetAgentDebugEnabled(true)
+
+	// DebugCF is filtered at default INFO level — bump to DEBUG for capture.
+	prevLevel := logger.GetLevel()
+	logger.SetLevel(logger.DEBUG)
+	defer logger.SetLevel(prevLevel)
+
+	captured := redirectLoggerForTest(t)
+
+	// Call the pre-init wrapper with all 4 positional args (per signature).
+	AgentDebugPhaseStartPreInit("pre_turn", "pre_session", 0, GoalPhase(""))
+
+	got := captured.Bytes()
+	if !bytes.Contains(got, []byte("phase_start_pre_init")) {
+		t.Errorf("expected phase_start_pre_init event in log, got: %s", got)
+	}
+	// Verify all 4 fields present per spec.
+	for _, want := range []string{"turn_id", "session_key", "iter", "phase", "registry_count"} {
+		if !bytes.Contains(got, []byte(want)) {
+			t.Errorf("expected field %q in log line, got: %s", want, got)
+		}
+	}
+}
+
+// TestAgentDebugPhaseStartPreInit_DisabledNoOp verifies the wrapper
+// honors the PICOCLAW_AGENT_DEBUG=0 short-circuit (production zero-cost).
+func TestAgentDebugPhaseStartPreInit_DisabledNoOp(t *testing.T) {
+	prev := IsAgentDebugEnabled()
+	defer SetAgentDebugEnabled(prev)
+	SetAgentDebugEnabled(false)
+
+	captured := redirectLoggerForTest(t)
+
+	AgentDebugPhaseStartPreInit("t", "sk", 0, GoalPhase(""))
+
+	if bytes.Contains(captured.Bytes(), []byte("phase_start_pre_init")) {
+		t.Errorf("expected NO log when debug disabled, got: %s", captured.Bytes())
+	}
 }

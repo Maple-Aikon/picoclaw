@@ -29,7 +29,15 @@ func ToolPolicyForPhase(phase string) *ToolVisibilityPolicy {
 	lower := strings.ToLower(trimmed)
 	p := toolPolicies[lower]
 	if p == nil && trimmed != "" {
-		recordPhaseLookupMiss("tool_policy", trimmed)
+		// Phase 12.50 §3.3: route through callback registry so pkg/agent
+		// can publish into the same miss stream as PhasePolicyFor.
+		// Pre-12.50: local no-op stub (counter only fired in pkg/agent).
+		publishLookupMiss("tool_policy", trimmed)
+		// Local counter (in-memory only, resets on restart) for direct
+		// telemetry from pkg/tools path. Callback handler may also bump
+		// the pkg/agent counter; that's fine — two counters with same
+		// semantics, no enforcement.
+		recordPhaseLookupMissLocal("tool_policy", trimmed)
 	}
 	return p
 }

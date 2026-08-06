@@ -9,8 +9,9 @@ import (
 
 // =====================================================================
 // T8 — Integration loop simulation: complete_goal @ iter 4 (cap 5) →
-// iter 5 = POST-FINAL, LLM request tools_total=0, exactly 1 report iter,
-// then the loop exits cleanly.
+// iter 5 = POST-FINAL, LLM request tools_visible=0 (post-allowlist projected),
+// registry tools_total=N (unfiltered registry count, post-12.50 F3 semantics),
+// exactly 1 report iter, then the loop exits cleanly.
 // =====================================================================
 
 func TestPhase12_47_T8_CompleteGoalThenPostFinalIter(t *testing.T) {
@@ -49,7 +50,10 @@ func TestPhase12_47_T8_CompleteGoalThenPostFinalIter(t *testing.T) {
 	if got := ts.currentGoalPhase(); got != GoalPhasePostFinal {
 		t.Fatalf("iter 5 phase phải là PostFinal, got %s", got)
 	}
-	// L1-2: LLM request trên iter 5 phải thấy 0 tools (tools_total=0).
+	// L1-2: LLM request trên iter 5 phải thấy 0 tools (tools_visible=0).
+	// Post-12.50 F3: tools_total field is now registry count (Tools.Count),
+	// NOT post-allowlist projected. ToProviderDefs returns 0 visible at
+	// POST-FINAL (correct behavior, allowlist = []).
 	if defs := agent.Tools.ToProviderDefs(); len(defs) != 0 {
 		t.Fatalf("LLM request iter 5 phải thấy 0 tools, got %d", len(defs))
 	}

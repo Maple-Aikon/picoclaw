@@ -221,10 +221,11 @@ func (p *Pipeline) CallLLM(
 			AgentDebugLLMCall(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), len(exec.providerToolDefs))
 		}
 		// Phase 12.49 §3.5: canary drift check on every LLM call.
+		// Phase 12.50 F2: pass iter for grep correlation.
 		// Emits a warn-level event when tools_visible deviates from the
 		// per-phase baseline (Plan §3.5 + §4.20 L2). Production canary
 		// for the strict-mode rollout.
-		CanaryCheckToolsVisible(string(ts.currentGoalPhase()), ts.agent.Tools.Count(), len(exec.providerToolDefs), ts.turnID, ts.sessionKey)
+		CanaryCheckToolsVisible(string(ts.currentGoalPhase()), ts.agent.Tools.Count(), len(exec.providerToolDefs), iteration, ts.turnID, ts.sessionKey)
 		exec.response, err = p.callLLMCore(ctx, turnCtx, ts, exec, exec.callMessages, exec.providerToolDefs, iteration)
 		if err == nil {
 			// Phase 12.30: log LLM response with tool call summary.
@@ -1466,7 +1467,8 @@ func (p *Pipeline) RecallLLM(
 			AgentDebugLLMCall(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), len(exec.providerToolDefs))
 		}
 		// Phase 12.49 §3.5: canary drift check (replay path).
-		CanaryCheckToolsVisible(string(ts.currentGoalPhase()), ts.agent.Tools.Count(), len(exec.providerToolDefs), ts.turnID, ts.sessionKey)
+		// Phase 12.50 F2: pass iter for grep correlation.
+		CanaryCheckToolsVisible(string(ts.currentGoalPhase()), ts.agent.Tools.Count(), len(exec.providerToolDefs), iteration, ts.turnID, ts.sessionKey)
 
 		resp, callErr := p.callLLMCore(ctx, turnCtx, ts, exec, exec.callMessages, exec.providerToolDefs, iteration)
 		if callErr == nil {

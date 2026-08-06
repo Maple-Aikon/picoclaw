@@ -353,9 +353,18 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		// llm_call event so live-verify can compare the two and
 		// detect regressions like the Phase 12.3.1 SetAllowlist(nil)
 		// wire bug.
+		//
+		// Phase 12.50 F3: toolsTotal is now Tools.Count() (registry count)
+		// instead of len(ToProviderDefs()) (post-allowlist projected count).
+		// Pre-12.50: log field name "tools_total" implied "total registered"
+		// but actual value was "post-allowlist projected" → log readers confused.
+		// Post-12.50: registry count matches canary_drift semantics (single
+		// source of truth for "total registered tools"). Migration note:
+		// pre-12.50 logs at SET phase showed tools_total=82 (filtered);
+		// post-12.50 logs at SET phase show tools_total=87 (registry).
 		if IsAgentDebugEnabled() {
 			currentPhase := ts.currentGoalPhase()
-			toolsTotal := len(ts.agent.Tools.ToProviderDefs())
+			toolsTotal := ts.agent.Tools.Count()
 			AgentDebugPhaseStart(ts.turnID, ts.sessionKey, iteration, currentPhase, toolsTotal, ts.goalFinalized)
 		}
 
