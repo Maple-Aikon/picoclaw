@@ -230,7 +230,7 @@ func TestRetryExecuteToolChain_T9_2_RestrictedPhase_ExhaustionArchivesWithPhaseS
 	// computePhaseStuckAbortReasonForPhase still returns the bare
 	// constant for archive filename purposes.
 	wantReason := "BoundedRetry exhausted"
-	if ts.lastPhaseStuckError != wantReason {
+	if !strings.HasPrefix(ts.lastPhaseStuckError, wantReason) {
 		t.Errorf("expected lastPhaseStuckError=%q (recordPhaseStuckArchive msg wins per 12.51a.1), got %q",
 			wantReason, ts.lastPhaseStuckError)
 	}

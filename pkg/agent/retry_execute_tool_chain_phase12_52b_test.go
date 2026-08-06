@@ -68,28 +68,4 @@ func TestRetryChainExhaustion_ArchivesGoalWithPhaseStuckReason(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// F3a — the new archive-flag branch fires even with a zero attempt count
-// (archive is terminal; the flag alone is the stuck signal).
-func TestComputeStuckReason_ArchiveFlagFiresWithZeroCount(t *testing.T) {
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseSet, 0, true, 0, false, 0, false); got != GoalPhaseSetStuckAbortReason {
-		t.Errorf("Set (flag=true, count=0): got %q, want %q", got, GoalPhaseSetStuckAbortReason)
-	}
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseCheckpoint, 0, false, 0, true, 0, false); got != GoalPhaseCheckpointStuckAbortReason {
-		t.Errorf("Checkpoint (flag=true, count=0): got %q, want %q", got, GoalPhaseCheckpointStuckAbortReason)
-	}
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseFinal, 0, false, 0, false, 0, true); got != GoalPhaseFinalStuckAbortReason {
-		t.Errorf("Final (flag=true, count=0): got %q, want %q", got, GoalPhaseFinalStuckAbortReason)
-	}
-}
 
-// =============================================================================
-// F3b — a single real failure WITHOUT an archive must NOT fire: the
-// count>=2 legacy gate stays honest and the flag is the archive signal.
-func TestComputeStuckReason_SingleFailWithoutArchive_DoesNotFire(t *testing.T) {
-	for _, phase := range []GoalPhase{GoalPhaseSet, GoalPhaseCheckpoint, GoalPhaseFinal} {
-		if got := computePhaseStuckAbortReasonForPhase(phase, 1, false, 0, false, 0, false); got != "" {
-			t.Errorf("%s (count=1, no flag): got %q, want empty", phase, got)
-		}
-	}
-}

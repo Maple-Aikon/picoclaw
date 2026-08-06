@@ -848,6 +848,11 @@ type goalReader interface {
 }
 
 // phaseStuckFallbackMessage (Phase 12.13) returns the matching phase-stuck
+// message when the goal on disk was archived with a phase-stuck abort
+// reason. Phase 12.52b F1: the retry chain now actually finalizes the goal
+// with that reason, so this helper finally fires for tool-exec/gate-block
+// exhaustion (previously the goal was left Active and stale-archived as
+// stale_turn_boundary → message never rendered).
 // message if the goal was archived with a phase-stuck abort_reason. Returns
 // empty string if the goal has no phase-stuck abort_reason.
 // Phase 12.52a Item B: takes the already-loaded *goal.Goal (nil-safe)
@@ -860,14 +865,29 @@ func (al *AgentLoop) phaseStuckFallbackMessage(ts *turnState, g *goal.Goal) stri
 		}
 		switch g.AbortReason {
 		case GoalPhaseSetStuckAbortReason:
-			return fmt.Sprintf(GoalPhaseSetStuckMessage, ts.setGoalAttemptCount, lastErr)
+			return fmt.Sprintf(GoalPhaseSetStuckMessage, stuckCountAtLeastOne(ts.setGoalAttemptCount), lastErr)
 		case GoalPhaseCheckpointStuckAbortReason:
-			return fmt.Sprintf(GoalPhaseCheckpointStuckMessage, ts.goalProgressAttemptCount, lastErr)
+			return fmt.Sprintf(GoalPhaseCheckpointStuckMessage, stuckCountAtLeastOne(ts.goalProgressAttemptCount), lastErr)
 		case GoalPhaseFinalStuckAbortReason:
-			return fmt.Sprintf(GoalPhaseFinalStuckMessage, ts.completeGoalAttemptCount, lastErr)
+			return fmt.Sprintf(GoalPhaseFinalStuckMessage, stuckCountAtLeastOne(ts.completeGoalAttemptCount), lastErr)
 		}
 	}
 	return ""
+}
+
+// stuckCountAtLeastOne (Phase 12.52c F-D): the *AttemptCount counters reset
+// at every iteration boundary (turn_coord.go:210-215), but the stuck message
+// can render in a LATER turn (goal archived in turn N, LLM empty in turn
+// N+1) where the counter is already zero. A goal archived with a phase-stuck
+// reason implies >= 1 attempt/archive event, so never render
+// "failed 0 attempt(s)". The true count still reaches the user via
+// lastPhaseStuckError which finalizePhaseStuckArchive stamps with
+// "(attempts: N)" and which is never reset.
+func stuckCountAtLeastOne(count int) int {
+	if count < 1 {
+		return 1
+	}
+	return count
 }
 
 func (al *AgentLoop) abortTurn(ts *turnState) (turnResult, error) {

@@ -189,10 +189,35 @@ func finalizePhaseStuckArchive(ts *turnState, phase GoalPhase, msg string) {
 		return
 	}
 	ts.recordPhaseStuckArchive(phase, msg)
+	// F-B (12.52c): resolve the stuck reason with the SAME phase the archive
+	// event keyed on — not via computePhaseStuckAbortReason() which
+	// re-resolves through currentGoalPhase() (extra store read + phase drift
+	// if goalFinalized/iter moved between call and exhaustion).
 	abortReason := GoalAbortReasonBexhausted + ":tool_exec"
-	if phaseStuckReason := ts.computePhaseStuckAbortReason(); phaseStuckReason != "" {
+	if phaseStuckReason := computePhaseStuckAbortReasonForPhase(phase,
+		ts.setGoalAttemptCount, ts.setGoalArchiveFlag,
+		ts.goalProgressAttemptCount, ts.goalProgressArchiveFlag,
+		ts.completeGoalAttemptCount, ts.completeGoalArchiveFlag); phaseStuckReason != "" {
 		abortReason = phaseStuckReason
 	}
+	// F-D (12.52c): stamp the real attempt count into lastPhaseStuckError.
+	// This field has NO reset site anywhere in pkg/agent prod code (verified
+	// by grep), so it survives into the next turn where the per-iteration
+	// *AttemptCount counters are zeroed — phaseStuckFallbackMessage renders
+	// both, and the count shown in a later turn must be the true one.
+	// recordPhaseStuckArchive already bumped the counter to >= 1.
+	var count int
+	switch phase {
+	case GoalPhaseSet: // GoalPhaseLock aliases "set" — same case
+		count = ts.setGoalAttemptCount
+	case GoalPhaseCheckpoint:
+		count = ts.goalProgressAttemptCount
+	case GoalPhaseFinal:
+		count = ts.completeGoalAttemptCount
+	default:
+		count = 1
+	}
+	ts.lastPhaseStuckError = fmt.Sprintf("%s (attempts: %d)", msg, count)
 	if err := ts.finalizeGoalOnTurnEnd(abortReason); err != nil {
 		logger.WarnCF("agent", "finalizePhaseStuckArchive: finalizeGoalOnTurnEnd failed",
 			map[string]any{"error": err.Error()})

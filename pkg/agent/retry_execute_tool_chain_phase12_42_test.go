@@ -149,7 +149,7 @@ func TestP1242_W4_AllowAllGateBlockedExhaustsToArchive(t *testing.T) {
 	if !ts.goalArchiveRequested {
 		t.Errorf("W4: goalArchiveRequested not set after exhaustion")
 	}
-	if ts.lastPhaseStuckError != "BoundedRetry exhausted" {
+	if !strings.HasPrefix(ts.lastPhaseStuckError, "BoundedRetry exhausted") {
 		t.Errorf("W4: lastPhaseStuckError = %q, want %q (Phase 12.51a.1 F02: recordPhaseStuckArchive msg wins over OnExhausted bare constant)", ts.lastPhaseStuckError, "BoundedRetry exhausted")
 	}
 }
