@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestMain isolates all prompt-history writes from production logs.
@@ -21,6 +22,14 @@ func TestMain(m *testing.M) {
 	}
 	defer os.RemoveAll(tmpDir)
 	os.Setenv("PICOCLAW_HOOK_LOG_FILE", filepath.Join(tmpDir, "prompt.log"))
+
+	// Phase 12.55: shrink the recovery backoff schedule for tests. Wire
+	// tests that drive handleGoalRecovery / retryExecuteToolChain would
+	// otherwise sleep 3s+6s+10s per exhaustion. Tests that specifically
+	// measure delay (T8) override the var locally and restore it.
+	oldDelays := recoveryBackoffDelays
+	recoveryBackoffDelays = []time.Duration{5 * time.Millisecond, 5 * time.Millisecond, 5 * time.Millisecond}
+	defer func() { recoveryBackoffDelays = oldDelays }()
 
 	code := m.Run()
 	os.Exit(code)

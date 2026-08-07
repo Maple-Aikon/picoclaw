@@ -1203,6 +1203,7 @@ func (p *Pipeline) handleGoalRecovery(
 	decision, err := BoundedRetry(ctx, RetryConfig{
 		Name:        "goal_recovery",
 		MaxAttempts: 3,
+		RetryDelays: recoveryBackoffDelays, // Phase 12.55 Q4: 3s/6s/10s
 		OnRetry: func(rc RetryContext, _ string) {
 			logger.InfoCF("agent", "Goal recovery retry (same iteration)", map[string]any{
 				"agent_id":  ts.agent.ID,

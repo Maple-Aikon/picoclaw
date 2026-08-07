@@ -166,7 +166,9 @@ func TestEvaluateRecovery_ToolExecError_RetrySameIteration(t *testing.T) {
 
 func TestEvaluateRecovery_ToolExecError_ExhaustCap_Archive(t *testing.T) {
 	ts := newPhase5TurnState(t)
-	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), ToolName: "view_goal"}
+	// Q3: archive-on-exhaustion applies at restricted phases only — pin
+	// the ctx phase at Checkpoint (Open no longer archives per Q2).
+	ctx := RecoveryContext{Phase: string(GoalPhaseCheckpoint), ToolName: "view_goal"}
 	for i := 0; i < ToolExecErrorRetryCap; i++ {
 		evaluateRecovery(ts, ctx)
 	}
@@ -314,8 +316,14 @@ func TestCheckToolExecErrorRecovery_ExecutorError_Retries(t *testing.T) {
 // returns the tool name when the per-tool retry cap has been hit.
 func TestCheckToolExecErrorRecovery_CapExhausted_Archives(t *testing.T) {
 	ts := newPhase5TurnState(t)
+	// Pin the turn state at CHECKPOINT (iter == cap, cap < ceiling) so
+	// checkToolExecErrorRecovery resolves the same restricted phase —
+	// restricted phases archive on tool-exec exhaustion (Q3).
+	ts.iteration = 50
+	ts.iterationCap = 50
+	ts.maxIterationsCap = 100
 	for i := 0; i < ToolExecErrorRetryCap; i++ {
-		evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseOpen), ToolName: "view_goal"})
+		evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseCheckpoint), ToolName: "view_goal"})
 	}
 	exec := &turnExecution{
 		messages: []providers.Message{
@@ -1079,7 +1087,7 @@ func TestEvaluateRecovery_EmptyText_IterationBump_ResetsCounter(t *testing.T) {
 func TestEvaluateRecovery_ToolExecError_IterationBump_ResetsCap(t *testing.T) {
 	ts := newPhase5TurnState(t)
 	ctx := RecoveryContext{
-		Phase:     string(GoalPhaseOpen),
+		Phase:     string(GoalPhaseCheckpoint),
 		Iteration: 12,
 		ToolName:  "view_goal",
 	}
@@ -1226,8 +1234,9 @@ func TestCheckToolExecErrorRecovery_FiresOnSetGoalValidation(t *testing.T) {
 // T-B4: non-recoverable ErrKind — recovery should NOT fire.
 func TestCheckToolExecErrorRecovery_DoesNotFireOnUnrecoverableErrKind(t *testing.T) {
 	ts := newPhase5TurnState(t)
-	// Only ErrInvalidInput, ErrTransient, ErrTimeout are recoverable.
-	// ErrDependencyDown or unknown kinds should NOT trigger retry.
+	// Only ErrInvalidInput, ErrTransient, ErrTimeout, ErrDependencyDown
+	// (Phase 12.55 Q1) are recoverable. Unknown kinds should NOT trigger
+	// retry.
 	res := toolshared.ErrorResult("the upstream service is permanently down").WithErrorKind(toolshared.ErrDependencyDown)
 	ts.lastToolResult = res
 	exec := &turnExecution{
@@ -1240,8 +1249,8 @@ func TestCheckToolExecErrorRecovery_DoesNotFireOnUnrecoverableErrKind(t *testing
 	// only thing that can fire. If the gate classifies ErrDependencyDown
 	// as non-recoverable (correct), no recovery.
 	tool, msg := checkToolExecErrorRecovery(ts, exec)
-	if msg != "" {
-		t.Errorf("ErrDependencyDown should not trigger recovery, got msg=%q tool=%q", msg, tool)
+	if msg == "" {
+		t.Errorf("ErrDependencyDown should trigger recovery (Phase 12.55 Q1), got msg=%q tool=%q", msg, tool)
 	}
 }
 

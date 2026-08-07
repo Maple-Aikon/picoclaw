@@ -14,7 +14,7 @@ package tools
 //      "first failure (no nudge)" and "threshold reached (escalation)"
 //      by encouraging the LLM to save a workaround lesson.
 //   3. When the circuit breaker trips (count >= threshold), the registry emits
-//      escalationHint (from circuit_breaker.go) — NOT SoftPromptRepeatedFailure.
+//      escalationHint (appended directly, Phase 12.55) — NOT SoftPromptRepeatedFailure.
 //      escalationHint takes priority over the signature-tracker's
 //      "STOP and reconsider" message because the breaker fires first.
 //   4. Validation errors never trigger any soft prompt (validationHint only).
@@ -149,7 +149,7 @@ func TestSoftPrompt_RepeatedFailure_FiresOnSecond(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(&mockResultFactoryTool{name: "flaky", factory: freshTransient})
 
-	// Failure #1 — count=1, transientHint only, NO soft-prompt.
+	// Failure #1 — count=1, NO soft-prompt (count < 2).
 	r1 := r.ExecuteWithContext(
 		context.Background(), "flaky", nil, "telegram", "chat-X", nil,
 	)
@@ -157,19 +157,14 @@ func TestSoftPrompt_RepeatedFailure_FiresOnSecond(t *testing.T) {
 		t.Fatalf("expected transient error, got IsError=%v ErrKind=%q",
 			r1.IsError, r1.ErrKind)
 	}
-	if !strings.Contains(r1.ForLLM, "more attempt") {
-		t.Errorf("failure #1 must include transientHint (canonical hint), got %q",
-			r1.ForLLM)
-	}
 	if strings.Contains(r1.ForLLM, SoftPromptRepeatedFailure) {
 		t.Errorf("failure #1 must NOT include SoftPromptRepeatedFailure (count=1 < 2), got %q",
 			r1.ForLLM)
 	}
 
-	// Failure #2 — count=2 ∈ [2, threshold-1=2], soft-prompt MUST fire alongside
-	// the canonical hint. This is the regression-pin: if `&& fb.Message == ""`
-	// returns to registry.go:807, this assertion fails because the soft-prompt
-	// block becomes dead code.
+	// Failure #2 — count=2 in [2, threshold-1=2], soft-prompt MUST fire.
+	// Phase 12.55 (T11): the transient/validation canonical hints moved to
+	// the agent recovery layer, so only the soft-prompt nudge composes here.
 	r2 := r.ExecuteWithContext(
 		context.Background(), "flaky", nil, "telegram", "chat-X", nil,
 	)
@@ -177,48 +172,37 @@ func TestSoftPrompt_RepeatedFailure_FiresOnSecond(t *testing.T) {
 		t.Errorf("failure #2 must include SoftPromptRepeatedFailure (count=2 in [2, threshold-1]): got %q",
 			r2.ForLLM)
 	}
-	if !strings.Contains(r2.ForLLM, "more attempt") {
-		t.Errorf("failure #2 must also include transientHint (composes with soft-prompt): got %q",
-			r2.ForLLM)
-	}
 }
 
-// TestSoftPrompt_ThresholdReached_BreakerEscalation asserts that when the
-// circuit breaker trips (count >= failureThreshold=3), the registry surfaces
-// escalationHint (from circuit_breaker.go:355) — NOT the signature-tracker's
-// "STOP and reconsider" message, because the breaker fires first.
-//
-// The breaker hint format is:
-//
-//	System: Tool "X" is temporarily disabled (Circuit Open) due to 3
-//	consecutive failures. DO NOT attempt to call it again right now.
-//
-// 4th call hits the breaker's Allow()==false path and returns the same
-// escalationHint via blockedHint.
-func TestSoftPrompt_ThresholdReached_BreakerEscalation(t *testing.T) {
+// TestSoftPrompt_ThresholdReached_Escalation asserts that when the
+// signature tracker reaches the failure threshold (count >= 3), the
+// escalation hint is appended DIRECTLY to ForLLM. Phase 12.55 (T11): the
+// hint used to ride on the circuit breaker's fb.Message channel; with the
+// breaker deleted, appendEscalatorHint is the only delivery path
+// (writer-without-reader lesson, Phase 10.1 — the hint must not die with
+// the breaker).
+func TestSoftPrompt_ThresholdReached_Escalation(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(&mockResultFactoryTool{name: "flaky", factory: freshTransient})
 
-	// Drive 3 transient failures — count reaches default failureThreshold=3.
-	for i := 1; i <= 3; i++ {
-		r.ExecuteWithContext(
+	// Failures #1 and #2 — count=2 < threshold=3, NO escalation.
+	for i := 1; i <= 2; i++ {
+		rr := r.ExecuteWithContext(
 			context.Background(), "flaky", nil, "telegram", "chat-Y", nil,
 		)
+		if strings.Contains(rr.ForLLM, "has failed 3 times in this turn") {
+			t.Fatalf("call #%d must not escalate (count=%d < threshold=3): %q",
+				i, i, rr.ForLLM)
+		}
 	}
 
-	// 4th call — breaker is Open, Allow() returns false, blockedHint is
-	// escalationHint (lastErrorKind is ErrTransient, not ErrDependencyDown).
-	r4 := r.ExecuteWithContext(
+	// 3rd call — count reaches threshold=3, escalation hint MUST be present.
+	r3 := r.ExecuteWithContext(
 		context.Background(), "flaky", nil, "telegram", "chat-Y", nil,
 	)
-
-	// escalationHint format check.
-	if !strings.Contains(r4.ForLLM, "Circuit Open") {
-		t.Errorf("expected escalationHint ('Circuit Open') in 4th failure, got %q",
-			r4.ForLLM)
-	}
-	if !strings.Contains(r4.ForLLM, "DO NOT attempt to call it again") {
-		t.Errorf("expected escalationHint directive, got %q", r4.ForLLM)
+	if !strings.Contains(r3.ForLLM, "has failed 3 times in this turn") {
+		t.Errorf("call #3 must include the escalation hint (count=3 >= threshold=3), got %q",
+			r3.ForLLM)
 	}
 }
 
@@ -241,11 +225,11 @@ func TestSoftPrompt_ValidationError_NeverNudges(t *testing.T) {
 			t.Errorf("validation error must never include SoftPromptRepeatedFailure (call #%d): %q",
 				i, res.ForLLM)
 		}
-		// validationHint IS present (canonical hint).
-		if !strings.Contains(res.ForLLM, "validation failed") {
-			t.Errorf("validation error must include validationHint (call #%d): %q",
-				i, res.ForLLM)
-		}
+		// Phase 12.55 (T11): the canonical validation hint moved to the
+		// agent recovery layer (checkToolExecErrorRecovery), so no
+		// validationHint assertion here. Escalation for execution errors
+		// is gated on transient/timeout kinds only — ErrInvalidInput
+		// escalates solely on the argument-validation path (block 2).
 	}
 }
 

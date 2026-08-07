@@ -277,3 +277,23 @@ func (ts *turnState) recordPhaseStuckArchive(phase GoalPhase, errMsg string) {
 	// event in Open uses generic GoalAbortReasonBexhausted, archive event
 	// in PostFinal is silent (computePhaseStuckAbortReason returns "").
 }
+
+// shouldArchiveToolExecExhausted is the single source of truth for the
+// tool-exec retry exhaustion archive policy (Phase 12.55 Q2/Q3).
+//
+// True ONLY for Set/Checkpoint/Final: after 3 failed same-iter retries the
+// goal is archived with a stuck abort reason (unchanged behavior).
+// Open → false (Q2): the goal stays active and the error result stays in
+// history so the LLM can re-read it next iteration — NO archive, NO carry
+// hint. PostFinal → false (no tools, nothing to archive).
+//
+// CONVENTION: EVERY new tool-exec exhaustion archive site MUST route
+// through this helper — never archive directly by phase.
+func shouldArchiveToolExecExhausted(phase GoalPhase) bool {
+	switch phase {
+	case GoalPhaseSet, GoalPhaseCheckpoint, GoalPhaseFinal:
+		return true
+	default:
+		return false // Open, PostFinal, unknown → no archive
+	}
+}

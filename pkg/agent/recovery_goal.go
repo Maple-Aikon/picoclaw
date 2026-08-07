@@ -383,6 +383,13 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 			msg := buildToolExecErrorRetryMessage(ctx.ToolName, ctx.ToolExecError, ctx.IsTransient, ctx.ToolKnowledgeRegistry, ctx.Phase)
 			return RecoveryRetrySameIteration, msg
 		}
+		// Phase 12.55 Q2/Q3: tool-exec exhaustion archives ONLY at
+		// Set/Checkpoint/Final. At Open (and PostFinal) the goal stays
+		// active — the error result is already in history for the next
+		// iteration, and the LLM may retry a different approach.
+		if !shouldArchiveToolExecExhausted(GoalPhase(ctx.Phase)) {
+			return RecoveryNone, ""
+		}
 		return RecoveryArchiveGoal, "Tool execution error retry exhausted for " + ctx.ToolName + "."
 	}
 
@@ -590,7 +597,8 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 	//
 	// Recoverable kinds: ErrInvalidInput (validation), ErrTransient
 	// (retry), ErrTimeout (retry). Non-recoverable kinds: ErrFatal,
-	// ErrDependencyDown (permanent) — do not retry, return early.
+	// ErrDependencyDown (upstream down) — retryable since Phase 12.55 Q1
+	// (rate-limit style failures usually recover on retry 2-3).
 	//
 	// ts.lastToolResult is nil in legacy fixtures and any code path that
 	// hasn't yet threaded it through pipeline_execute.go — fall back to
@@ -606,7 +614,7 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 	switch {
 	case tsToolErrKind != "":
 		switch tsToolErrKind {
-		case toolshared.ErrInvalidInput, toolshared.ErrTransient, toolshared.ErrTimeout:
+		case toolshared.ErrInvalidInput, toolshared.ErrTransient, toolshared.ErrTimeout, toolshared.ErrDependencyDown:
 			recoverable = true
 		default:
 			return "", "" // non-recoverable typed error

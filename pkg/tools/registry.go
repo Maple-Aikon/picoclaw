@@ -24,10 +24,8 @@ type ToolEntry struct {
 
 type ToolRegistry struct {
 	tools          map[string]*ToolEntry
-	breakers       map[string]*CircuitBreaker // key: composite (channel:chatID:name); see getCircuitBreaker
 	sigTrackers    map[string]*SignatureFailureTracker // key: composite (channel:chatID); see getOrCreateSigTracker
 	mu             sync.RWMutex
-	cbMu           sync.Mutex // serializes lazy allocation of per-session breakers
 	sigTrackerMu   sync.Mutex // serializes lazy allocation of per-session SignatureFailureTrackers
 	version        atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
 	mediaStore      media.MediaStore
@@ -35,7 +33,6 @@ type ToolRegistry struct {
 	phase           string // active goal phase for per-phase allowlist semantics (Phase 12.5); "" = no phase info
 	cfg             *config.ToolsConfig // optional; nil → fallback DefaultToolTimeoutSeconds
 	timeoutStats    *ToolTimeoutStats   // Q3 metric; nil-safe via lazy init
-	eventPublisher  ToolEventPublisher  // optional bridge to runtime event bus (pkg/agent); nil = silent
 	knowledgeStore  *ToolKnowledgeStore // optional persistent "lessons learned" per tool; nil = feature off
 
 	// seenFirstSuccess tracks (channel:chatID:tool:errKind) keys for which we
@@ -44,44 +41,6 @@ type ToolRegistry struct {
 	// reset by ResetSignatureFailures at the turn boundary (Phase 3).
 	seenFirstSuccessMu sync.Mutex
 	seenFirstSuccess   map[string]struct{}
-}
-
-// ToolBreakerEvent is the primitive metadata about a circuit breaker
-// transition. Defined in pkg/tools (not pkg/agent) so the registry can
-// publish without importing the agent package, and the agent's adapter
-// wraps it into the runtime event envelope.
-//
-// Plan: circuit-breaker-3-tier-errkind-semantics-toolfeedback-20260717
-type ToolBreakerEvent struct {
-	Channel      string
-	ChatID       string
-	Tool         string
-	LastErrorKind ErrorKind
-	Failures     int
-}
-
-// ToolEventPublisher is the hook a ToolRegistry uses to surface circuit
-// breaker transitions to the broader agent runtime (events, logs,
-// dashboards). Nil-safe: when unset, breaker transitions are silent — only
-// the in-tool hint message + ToolHealthContributor surface the change to
-// the LLM. Set via SetEventPublisher.
-//
-// Implementations live in pkg/agent (e.g. AgentLoop.PublishToolBreakerTripped).
-// The interface is intentionally tiny (single method, primitive types
-// only) so it can be satisfied by test doubles without dragging the runtime
-// event bus into the registry's dependency graph.
-type ToolEventPublisher interface {
-	PublishToolBreakerTripped(ToolBreakerEvent)
-}
-
-// SetEventPublisher wires (or clears, with nil) the publisher that the
-// registry invokes when a circuit breaker transitions to Open. Safe to
-// call concurrently with ExecuteWithContext — readers of eventPublisher
-// take r.mu.RLock to avoid racing with this setter.
-func (r *ToolRegistry) SetEventPublisher(p ToolEventPublisher) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.eventPublisher = p
 }
 
 // SetToolKnowledgeStore attaches (or clears, with nil) the persistent
@@ -124,7 +83,6 @@ type mediaStoreAware interface {
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
 		tools:            make(map[string]*ToolEntry),
-		breakers:         make(map[string]*CircuitBreaker),
 		sigTrackers:      make(map[string]*SignatureFailureTracker),
 		timeoutStats:     newToolTimeoutStats(),
 		seenFirstSuccess: make(map[string]struct{}),
@@ -247,10 +205,6 @@ func (r *ToolRegistry) registerLocked(tool Tool, isCore bool) {
 		IsCore: isCore,
 		TTL:    0, // Core tools do not use TTL
 	}
-	// Breakers are created lazily by getCircuitBreaker on first use, scoped by
-	// (channel, chatID, name). We no longer pre-allocate a per-tool breaker
-	// here; doing so would defeat the per-session isolation that lives in
-	// the registry's breaker map.
 	if aware, ok := tool.(mediaStoreAware); ok && r.mediaStore != nil {
 		aware.SetMediaStore(r.mediaStore)
 	}
@@ -459,26 +413,6 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, args map[string
 	return r.ExecuteWithContext(ctx, name, args, "", "", nil)
 }
 
-// getCircuitBreaker returns the breaker scoped to the (channel, chatID, name)
-// tuple, allocating a fresh Closed-state breaker on first use. Callers that
-// pass empty channel/chatID land in the shared "_anon" namespace so that
-// legacy code paths (e.g. Execute without context) cannot trip a real
-// session's breaker. The cbMu lock protects the breakers map; the returned
-// breaker has its own internal mutex for state transitions.
-func (r *ToolRegistry) getCircuitBreaker(channel, chatID, name string) *CircuitBreaker {
-	key := breakerKey(channel, chatID, name)
-
-	r.cbMu.Lock()
-	if cb, ok := r.breakers[key]; ok {
-		r.cbMu.Unlock()
-		return cb
-	}
-	cb := NewCircuitBreakerWithName(name)
-	r.breakers[key] = cb
-	r.cbMu.Unlock()
-	return cb
-}
-
 // getOrCreateSigTracker returns the SignatureFailureTracker scoped to the
 // (channel, chatID) session, allocating a fresh tracker on first use.
 // Counter scope is per-session; Reset() is called at turn boundaries by the
@@ -488,7 +422,7 @@ func (r *ToolRegistry) getCircuitBreaker(channel, chatID, name string) *CircuitB
 // has its own internal mutex for concurrent EscalateIfNeeded / MarkSuccess /
 // Reset calls (which are exercised from tool dispatch goroutines).
 func (r *ToolRegistry) getOrCreateSigTracker(channel, chatID string) *SignatureFailureTracker {
-	key := breakerKey(channel, chatID, "")
+	key := channel + ":" + chatID
 
 	r.sigTrackerMu.Lock()
 	if tr, ok := r.sigTrackers[key]; ok {
@@ -509,7 +443,7 @@ func (r *ToolRegistry) getOrCreateSigTracker(channel, chatID string) *SignatureF
 //
 // Plan: tool-knowledge-experiential-memory-for-tool-failures-3-phases-20260718
 func (r *ToolRegistry) ResetSignatureFailures(channel, chatID string) {
-	key := breakerKey(channel, chatID, "")
+	key := channel + ":" + chatID
 
 	r.sigTrackerMu.Lock()
 	tr, ok := r.sigTrackers[key]
@@ -571,7 +505,7 @@ func (r *ToolRegistry) seenFirstSuccessBefore(channel, chatID, tool string) bool
 // path that only wants to clear stale counters when a tracker already
 // exists (avoiding the alloc + map insert for tools that never failed).
 func (r *ToolRegistry) sigTrackerFor(channel, chatID string) *SignatureFailureTracker {
-	key := breakerKey(channel, chatID, "")
+	key := channel + ":" + chatID
 	r.sigTrackerMu.Lock()
 	tr, ok := r.sigTrackers[key]
 	r.sigTrackerMu.Unlock()
@@ -581,70 +515,7 @@ func (r *ToolRegistry) sigTrackerFor(channel, chatID string) *SignatureFailureTr
 	return tr
 }
 
-// OpenToolInfo describes a tool whose circuit breaker is currently open.
-// Returned by ToolRegistry.OpenTools() to drive the ToolHealthContributor
-// self-correction directive in the LLM prompt.
-//
-// LastErrorKind lets the prompt contributor surface "transient/network"
-// vs "dependency down" so the LLM can pick a different retry strategy
-// (e.g. "wait and retry" vs "fall back to a different tool"). Empty
-// when the breaker is Closed or was opened before this field was added.
-//
-// Plan: circuit-breaker-3-tier-errkind-semantics-toolfeedback-20260717
-type OpenToolInfo struct {
-	Name          string
-	OpenedAt      time.Time
-	Failures      int
-	LastErrorKind ErrorKind
-}
 
-// OpenTools returns aggregated info for all tools with an open circuit
-// breaker across all session scopes (channel:chatID:name tuples). A tool
-// open in multiple sessions appears once with the earliest OpenedAt and
-// the failures count of that earliest-opened breaker. Result is sorted by
-// OpenedAt (oldest first) so the prompt can highlight the longest outage.
-func (r *ToolRegistry) OpenTools() []OpenToolInfo {
-	r.cbMu.Lock()
-	breakers := make([]*CircuitBreaker, 0, len(r.breakers))
-	for _, cb := range r.breakers {
-		breakers = append(breakers, cb)
-	}
-	r.cbMu.Unlock()
-
-	byName := make(map[string]OpenToolInfo)
-	for _, cb := range breakers {
-		name := cb.Name()
-		if name == "" {
-			continue
-		}
-		state, openedAt, failures, lastErrKind := cb.Snapshot()
-		if state != StateOpen {
-			continue
-		}
-		if existing, ok := byName[name]; !ok || openedAt.Before(existing.OpenedAt) {
-			byName[name] = OpenToolInfo{
-				Name:          name,
-				OpenedAt:      openedAt,
-				Failures:      failures,
-				LastErrorKind: lastErrKind,
-			}
-		}
-	}
-
-	out := make([]OpenToolInfo, 0, len(byName))
-	for _, info := range byName {
-		out = append(out, info)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].OpenedAt.Before(out[j].OpenedAt)
-	})
-	return out
-}
-
-// ExecuteWithContext executes a tool with channel/chatID context and optional async callback.
-// If the tool implements AsyncExecutor and a non-nil callback is provided,
-// ExecuteAsync is called instead of Execute — the callback is a parameter,
-// never stored as mutable state on the tool.
 func (r *ToolRegistry) ExecuteWithContext(
 	ctx context.Context,
 	name string,
@@ -691,27 +562,6 @@ func (r *ToolRegistry) ExecuteWithContext(
 		).WithError(fmt.Errorf("tool not found"))
 	}
 
-	// Circuit Breaker check
-	cb := r.getCircuitBreaker(channel, chatID, name)
-	if cb != nil && !cb.Allow() {
-		logger.WarnCF("tool", "Tool execution blocked by circuit breaker",
-			map[string]any{"tool": name})
-		// Pick the hint by last-error-kind: ErrDependencyDown means the
-		// upstream is dead (no recovery window matters), ErrTransient /
-		// ErrTimeout means we'll auto-retry after recoveryTimeout. This
-		// matches the canonical messages appended by RecordResult on the
-		// hot path so the LLM sees consistent wording whether it hit the
-		// breaker on the way in (Allow==false) or on the way out
-		// (RecordResult returned StatusBlocked after a JustTripped
-		// transition).
-		blockedHint := escalationHint(name)
-		if cb.LastErrorKind() == ErrDependencyDown {
-			blockedHint = dependencyDownHint(name)
-		}
-		return ErrorResult(blockedHint).
-			WithErrorKind(ErrDependencyDown).
-			WithError(fmt.Errorf("circuit breaker open for tool %q", name))
-	}
 
 	// Validate arguments against the tool's declared schema.
 	if err := validateToolArgs(tool.Parameters(), args); err != nil {
@@ -730,45 +580,14 @@ func (r *ToolRegistry) ExecuteWithContext(
 			WithErrorKind(ErrInvalidInput).
 			WithError(fmt.Errorf("argument validation failed: %w", err))
 
-		if cb != nil {
-			fb := cb.RecordResult(name, true, res.ErrKind)
-			// Phase 2: SignatureFailureTracker escalation — after threshold
-			// repeated failures of the same (tool, errKind) signature, swap
-			// the canonical hint for a stronger "stop retrying" directive so
-			// the LLM does not burn the rest of the turn budget on minor
-			// variations of the same failing approach. Only fires for
-			// StatusValidationError (Tier 3) and StatusTransient (still
-			// below breaker threshold). StatusBlocked is handled by the
-			// breaker hot path above (and TryRecover via Change 4).
-			if fb.Status == StatusValidationError || fb.Status == StatusTransient {
-				if tracker := r.getOrCreateSigTracker(channel, chatID); tracker != nil {
-					if hint := tracker.EscalateIfNeeded(SignatureKey{
-						Tool:    name,
-						ErrKind: res.ErrKind,
-						ArgSig:  "",
-					}, res.ForLLM, r.toolKnowledgeFor(name)); hint != "" {
-						fb.Message = hint
-					}
-				}
-			}
-			if fb.Message != "" {
-				res.ForLLM += "\n\n" + fb.Message
-			}
-			// fb.JustTripped is always false for ErrInvalidInput (Tier 3
-			// never trips), so no event emission here. Defensive guard
-			// for future tier changes.
-			if fb.JustTripped && r.eventPublisher != nil {
-				r.mu.RLock()
-				publisher := r.eventPublisher
-				r.mu.RUnlock()
-				if publisher != nil {
-					publisher.PublishToolBreakerTripped(ToolBreakerEvent{
-						Channel:      channel,
-						ChatID:       chatID,
-						Tool:         name,
-						LastErrorKind: cb.LastErrorKind(),
-						Failures:     cb.Failures(),
-					})
+		if res.ErrKind == ErrInvalidInput || res.ErrKind == ErrTransient || res.ErrKind == ErrTimeout {
+			if tracker := r.getOrCreateSigTracker(channel, chatID); tracker != nil {
+				if hint := tracker.EscalateIfNeeded(SignatureKey{
+					Tool:    name,
+					ErrKind: res.ErrKind,
+					ArgSig:  "",
+				}, res.ForLLM, r.toolKnowledgeFor(name)); hint != "" {
+					res = appendEscalatorHint(res, hint)
 				}
 			}
 		}
@@ -881,108 +700,80 @@ func (r *ToolRegistry) ExecuteWithContext(
 		}
 	}
 
-	if cb != nil {
-		// Only record synchronous tool executions, async results are handled later/elsewhere
-		// but for now we'll just track if the initial sync execution failed.
-		fb := cb.RecordResult(name, result.IsError, result.ErrKind)
+	// Phase 12.55 (T11): tool-error feedback no longer flows through the
+	// circuit breaker. Status is computed directly from the typed ErrKind:
+	//   statusOK         → !result.IsError
+	//   statusTransient  → ErrTransient / ErrTimeout (intentionally NOT
+	//                      ErrDependencyDown — upstream errors are handled
+	//                      by the agent's same-iter recovery layer).
+	statusOK := !result.IsError
+	statusTransient := result.IsError && (result.ErrKind == ErrTransient || result.ErrKind == ErrTimeout)
 
-		// Phase 2: SignatureFailureTracker escalation — same as the
-		// validation path above. Fires for transient/timeout errors that
-		// are still below breaker threshold (StatusTransient) so the LLM
-		// sees a stronger "stop retrying" directive before the breaker
-		// itself trips (which is handled by the StatusBlocked path above
-		// via dependencyDownHint/escalationHint).
-		if fb.Status == StatusTransient {
-			if tracker := r.getOrCreateSigTracker(channel, chatID); tracker != nil {
-				if hint := tracker.EscalateIfNeeded(SignatureKey{
-					Tool:    name,
-					ErrKind: result.ErrKind,
-					ArgSig:  "",
-				}, result.ForLLM, r.toolKnowledgeFor(name)); hint != "" {
-					fb.Message = hint
-				}
-			}
-		}
-
-		// Normalize FIRST so soft prompts append to a sanitized message.
-		// Phase 3 (tool-knowledge-...-20260718): previously normalize ran
-		// after the soft prompt block, but looksLikeLargeBase64Payload
-		// requires a very high base64-like ratio - appending SoftPromptFirstSuccess
-		// (~280 chars of plain English) before sanitize dropped the ratio
-		// below threshold and let huge base64 payloads leak through. Running
-		// normalize first keeps the ratio check honest.
-		result = normalizeToolResult(result, name, r.mediaStore, channel, chatID)
-
-		// Phase 3 — soft prompts (tool-knowledge-...-20260718):
-		//
-		//   - On success: clear the signature counter (so the next failure
-		//     starts fresh from count=1) and append SoftPromptFirstSuccess
-		//     at most once per (session, tool) per turn.
-		//   - On transient failure below threshold: when the count is in
-		//     [2, threshold-1] (i.e. the LLM has retried the same approach
-		//     once and is on the brink of escalation), append
-		//     SoftPromptRepeatedFailure to nudge it toward saving a lesson.
-		//     The StatusBlocked path (threshold reached) is handled by the
-		//     escalationHint appended further down — the breaker's directive
-		//     is intentionally stronger than our nudge, so no soft-prompt
-		//     is added there.
-		if fb.Status == StatusOK {
-			if tr := r.sigTrackerFor(channel, chatID); tr != nil {
-				tr.MarkSuccess(SignatureKey{
-					Tool:    name,
-					ErrKind: result.ErrKind,
-					ArgSig:  "",
-				})
-			}
-			if !r.seenFirstSuccessBefore(channel, chatID, name) {
-				r.markFirstSuccess(channel, chatID, name)
-				result.ForLLM += SoftPromptFirstSuccess
-			}
-		} else if fb.Status == StatusTransient {
-			// Count was incremented inside EscalateIfNeeded; if it now
-			// sits in [2, threshold-1] the LLM has retried once but
-			// has not yet been told "stop". SoftPromptRepeatedFailure
-			// bridges that gap with a save-knowledge nudge.
-			//
-			// Note: fb.Message is non-empty here (transientHint always
-			// sets it for StatusTransient), but that's the canonical hint
-			// — it composes with our nudge, not conflicts with it. The
-			// soft-prompt is appended first, then the canonical hint is
-			// appended after this block (line ~827).
-			if tr := r.sigTrackerFor(channel, chatID); tr != nil {
-				key := SignatureKey{Tool: name, ErrKind: result.ErrKind, ArgSig: ""}
-				c := tr.Count(key)
-				if c >= 2 && c < tr.Threshold() {
-					result.ForLLM += SoftPromptRepeatedFailure
-				}
-			}
-		}
-		// Append the canonical hint produced by RecordResult (transientHint,
-		// escalationHint, dependencyDownHint, validationHint). Append for
-		// ANY non-empty Message so the LLM sees a consistent directive —
-		// even on the transient (below-threshold) case where the previous
-		// inline "Note/Warning" appender lived. JustTripped flag is the
-		// ONLY signal we trust to fire the runtime event — duplicate
-		// RecordResult calls during the same Open period must not re-emit.
-		if fb.Message != "" {
-			result.ForLLM += "\n\n" + fb.Message
-		}
-		if fb.JustTripped && r.eventPublisher != nil {
-			r.mu.RLock()
-			publisher := r.eventPublisher
-			r.mu.RUnlock()
-			if publisher != nil {
-				publisher.PublishToolBreakerTripped(ToolBreakerEvent{
-					Channel:      channel,
-					ChatID:       chatID,
-					Tool:         name,
-					LastErrorKind: cb.LastErrorKind(),
-					Failures:     cb.Failures(),
-				})
+	// SignatureFailureTracker escalation — same gate as the old
+	// StatusTransient path. The hint is appended directly to ForLLM after
+	// the soft prompts (writer-without-reader lesson, Phase 10.1: the hint
+	// must not die with the breaker's fb.Message channel).
+	var escalatorHint string
+	if statusTransient {
+		if tracker := r.getOrCreateSigTracker(channel, chatID); tracker != nil {
+			if hint := tracker.EscalateIfNeeded(SignatureKey{
+				Tool:    name,
+				ErrKind: result.ErrKind,
+				ArgSig:  "",
+			}, result.ForLLM, r.toolKnowledgeFor(name)); hint != "" {
+				escalatorHint = hint
 			}
 		}
 	}
 
+	// Normalize FIRST so soft prompts append to a sanitized message.
+	// Phase 3 (tool-knowledge-...-20260718): previously normalize ran
+	// after the soft prompt block, but looksLikeLargeBase64Payload
+	// requires a very high base64-like ratio - appending SoftPromptFirstSuccess
+	// (~280 chars of plain English) before sanitize dropped the ratio
+	// below threshold and let huge base64 payloads leak through. Running
+	// normalize first keeps the ratio check honest. Phase 12.55: normalize
+	// now runs unconditionally (it was previously gated behind the breaker).
+	result = normalizeToolResult(result, name, r.mediaStore, channel, chatID)
+
+	// Phase 3 — soft prompts (tool-knowledge-...-20260718):
+	//
+	//   - On success: clear the signature counter (so the next failure
+	//     starts fresh from count=1) and append SoftPromptFirstSuccess
+	//     at most once per (session, tool) per turn.
+	//   - On transient failure below threshold: when the count is in
+	//     [2, threshold-1] (i.e. the LLM has retried the same approach
+	//     once and is on the brink of escalation), append
+	//     SoftPromptRepeatedFailure to nudge it toward saving a lesson.
+	if statusOK {
+		if tr := r.sigTrackerFor(channel, chatID); tr != nil {
+			tr.MarkSuccess(SignatureKey{
+				Tool:    name,
+				ErrKind: result.ErrKind,
+				ArgSig:  "",
+			})
+		}
+		if !r.seenFirstSuccessBefore(channel, chatID, name) {
+			r.markFirstSuccess(channel, chatID, name)
+			result.ForLLM += SoftPromptFirstSuccess
+		}
+	} else if statusTransient {
+		// Count was incremented inside EscalateIfNeeded; if it now
+		// sits in [2, threshold-1] the LLM has retried once but
+		// has not yet been told "stop". SoftPromptRepeatedFailure
+		// bridges that gap with a save-knowledge nudge.
+		if tr := r.sigTrackerFor(channel, chatID); tr != nil {
+			key := SignatureKey{Tool: name, ErrKind: result.ErrKind, ArgSig: ""}
+			c := tr.Count(key)
+			if c >= 2 && c < tr.Threshold() {
+				result.ForLLM += SoftPromptRepeatedFailure
+			}
+		}
+	}
+
+	// Escalator hint LAST (exactly once) — the tracker's directive is
+	// intentionally stronger than the soft-prompt nudge.
+	result = appendEscalatorHint(result, escalatorHint)
 
 	duration := time.Since(start)
 
@@ -1144,7 +935,6 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 	defer r.mu.RUnlock()
 	clone := &ToolRegistry{
 		tools:    make(map[string]*ToolEntry, len(r.tools)),
-		breakers: make(map[string]*CircuitBreaker),
 		mediaStore: r.mediaStore,
 	}
 	if r.allowlist != nil {
@@ -1210,4 +1000,18 @@ func (r *ToolRegistry) GetAll() []Tool {
 		}
 	}
 	return tools
+}
+
+
+// appendEscalatorHint appends the signature-tracker escalation directive to
+// a tool result's ForLLM exactly once, when non-empty. Phase 12.55 (T11):
+// the escalator hint used to ride on the circuit breaker's fb.Message
+// channel; with the breaker deleted it must be appended directly here or it
+// dies silently (writer-without-reader lesson, Phase 10.1).
+func appendEscalatorHint(result *ToolResult, hintMsg string) *ToolResult {
+	if hintMsg == "" {
+		return result
+	}
+	result.ForLLM += "\n\n" + hintMsg
+	return result
 }

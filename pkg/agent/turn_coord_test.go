@@ -1140,6 +1140,11 @@ func TestTurnState_SkillContextSnapshotsTrackLatestSuccessfulPath(t *testing.T) 
 // returns the tool name to signal goal archive.
 func TestTurnCoord_RecoveryTrigger_ToolExecError(t *testing.T) {
 	ts := newPhase5TurnState(t)
+	// Pin at CHECKPOINT (Q3: restricted phases still archive on tool-exec
+	// exhaustion; Open no longer archives per Q2).
+	ts.iteration = 50
+	ts.iterationCap = 50
+	ts.maxIterationsCap = 100
 	// Bump cap manually instead of via evaluateRecovery (which now respects wire-path Phase).
 	ts.toolExecRecoveryAttempts["view_goal"] = ToolExecErrorRetryCap
 	exec := &turnExecution{

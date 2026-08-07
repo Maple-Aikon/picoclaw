@@ -102,6 +102,7 @@ func (p *Pipeline) retryExecuteToolChain(
 	_, err := BoundedRetry(ctx, RetryConfig{
 		Name:        "retryExecuteToolChain",
 		MaxAttempts: ToolExecErrorRetryCap,
+		RetryDelays: recoveryBackoffDelays, // Phase 12.55 Q4: 3s/6s/10s
 		OnExhausted: func(rc RetryContext) {
 			exhausted = true
 			// Phase 12.42 (C5): mirror Path 2's OnExhausted
@@ -174,7 +175,16 @@ func (p *Pipeline) retryExecuteToolChain(
 				map[string]any{"phase": phase})
 			return RetryDecisionAbort, nil
 		}
-		if policy.TextOnlyMode != TextOnlyRestricted {
+		// Phase 12.55 correction (2026-08-07, fact-checked): exit ONLY for
+		// TextOnlyOpenCarry (Open). Set's TextOnlyMode is TextOnlyOpenSilent —
+		// text-only at SET is a valid turn end (never arms
+		// pendingRecoveryMessage, exits at the first guard above), but
+		// tool-exec errors at SET DO arm it and must retry same-iter x3 per
+		// Phase 12.46 spec (full recovery family at SET). The old
+		// `!= TextOnlyRestricted` check also exited at SET, silently
+		// disabling SET tool-exec retries + the Q3 archive path.
+		// Checkpoint/Final are TextOnlyRestricted → continue (unchanged).
+		if policy.TextOnlyMode == TextOnlyOpenCarry {
 			return RetryDecisionDone, nil
 		}
 		return RetryDecisionRetry, nil
@@ -194,6 +204,17 @@ func (p *Pipeline) retryExecuteToolChain(
 		// StuckBucket (e.g. GoalPhaseCheckpointStuckAbortReason). Without
 		// this, AbortReason="" → phaseStuckFallbackMessage returns "" →
 		// fall-through to toolLimitResponse (main-turn-19 bug tái diễn).
+		// Phase 12.55 Q2: at Open the goal is NOT archived — return
+		// ControlToolLoop (NOT ControlBreak) so the caller-loop continues
+		// and the error result stays in history for the next iteration.
+		// ControlBreak with goalArchiveRequested=false would fall through
+		// to set pendingRecoveryMessage=archiveMsg (turn_coord.go:620+) —
+		// a carry hint, which Q2 explicitly forbids.
+		if !shouldArchiveToolExecExhausted(GoalPhase(phase)) {
+			logger.InfoCF("agent", "retryExecuteToolChain: exhausted at Open, goal stays active",
+				map[string]any{"agent_id": ts.agent.ID, "phase": phase})
+			return ControlToolLoop, nil
+		}
 		if ts.hasGoal() {
 			finalizePhaseStuckArchive(ts, GoalPhase(phase), "BoundedRetry exhausted")
 			ts.goalArchiveRequested = true
@@ -344,6 +365,15 @@ func (p *Pipeline) retryExecuteToolChainOnce(
 	//   - both "" → no error detected → continue normally
 	archiveTool, retryMsg := checkToolExecErrorRecovery(ts, exec)
 	if archiveTool != "" {
+		// Phase 12.55 Q2: archive on tool-exec exhaustion only at
+		// Set/Checkpoint/Final. Open → the error result already sits in
+		// exec.messages; return ControlToolLoop so the caller-loop
+		// continues without archiving or arming a carry hint.
+		if !shouldArchiveToolExecExhausted(GoalPhase(phase)) {
+			logger.InfoCF("agent", "retryExecuteToolChain: tool-exec exhausted at Open, goal stays active",
+				map[string]any{"agent_id": ts.agent.ID, "tool": archiveTool})
+			return ControlToolLoop, nil
+		}
 		if ts.hasGoal() {
 			ts.goalArchiveRequested = true
 		}
@@ -604,6 +634,14 @@ func (p *Pipeline) routeTextOnlyThroughRecovery(
 		}
 		return ControlBreak
 	default: // RecoveryNone — Set text-only valid turn end OR PostFinal
+		// Phase 12.55 (fact-checked 2026-08-07): clear the armed hint.
+		// recallAndCheckTool's setupFunc arms pendingRecoveryMessage with
+		// the caller's recovery hint before EVERY attempt; at SET a
+		// text-only reply is a VALID turn end, so the stale hint must not
+		// stay armed — otherwise the Site 3 guard sees a non-empty
+		// pendingRecoveryMessage and (post-12.55) continues BoundedRetry
+		// to exhaustion, archiving a healthy goal.
+		ts.pendingRecoveryMessage = ""
 		return ControlToolLoop
 	}
 }

@@ -52,7 +52,7 @@ type AttemptFunc func(ctx context.Context, rc RetryContext) (RetryDecision, erro
 // OnRetry and OnExhausted are optional callbacks; nil = no-op.
 type RetryConfig struct {
 	// Name identifies the loop in logs and events (e.g. "hook_replay",
-	// "circuit_breaker_recovery"). Required for observability.
+	// "tool_exec_error_recovery"). Required for observability.
 	Name string
 
 	// MaxAttempts hard-caps the total number of attempts including the first
@@ -72,6 +72,16 @@ type RetryConfig struct {
 	// otherwise retry. It runs exactly once per BoundedRetry invocation.
 	// Common use cases: log warning, emit exhaustion event.
 	OnExhausted func(rc RetryContext)
+
+	// RetryDelays is an optional backoff schedule applied before each retry
+	// attempt: after attempt i returns RetryDecisionRetry (under cap), the
+	// loop sleeps RetryDelays[i] before attempt i+1. nil = no delay (hook
+	// replay / provider retry / all other callers keep current behavior).
+	// When i >= len(RetryDelays), the LAST delay value is reused (fallback
+	// last). A context cancellation during the sleep aborts the loop
+	// immediately with ctx.Err() — it is NOT treated as exhaustion
+	// (OnExhausted does not fire). Phase 12.55 Q4: 3s/6s/10s schedule.
+	RetryDelays []time.Duration
 }
 
 // BoundedRetry runs `attempt` up to MaxAttempts times.
@@ -149,6 +159,20 @@ func BoundedRetry(
 			return decision, nil
 		}
 
+		// Phase 12.55 Q4: backoff delay before the next attempt (optional
+		// schedule; nil = no sleep). Index beyond the schedule falls back to
+		// the last delay. Cancellation during the sleep aborts the loop with
+		// ctx.Err() — the caller treats it as an error path, NOT exhaustion.
+		if len(cfg.RetryDelays) > 0 {
+			idx := i
+			if idx >= len(cfg.RetryDelays) {
+				idx = len(cfg.RetryDelays) - 1 // fallback last
+			}
+			if err := sleepWithContext(ctx, cfg.RetryDelays[idx]); err != nil {
+				return lastDecision, err
+			}
+		}
+
 		// Schedule next attempt.
 		onRetry(rc, "")
 	}
@@ -162,3 +186,12 @@ func BoundedRetry(
 // Chosen to give recovery headroom without runaway risk (5 attempts = roughly
 // nanobot's _MAX_LENGTH_RECOVERIES=2 scaled up).
 const defaultRetryMaxAttempts = 5
+
+// recoveryBackoffDelays is the Phase 12.55 Q4 backoff schedule applied to
+// the goal-recovery same-iter retries (handleGoalRecovery +
+// retryExecuteToolChain): 3s before retry #1, 6s before retry #2, 10s
+// before retry #3. Package-level so tests can override with a small
+// schedule (e.g. 50ms/100ms/150ms) to measure elapsed without a 19s wait.
+// NOTE: tests overriding this var MUST NOT use t.Parallel (package var,
+// no mutex — single-goroutine turn loop makes this safe in production).
+var recoveryBackoffDelays = []time.Duration{3 * time.Second, 6 * time.Second, 10 * time.Second}
