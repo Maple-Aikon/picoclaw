@@ -255,14 +255,17 @@ func goalPhaseDisplayName(phase GoalPhase) string {
 }
 
 // toolFeedbackIterContext builds the one-line progress context shown on tool
-// feedback messages, e.g. "📊 #3/250 · Goal-Checkpoint". maxIterationsCap is
-// the configured absolute ceiling (config max_iterations_cap), iteration is
-// the 1-indexed current iteration.
+// feedback messages, e.g. "📊 main-turn-20 (#3/250) Goal-Checkpoint".
+// maxIterationsCap is the configured absolute ceiling (config
+// max_iterations_cap), iteration is the 1-indexed current iteration.
 func toolFeedbackIterContext(ts *turnState) string {
 	if ts == nil {
 		return ""
 	}
-	return fmt.Sprintf("📊 #%d/%d · Goal-%s", ts.iteration, ts.maxIterationsCap, goalPhaseDisplayName(ts.currentGoalPhase()))
+	if ts.turnID != "" {
+		return fmt.Sprintf("📊 %s (#%d/%d) Goal-%s", ts.turnID, ts.iteration, ts.maxIterationsCap, goalPhaseDisplayName(ts.currentGoalPhase()))
+	}
+	return fmt.Sprintf("📊 (#%d/%d) Goal-%s", ts.iteration, ts.maxIterationsCap, goalPhaseDisplayName(ts.currentGoalPhase()))
 }
 
 func cloneEventArguments(args map[string]any) map[string]any {

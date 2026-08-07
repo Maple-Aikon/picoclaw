@@ -74,3 +74,51 @@ func TestInferMediaType(t *testing.T) {
 		})
 	}
 }
+
+func TestToolFeedbackIterContext(t *testing.T) {
+	tests := []struct {
+		name string
+		ts   *turnState
+		want string
+	}{
+		{name: "nil ts", ts: nil, want: ""},
+		{
+			name: "with turn id",
+			ts: &turnState{
+				turnID:           "main-turn-20",
+				iteration:        2,
+				maxIterationsCap: 250,
+				agent:            &AgentInstance{PhaseOverrideForTest: string(GoalPhaseOpen)},
+			},
+			want: "📊 main-turn-20 (#2/250) Goal-Open",
+		},
+		{
+			name: "without turn id",
+			ts: &turnState{
+				iteration:        3,
+				maxIterationsCap: 250,
+				agent:            &AgentInstance{PhaseOverrideForTest: string(GoalPhaseCheckpoint)},
+			},
+			want: "📊 (#3/250) Goal-Checkpoint",
+		},
+		{
+			name: "post final display name",
+			ts: &turnState{
+				turnID:           "main-turn-1",
+				iteration:        5,
+				maxIterationsCap: 250,
+				agent:            &AgentInstance{PhaseOverrideForTest: string(GoalPhasePostFinal)},
+			},
+			want: "📊 main-turn-1 (#5/250) Goal-Post-Final",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toolFeedbackIterContext(tt.ts)
+			if got != tt.want {
+				t.Fatalf("toolFeedbackIterContext() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
