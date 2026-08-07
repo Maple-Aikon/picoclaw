@@ -44,6 +44,10 @@ const (
 	ToolPromptSourceDiscovery = toolshared.ToolPromptSourceDiscovery
 )
 
+// IsTransientErrorText mirrors toolshared.IsTransientErrorText for callers in
+// the pkg/tools root package (registry escalator classification, W1 fix).
+func IsTransientErrorText(s string) bool { return toolshared.IsTransientErrorText(s) }
+
 func WithToolContext(ctx context.Context, channel, chatID string) context.Context {
 	return toolshared.WithToolContext(ctx, channel, chatID)
 }

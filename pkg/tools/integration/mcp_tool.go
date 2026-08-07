@@ -264,6 +264,11 @@ func (t *MCPTool) Execute(ctx context.Context, args map[string]any) *ToolResult 
 		if strings.Contains(errStr, "reconnect failed") ||
 			strings.Contains(errStr, "failed to recover lost MCP session") {
 			res = res.WithErrorKind(toolshared.ErrDependencyDown)
+		} else if toolshared.IsTransientErrorText(errStr) {
+			// W1 fix (2026-08-07): type transient transport errors (timeout,
+			// connection refused, ...) so the registry escalator / soft-prompt
+			// layer can classify MCP failures without text heuristics.
+			res = res.WithErrorKind(toolshared.ErrTransient)
 		}
 		return res
 	}
@@ -278,8 +283,15 @@ func (t *MCPTool) Execute(ctx context.Context, args map[string]any) *ToolResult 
 	if result.IsError {
 		errMsg := extractContentText(result.Content)
 		t.publishRuntimeEvent(ctx, runtimeevents.KindMCPToolCallEnd, startedAt, true, errMsg)
-		return ErrorResult(fmt.Sprintf("MCP tool returned error: %s", errMsg)).
+		res := ErrorResult(fmt.Sprintf("MCP tool returned error: %s", errMsg)).
 			WithError(fmt.Errorf("MCP tool error: %s", errMsg))
+		if toolshared.IsTransientErrorText(errMsg) {
+			// W1 fix (2026-08-07): tool-level MCP errors (e.g. SearXNG 403
+			// from search tools) carry no typed ErrKind; classify transient
+			// markers so the registry escalator fires (12.55 regression).
+			res = res.WithErrorKind(toolshared.ErrTransient)
+		}
+		return res
 	}
 
 	t.publishRuntimeEvent(ctx, runtimeevents.KindMCPToolCallEnd, startedAt, false, "")

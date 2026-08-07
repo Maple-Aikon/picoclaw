@@ -111,6 +111,76 @@ func inferSkillNamesFromToolCall(ts *turnState, toolName string, toolArgs map[st
 // Returns ToolControl indicating what the coordinator should do next:
 //   - ToolControlContinue: all tool results handled, pendingMessages or steering exists, continue turn
 //   - ToolControlBreak: tool loop exited, proceed to coordinator's hardAbort/finalContent/finalize
+// gatePreCheckDeny implements the Phase 12.35 gate pre-check: when the LLM
+// calls a tool the runtime allowlist blocks (phase/lifecycle gate), synthesize
+// a typed-ErrInvalidInput ToolResult + tool message + feedback so the recovery
+// path (checkToolExecErrorRecovery) routes to same-iter retry instead of a
+// silent drop (main-turn-3 trace 2026-07-31 15:28:52 ICT). Fires at EVERY
+// phase (Phase 12.46 — SET included; the legacy execute-then-error path is
+// removed, owner decision 2026-08-03). Returns true when the call was denied
+// (caller must `continue` the tool loop). W3 refactor 2026-08-07: extracted
+// from ExecuteTools (god-function reduction).
+func (p *Pipeline) gatePreCheckDeny(
+	ts *turnState,
+	exec *turnExecution,
+	messages *[]providers.Message,
+	tc providers.ToolCall,
+	toolName string,
+	turnCtx context.Context,
+) bool {
+	al := p.al
+	if ts.agent.Tools == nil || ts.agent.Tools.IsAllowed(toolName) {
+		return false
+	}
+	denyContent := gateSkipMessageForPhase(toolName, ts.currentGoalPhase())
+	al.emitEvent(
+		runtimeevents.KindAgentToolExecSkipped,
+		ts.eventMeta("runTurn", "turn.tool.skipped"),
+		ToolExecSkippedPayload{
+			Tool:   toolName,
+			Reason: denyContent,
+		},
+	)
+	deniedMsg := providers.Message{
+		Role:       "tool",
+		Content:    denyContent,
+		ToolCallID: tc.ID,
+	}
+	*messages = append(*messages, deniedMsg)
+	if !ts.opts.NoHistory {
+		ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
+		ts.recordPersistedMessage(deniedMsg)
+	}
+	// lastToolResult is a *tools.ToolResult — synthesize a minimal one
+	// stamped with typed ErrKind=ErrInvalidInput so the recovery gate
+	// (checkToolExecErrorRecovery, which reads ErrKind) has a uniform
+	// surface and does NOT rely on error-string prefixes (Bug A, deferred
+	// from Phase 12.35).
+	ts.lastToolResult = tools.ErrorResult(denyContent).
+		WithError(fmt.Errorf("tool %q blocked at gate (Phase 12.35)", toolName)).
+		WithErrorKind(toolshared.ErrInvalidInput)
+	exec.allResponsesHandled = false
+	// Publish tool feedback for gate-blocked calls too — the legacy
+	// execution-gate path (ExecuteWithContext → IsAllowed) ran inside the
+	// tool loop and emitted feedback; the 12.46 pre-check must preserve
+	// that so callers waiting on OutboundChan (and Telegram users) still
+	// see the attempt.
+	if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "pico" {
+		fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
+		_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(
+			ts,
+			utils.FormatToolFeedbackMessage(
+				toolName,
+				toolFeedbackExplanationForToolCall(exec.response, tc, *messages),
+				toolFeedbackArgsPreviewWithOptions(tc.Arguments, al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(), al.cfg.Agents.Defaults.ToolFeedback.PrettyPrint, al.cfg.Agents.Defaults.ToolFeedback.DisableEscapeHTML),
+			),
+			outboundTurnMessageOptions{kind: messageKindToolFeedback},
+		))
+		fbCancel()
+	}
+	return true
+}
+
 func (p *Pipeline) ExecuteTools(
 	ctx context.Context,
 	turnCtx context.Context,
@@ -200,57 +270,10 @@ toolLoop:
 		// every other phase. The legacy execute-then-error path (IsAllowed
 		// inside ExecuteWithContext → `tool "X"` prefix) is REMOVED (owner
 		// decision, anh Maple 2026-08-03).
-		currentPhase := ts.currentGoalPhase()
-		if ts.agent.Tools != nil {
-			if !ts.agent.Tools.IsAllowed(toolName) {
-				denyContent := gateSkipMessageForPhase(toolName, currentPhase)
-				al.emitEvent(
-					runtimeevents.KindAgentToolExecSkipped,
-					ts.eventMeta("runTurn", "turn.tool.skipped"),
-					ToolExecSkippedPayload{
-						Tool:   toolName,
-						Reason: denyContent,
-					},
-				)
-				deniedMsg := providers.Message{
-					Role:       "tool",
-					Content:    denyContent,
-					ToolCallID: tc.ID,
-				}
-				messages = append(messages, deniedMsg)
-				if !ts.opts.NoHistory {
-					ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
-					ts.recordPersistedMessage(deniedMsg)
-				}
-				// lastToolResult is a *tools.ToolResult — synthesize a
-				// minimal one stamped with typed ErrKind=ErrInvalidInput so
-				// the recovery gate (checkToolExecErrorRecovery, which reads
-				// ErrKind) has a uniform surface and does NOT rely on
-				// error-string prefixes (Bug A, deferred from Phase 12.35).
-				ts.lastToolResult = tools.ErrorResult(denyContent).
-					WithError(fmt.Errorf("tool %q blocked at gate (Phase 12.35)", toolName)).
-					WithErrorKind(toolshared.ErrInvalidInput)
-				exec.allResponsesHandled = false
-				// Publish tool feedback for gate-blocked calls too — the
-				// legacy execution-gate path (ExecuteWithContext → IsAllowed)
-				// ran inside the tool loop and emitted feedback; the 12.46
-				// pre-check must preserve that so callers waiting on
-				// OutboundChan (and Telegram users) still see the attempt.
-				if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "pico" {
-					fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
-					_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(
-						ts,
-						utils.FormatToolFeedbackMessage(
-							toolName,
-							toolFeedbackExplanationForToolCall(exec.response, tc, messages),
-							toolFeedbackArgsPreviewWithOptions(tc.Arguments, al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(), al.cfg.Agents.Defaults.ToolFeedback.PrettyPrint, al.cfg.Agents.Defaults.ToolFeedback.DisableEscapeHTML),
-						),
-						outboundTurnMessageOptions{kind: messageKindToolFeedback},
-					))
-					fbCancel()
-				}
-				continue
-			}
+		// Phase 12.35 gate pre-check (W3 refactor 2026-08-07): extracted to
+		// gatePreCheckDeny — blocked-by-gate synthetic result + recovery wire.
+		if p.gatePreCheckDeny(ts, exec, &messages, tc, toolName, turnCtx) {
+			continue
 		}
 		if al.hooks != nil {
 			toolReq, decision := al.hooks.BeforeTool(turnCtx, &ToolCallHookRequest{

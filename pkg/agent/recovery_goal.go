@@ -22,7 +22,6 @@ package agent
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -759,26 +758,9 @@ func buildToolExecErrorRetryMessage(toolName, errMsg string, isTransient bool, r
 // wait-then-retry hint. The standard prompt still allows the LLM to retry
 // the same call.
 func isTransientErrorText(errMsg string) bool {
-	lower := strings.ToLower(errMsg)
-	transientMarkers := []string{
-		"connection refused",
-		"connection reset",
-		"connection closed",
-		"timeout",
-		"rate limit",
-		"http 429",
-		"http 502",
-		"http 503",
-		"http 504",
-		"no such host",
-		"tls handshake",
-	}
-	for _, m := range transientMarkers {
-		if strings.Contains(lower, m) {
-			return true
-		}
-	}
-	return false
+	// W1 fix (2026-08-07): single classifier shared with the tool registry
+	// (pkg/tools/shared.IsTransientErrorText).
+	return toolshared.IsTransientErrorText(errMsg)
 }
 
 // isTransientFromErrKind combines the typed ErrKind classifier with the

@@ -707,7 +707,13 @@ func (r *ToolRegistry) ExecuteWithContext(
 	//                      ErrDependencyDown — upstream errors are handled
 	//                      by the agent's same-iter recovery layer).
 	statusOK := !result.IsError
-	statusTransient := result.IsError && (result.ErrKind == ErrTransient || result.ErrKind == ErrTimeout)
+	statusTransient := result.IsError && (result.ErrKind == ErrTransient || result.ErrKind == ErrTimeout ||
+		// W1 fix (2026-08-07): untyped errors (legacy executors, MCP
+		// tool-level errors without ErrKind) fall back to the shared
+		// transient classifier so the escalator / soft prompts still fire
+		// for e.g. SearXNG 403 — mirrors checkToolExecErrorRecovery's
+		// empty-kind fallback in the agent layer.
+		(result.ErrKind == "" && IsTransientErrorText(result.ForLLM)))
 
 	// SignatureFailureTracker escalation — same gate as the old
 	// StatusTransient path. The hint is appended directly to ForLLM after
@@ -982,26 +988,6 @@ func (r *ToolRegistry) GetSummaries() []string {
 	}
 	return summaries
 }
-
-// GetAll returns all registered tools (both core and non-core with TTL > 0).
-// Used by SubTurn to inherit parent's tool set.
-func (r *ToolRegistry) GetAll() []Tool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	sorted := r.sortedToolNames()
-	tools := make([]Tool, 0, len(sorted))
-	for _, name := range sorted {
-		entry := r.tools[name]
-
-		// Include core tools and non-core tools with active TTL
-		if entry.IsCore || entry.TTL > 0 {
-			tools = append(tools, entry.Tool)
-		}
-	}
-	return tools
-}
-
 
 // appendEscalatorHint appends the signature-tracker escalation directive to
 // a tool result's ForLLM exactly once, when non-empty. Phase 12.55 (T11):
