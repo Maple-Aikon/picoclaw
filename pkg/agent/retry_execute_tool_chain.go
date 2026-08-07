@@ -564,15 +564,9 @@ func (p *Pipeline) routeTextOnlyThroughRecovery(
 	phase string,
 	recoveryHint string,
 ) Control {
-	// Phase 12.46 reasoning-only filter (pipeline_llm.go:1316 reference):
-	// reasoning-only responses (<reasoning>...</reasoning> without final
-	// text) are NOT text-empty — the LLM produced a thought-trace. Strip
-	// tags first, then check. Without this filter, MiniMax-M3 reasoning-only
-	// outputs incorrectly trigger text-only recovery → same-iter retry
-	// → archive goal. Mirror the filter at pipeline_llm.go:1316.
-	textEmpty := exec.response != nil &&
-		exec.response.Content == "" &&
-		responseReasoningContent(exec.response) == ""
+	// Phase 12.54: TextEmpty = Content=="" only — reasoning is the model's
+	// internal thinking and is never treated as speech.
+	textEmpty := exec.response != nil && exec.response.Content == ""
 	action, msg := evaluateRecovery(ts, RecoveryContext{
 		Phase:                  phase,
 		Iteration:              iteration,

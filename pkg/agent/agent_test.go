@@ -2460,6 +2460,7 @@ func (m *simpleMockProvider) GetDefaultModel() string {
 type reasoningContentProvider struct {
 	response         string
 	reasoningContent string
+	calls            int
 }
 
 func (m *reasoningContentProvider) Chat(
@@ -2469,6 +2470,7 @@ func (m *reasoningContentProvider) Chat(
 	model string,
 	opts map[string]any,
 ) (*providers.LLMResponse, error) {
+	m.calls++
 	return &providers.LLMResponse{
 		Content:          m.response,
 		ReasoningContent: m.reasoningContent,
@@ -7956,10 +7958,12 @@ drain:
 }
 
 // TestProcessMessage_ReasoningOnlyRoutesToReasoningChannelWhenConfigured
-// guards the existing behavior so the leak fix does not regress it: when a
-// channel HAS a reasoning_channel_id configured, the reasoning content must
-// continue to be published there, and the main response remains the model
-// content (which here is empty — so DefaultResponse fires).
+// guards the Phase 12.54 owner decision (anh Maple 2026-08-07): reasoning is
+// the LLM's internal thinking and must NEVER be promoted to main Content.
+// When a channel HAS a reasoning_channel_id configured, the reasoning content
+// is still published there, but the main response is NOT the reasoning trace:
+// reasoning-only at SET fires empty-response recovery ×3 then the empty
+// content falls through to DefaultResponse.
 func TestProcessMessage_ReasoningOnlyRoutesToReasoningChannelWhenConfigured(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
@@ -7996,9 +8000,9 @@ func TestProcessMessage_ReasoningOnlyRoutesToReasoningChannelWhenConfigured(t *t
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if response != "thinking trace to reasoning channel" {
-		t.Fatalf("processMessage() response = %q, want %q (reasoning-only model must be promoted to main response when reasoning_channel_id is configured)",
-			response, "thinking trace to reasoning channel")
+	if response != defaultResponse {
+		t.Fatalf("processMessage() response = %q, want DefaultResponse %q (reasoning-only must NEVER be promoted to main response — reasoning-only = silent)",
+			response, defaultResponse)
 	}
 
 	// Expect reasoning content to also land in the configured reasoning channel

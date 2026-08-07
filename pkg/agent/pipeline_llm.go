@@ -751,10 +751,9 @@ func (p *Pipeline) proceedPastLLM(
 			if action, msg := evaluateRecovery(ts, RecoveryContext{
 				Phase:                  string(ts.currentGoalPhase()),
 				Iteration:              iteration,
-				// Phase 12.46: reasoning-only responses are NOT empty —
-				// the reasoning is promoted to content when a
-				// reasoning_channel_id is configured (see below).
-				TextEmpty:              exec.response.Content == "" && reasoningContent == "",
+				// Phase 12.54: TextEmpty = Content=="" only. Reasoning is
+				// internal thinking; reasoning-only = the model is silent.
+				TextEmpty:              exec.response.Content == "",
 				HasToolCalls:           false,
 				MaxIterations:          ts.iterationCap,
 				PostCompleteGoalReport: ts.postCompleteGoalReportSent,
@@ -781,28 +780,13 @@ func (p *Pipeline) proceedPastLLM(
 		}
 
 		responseContent := exec.response.Content
+		// Phase 12.54 (owner decision 2026-08-07): reasoning is the LLM's
+		// internal thinking — NEVER promoted to main Content. reasoning-only
+		// (Content=="") means the model thought but did not speak; the empty
+		// response falls through to applyFallbackForEmptyResponse.
 		// Phase 11: capture LLM text output so complete_goal can use it as
 		// the final user reply when the tool's `summary` arg is empty.
 		ts.assistantText = responseContent
-		if responseContent == "" && reasoningContent != "" && ts.channel != "pico" {
-			// Only fall back to ReasoningContent when the channel has a
-			// configured reasoning_channel_id. Without one, publishing
-			// reasoning as the main response leaks the model's internal
-			// thinking into the user's primary chat. The coordinator's
-			// DefaultResponse fallback (turn_coord.go) handles the empty
-			// case instead.
-			if reasoningTargetChatID := al.targetReasoningChannelID(ts.channel); reasoningTargetChatID != "" {
-				responseContent = reasoningContent
-			} else {
-				logger.WarnCF("agent", "Reasoning content suppressed: no reasoning_channel_id configured for channel; relying on DefaultResponse fallback",
-					map[string]any{
-						"channel":         ts.channel,
-						"chat_id":         ts.chatID,
-						"reasoning_chars": len(reasoningContent),
-						"iteration":       iteration,
-					})
-			}
-		}
 		if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
 			cancelConfiguredStreamingLLM(turnCtx, exec)
 			logger.InfoCF("agent", "Steering arrived after direct LLM response; continuing turn",
@@ -1312,7 +1296,9 @@ func (p *Pipeline) handleGoalRecovery(
 		evalCtx := RecoveryContext{
 			Phase:                 string(ts.currentGoalPhase()),
 			Iteration:             iteration,
-			TextEmpty:             exec.response.Content == "" && responseReasoningContent(exec.response) == "",
+			// Phase 12.54: TextEmpty = Content=="" only (reasoning is never
+			// treated as speech).
+			TextEmpty:             exec.response.Content == "",
 			HasToolCalls:          false,
 			MaxIterations:         ts.iterationCap,
 			ToolKnowledgeRegistry: ts.agent.Tools,
