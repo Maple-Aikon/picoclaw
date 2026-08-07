@@ -551,3 +551,106 @@ func (p *recoveryCaptureProvider) Chat(
 func (p *recoveryCaptureProvider) GetDefaultModel() string {
 	return "capture-model"
 }
+
+// TestHandleGoalRecovery_ToolCallOnRetry_StagesAndReturnsToolLoop verifies
+// Phase 12.57: when a retry attempt (attempt > 0) emits a tool call,
+// handleGoalRecovery stages it for execution (normalizedToolCalls +
+// assistant tool_calls message) and returns ControlToolLoop so the
+// caller-loop runs ExecuteTools — including at iter==iterationCap where the
+// pre-fix behavior silently dropped the call (exec.normalizedToolCalls was
+// only populated by the main path proceedPastLLM, which recovery paths
+// never call) and the turn ended with goalFinalized=false.
+func TestHandleGoalRecovery_ToolCallOnRetry_StagesAndReturnsToolLoop(t *testing.T) {
+	provider := &recoveryTestProvider{
+		responses: []*providers.LLMResponse{
+			{Content: "", FinishReason: "stop"}, // attempt 1: empty → keep retrying
+			{
+				Content: "finalizing goal now",
+				ToolCalls: []providers.ToolCall{
+					{ID: "call-1", Name: "complete_goal", Arguments: map[string]any{
+						"summary": "done",
+					}},
+				},
+				FinishReason: "tool_calls",
+			}, // attempt 2: tool call → must be staged + executed
+		},
+	}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
+	defer cleanup()
+
+	pipeline := NewPipeline(al)
+
+	ws := t.TempDir()
+	agent.Workspace = ws
+
+	ts := newTurnState(agent, makeTestProcessOpts("test-session"), turnEventScope{
+		turnID:  "turn-1",
+		context: newTurnContext(nil, nil, nil),
+	})
+	// Pin to Checkpoint at the iteration cap: iteration == iterationCap.
+	// The pre-fix drop is unrecoverable exactly here — the next loop pass
+	// bumps past the cap and the turn ends with goalFinalized=false.
+	ts.iterationCap = 5
+	ts.iteration = 0
+	ts.setIteration(5)
+
+	exec, err := pipeline.SetupTurn(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("SetupTurn: %v", err)
+	}
+
+	// Write goal directly to disk AFTER SetupTurn (per-turn archive is a
+	// one-shot on SetupTurn entry, so this write survives).
+	goalStore := goal.NewStore(ws)
+	now := time.Now().UTC()
+	activeGoal := &goal.Goal{
+		Name: "phase-12-57-test",
+		Description: goal.Description{
+			Objective:       "test tool call on retry at iter cap",
+			SuccessCriteria: []string{"tool executes"},
+			Cadence:         "as_needed",
+		},
+		Status:    goal.StatusActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := goalStore.Write("test-session", activeGoal); err != nil {
+		t.Fatalf("Write goal: %v", err)
+	}
+	if !ts.hasGoal() {
+		t.Fatal("setup error: hasGoal=false; goal file not seeded")
+	}
+	if got := ts.currentGoalPhase(); got != GoalPhaseCheckpoint {
+		t.Fatalf("setup error: expected Checkpoint phase at iter 5/5, got %v", got)
+	}
+
+	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 5)
+	if err != nil {
+		t.Fatalf("CallLLM: %v", err)
+	}
+
+	// Core Phase 12.57 assertion: the caller-loop must enter the tool
+	// execution branch, not continue (which would re-call the LLM next iter
+	// and drop the staged tool call).
+	if ctrl != ControlToolLoop {
+		t.Fatalf("expected ControlToolLoop so caller executes the staged tool, got %v", ctrl)
+	}
+	if len(exec.normalizedToolCalls) != 1 {
+		t.Errorf("expected 1 normalized tool call staged for ExecuteTools, got %d", len(exec.normalizedToolCalls))
+	} else if exec.normalizedToolCalls[0].Name != "complete_goal" {
+		t.Errorf("expected complete_goal staged, got %s", exec.normalizedToolCalls[0].Name)
+	}
+	// Phase 12.41 A': the assistant tool_calls message must precede
+	// ExecuteTools' role="tool" results, otherwise results are orphaned
+	// (DeepSeek 400 invalid_request_error on the next provider call).
+	found := false
+	for _, m := range exec.messages {
+		if m.Role == "assistant" && len(m.ToolCalls) == 1 && m.ToolCalls[0].Name == "complete_goal" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected assistant tool_calls message in exec.messages before ExecuteTools")
+	}
+}

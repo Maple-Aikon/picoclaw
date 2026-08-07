@@ -292,8 +292,10 @@ func TestTextOnlyPublishedOnRetryAttemptInsideHandleGoalRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleGoalRecovery: %v", err)
 	}
-	if ctrl != ControlContinue {
-		t.Fatalf("expected ControlContinue after retry succeeded with tool call, got %v", ctrl)
+	// Phase 12.57: the retry attempt's tool call is now staged and routed
+	// to the caller-loop for execution (ControlToolLoop), not dropped.
+	if ctrl != ControlToolLoop {
+		t.Fatalf("expected ControlToolLoop after retry succeeded with tool call (Phase 12.57), got %v", ctrl)
 	}
 
 	msgs := drainOutbound(msgBus)

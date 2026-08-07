@@ -1389,8 +1389,70 @@ func (p *Pipeline) handleGoalRecovery(
 	if decision == RetryDecisionAbort {
 		return ControlBreak, nil
 	}
+	// Phase 12.57: a retry attempt that emits tool calls must EXECUTE them.
+	// Pre-fix, the final attempt's tool calls were silently dropped: the
+	// caller-loop dispatches from exec.normalizedToolCalls only, which the
+	// recovery paths never populated (that was main-path proceedPastLLM's
+	// job). At iter==iterationCap the drop is unrecoverable — the next loop
+	// pass bumps past the cap and the turn ends with goalFinalized=false.
+	// Stage the calls (normalize + assistant message, mirroring
+	// recallAndCheckTool) and return ControlToolLoop so the caller-loop
+	// runs ExecuteTools immediately, exactly like the main tool-call path.
+	if decision == RetryDecisionDone && p.stageRecoveryToolCalls(ts, exec, turnCtx) {
+		return ControlToolLoop, nil
+	}
 	_ = al
 	return ControlContinue, nil
+}
+
+// stageRecoveryToolCalls prepares tool calls emitted by a recovery retry
+// (handleGoalRecovery) for execution by the caller-loop's ExecuteTools:
+// populates exec.normalizedToolCalls and appends the assistant tool_calls
+// message to exec.messages (+ persistence trio), mirroring the staging in
+// proceedPastLLM (pipeline_llm.go:819-905) and recallAndCheckTool
+// (retry_execute_tool_chain.go:502-565). Without this staging a tool call
+// from a retry attempt is silently dropped — the caller-loop only dispatches
+// from normalizedToolCalls, and ExecuteTools' role="tool" results would
+// reference an absent assistant message (Phase 12.41 A' — orphaned results
+// trigger DeepSeek 400 invalid_request_error). Returns true when tool calls
+// were staged (caller should return ControlToolLoop).
+func (p *Pipeline) stageRecoveryToolCalls(ts *turnState, exec *turnExecution, turnCtx context.Context) bool {
+	if exec.response == nil || len(exec.response.ToolCalls) == 0 || exec.gracefulTerminal {
+		return false
+	}
+	exec.normalizedToolCalls = make([]providers.ToolCall, 0, len(exec.response.ToolCalls))
+	for _, tc := range exec.response.ToolCalls {
+		exec.normalizedToolCalls = append(exec.normalizedToolCalls, providers.NormalizeToolCall(tc))
+	}
+	reasoningContent := responseReasoningContent(exec.response)
+	assistantMsg := providers.Message{
+		Role:             "assistant",
+		Content:          exec.response.Content,
+		ModelName:        exec.llmModelName,
+		ReasoningContent: reasoningContent,
+		ReasoningDetails: exec.response.ReasoningDetails,
+	}
+	for _, tc := range exec.normalizedToolCalls {
+		argumentsJSON, _ := json.Marshal(tc.Arguments)
+		assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, providers.ToolCall{
+			ID:   tc.ID,
+			Type: "function",
+			Name: tc.Name,
+			Function: &providers.FunctionCall{
+				Name:      tc.Name,
+				Arguments: string(argumentsJSON),
+			},
+			ExtraContent:     tc.ExtraContent,
+			ThoughtSignature: tc.ThoughtSignature,
+		})
+	}
+	exec.messages = append(exec.messages, assistantMsg)
+	if !ts.opts.NoHistory && p.al != nil {
+		ts.agent.Sessions.AddFullMessage(ts.sessionKey, assistantMsg)
+		ts.recordPersistedMessage(assistantMsg)
+		ts.ingestMessage(turnCtx, p.al, assistantMsg)
+	}
+	return true
 }
 
 // actionName returns a human-readable label for a RecoveryAction.
