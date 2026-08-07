@@ -18,19 +18,6 @@ import (
 // abort_reason with the phase-specific value so applyFallbackForEmptyResponse
 // can return a user-facing message that names the phase.
 
-// computePhaseStuckAbortReason returns the phase-specific abort_reason
-// if the current phase-stuck counter is >= 2 and current iteration is in
-// the matching phase. Returns empty string if no phase-stuck condition is
-// detected (caller should fall back to GoalAbortReasonBexhausted).
-func (ts *turnState) computePhaseStuckAbortReason() string {
-	return computePhaseStuckAbortReasonForPhase(
-		ts.currentGoalPhase(),
-		ts.setGoalAttemptCount, ts.setGoalArchiveFlag,
-		ts.goalProgressAttemptCount, ts.goalProgressArchiveFlag,
-		ts.completeGoalAttemptCount, ts.completeGoalArchiveFlag,
-	)
-}
-
 // computePhaseStuckAbortReasonForPhase is the static helper split out
 // from computePhaseStuckAbortReason so tests can exercise the pure
 // threshold logic without spinning up a full AgentLoop. Returns the

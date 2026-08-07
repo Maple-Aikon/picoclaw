@@ -5,7 +5,6 @@ package adapters
 import (
 	"context"
 
-	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 )
@@ -13,11 +12,6 @@ import (
 // channelManagerAdapter wraps *channels.Manager to implement interfaces.ChannelManager.
 type channelManagerAdapter struct {
 	inner *channels.Manager
-}
-
-// NewChannelManager creates an adapter for *channels.Manager.
-func NewChannelManager(inner *channels.Manager) interfaces.ChannelManager {
-	return &channelManagerAdapter{inner: inner}
 }
 
 func (a *channelManagerAdapter) GetChannel(name string) (channels.Channel, bool) {

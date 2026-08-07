@@ -544,23 +544,6 @@ func (ts *turnState) resetReplayCount() {
 	ts.replayCount = 0
 }
 
-// currentReplayCount returns the current replay attempt count (for observability).
-func (ts *turnState) currentReplayCount() int {
-	ts.mu.RLock()
-	defer ts.mu.RUnlock()
-	return ts.replayCount
-}
-
-// currentReplayCap returns the configured replay cap (for observability).
-func (ts *turnState) currentReplayCap() int {
-	ts.mu.RLock()
-	defer ts.mu.RUnlock()
-	if ts.replayCap <= 0 {
-		return defaultRetryMaxAttempts
-	}
-	return ts.replayCap
-}
-
 // RemainingIterations returns the number of tool iterations remaining before the
 // turn's hard cap is reached. Clamped to zero if the cap has already been exceeded.
 func (ts *turnState) RemainingIterations() int {
@@ -816,21 +799,6 @@ func (ts *turnState) MarkGoalFinalized() {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	ts.goalFinalized = true
-}
-
-// IsGoalFinalized reports whether MarkGoalFinalized has been called this
-// turn. Used by the runTurn coordinator's top-of-loop check to break
-// out of the per-turn tool loop after complete_goal fired.
-//
-// Implements goal.GoalTurnState interface (Phase 11). Read-only — only
-// the turn state itself can change the underlying flag.
-func (ts *turnState) IsGoalFinalized() bool {
-	if ts == nil {
-		return false
-	}
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-	return ts.goalFinalized
 }
 
 // shouldEmitPostCompleteGoalReport reports whether the post-complete_goal

@@ -129,14 +129,6 @@ func NewContextBuilder(workspace string) *ContextBuilder {
 	}
 }
 
-func (cb *ContextBuilder) RegisterPromptSource(desc PromptSourceDescriptor) error {
-	err := cb.promptRegistryOrDefault().RegisterSource(desc)
-	if err == nil {
-		cb.InvalidateCache()
-	}
-	return err
-}
-
 func (cb *ContextBuilder) RegisterPromptContributor(contributor PromptContributor) error {
 	err := cb.promptRegistryOrDefault().RegisterContributor(contributor)
 	if err == nil {
@@ -1600,32 +1592,6 @@ func sanitizeHistoryForProvider(history []providers.Message) []providers.Message
 	}
 
 	return final
-}
-
-func (cb *ContextBuilder) AddToolResult(
-	messages []providers.Message,
-	toolCallID, toolName, result string,
-) []providers.Message {
-	messages = append(messages, providers.Message{
-		Role:       "tool",
-		Content:    result,
-		ToolCallID: toolCallID,
-	})
-	return messages
-}
-
-func (cb *ContextBuilder) AddAssistantMessage(
-	messages []providers.Message,
-	content string,
-	toolCalls []map[string]any,
-) []providers.Message {
-	msg := providers.Message{
-		Role:    "assistant",
-		Content: content,
-	}
-	// Always add assistant message, whether or not it has tool calls
-	messages = append(messages, msg)
-	return messages
 }
 
 func (cb *ContextBuilder) buildActiveSkillsContext(skillNames []string) string {
