@@ -303,11 +303,20 @@ drained:
 		t.Fatalf("expected exactly 1 outbound message (the summary), got %d", len(outbounds))
 	}
 	got := outbounds[0].Content
-	if utf8.RuneCountInString(got) != 1200 {
-		t.Errorf("user must receive the FULL 1200-rune summary (verbatim, F22A), got %d runes", utf8.RuneCountInString(got))
+	// Phase 12.55.2: summary now carries the iteration/phase header
+	// ("📊 <turnID> (#iter/cap) Goal-<phase>: summary\n") — the summary
+	// body itself must stay verbatim at the transport boundary.
+	if !strings.HasPrefix(got, "📊 ") {
+		t.Errorf("summary message must carry the iteration/phase header, got %q", got)
 	}
-	if got != full {
-		t.Error("summary at the transport boundary must be byte-identical to the LLM-supplied summary")
+	if !strings.Contains(got, ": summary\n") {
+		t.Errorf("summary message must carry the ': summary' suffix on the header line, got %q", got)
+	}
+	if !strings.HasSuffix(got, full) {
+		t.Error("summary at the transport boundary must end byte-identical to the LLM-supplied summary (F22A)")
+	}
+	if utf8.RuneCountInString(got) <= utf8.RuneCountInString(full) {
+		t.Errorf("full summary must be present verbatim; got %d runes (summary alone is %d)", utf8.RuneCountInString(got), utf8.RuneCountInString(full))
 	}
 	if outbounds[0].Context.Channel != "cli" || outbounds[0].Context.ChatID != "test-chat" {
 		t.Errorf("outbound must target the turn's channel/chat, got %q/%q", outbounds[0].Context.Channel, outbounds[0].Context.ChatID)

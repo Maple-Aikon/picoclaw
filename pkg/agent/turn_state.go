@@ -772,6 +772,30 @@ func (ts *turnState) PublishToUser(ctx context.Context, text string) {
 	ts.al.PublishResponseIfNeeded(ctx, ts.channel, ts.chatID, ts.sessionKey, text)
 }
 
+// PublishGoalSummary implements goal.TurnStateAccess (Phase 12.55.2):
+// publishes the complete_goal outcome as user-facing messages with the
+// iteration/phase header. When the LLM sent content text alongside the
+// complete_goal call, that explanation is published first as its own
+// message (header + explanation), then the summary as a second message
+// (header + ": summary"). No explanation → summary-only single message.
+// Void + best-effort, mirrors PublishToUser.
+func (ts *turnState) PublishGoalSummary(ctx context.Context, explanation, summary string) {
+	if ts == nil {
+		return
+	}
+	if ts.al == nil {
+		return
+	}
+	if ts.channel == "" || ts.chatID == "" {
+		return
+	}
+	header := toolFeedbackIterContext(ts)
+	if explanation != "" {
+		ts.al.PublishResponseIfNeeded(ctx, ts.channel, ts.chatID, ts.sessionKey, header+"\n"+explanation)
+	}
+	ts.al.PublishResponseIfNeeded(ctx, ts.channel, ts.chatID, ts.sessionKey, header+": summary\n"+summary)
+}
+
 // MarkGoalFinalized is the Phase 11 hook that complete_goal calls to
 // short-circuit the per-turn loop. Once set, currentGoalPhase() returns
 // GoalPhaseFinal and the runtime breaks out of the iteration loop after

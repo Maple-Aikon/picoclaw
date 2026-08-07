@@ -32,6 +32,14 @@ func (s *publishSpy) PublishToUser(_ context.Context, text string) {
 	s.published = append(s.published, text)
 	s.finalizedAtPublish = append(s.finalizedAtPublish, s.finalized)
 }
+func (s *publishSpy) PublishGoalSummary(_ context.Context, explanation, summary string) {
+	if explanation != "" {
+		s.published = append(s.published, explanation)
+		s.finalizedAtPublish = append(s.finalizedAtPublish, s.finalized)
+	}
+	s.published = append(s.published, summary)
+	s.finalizedAtPublish = append(s.finalizedAtPublish, s.finalized)
+}
 
 func (s *publishSpy) publishedCount() int { return len(s.published) }
 
@@ -248,5 +256,60 @@ func TestCompleteGoalTool_PublishesFullSummaryUncut(t *testing.T) {
 	if spy.published[0] != full {
 		t.Errorf("PublishToUser must receive the FULL 5000-rune summary verbatim; got %d runes (want %d)",
 			utf8.RuneCountInString(spy.published[0]), utf8.RuneCountInString(full))
+	}
+}
+
+// T19 — when the LLM sends content text alongside complete_goal, the
+// explanation is published FIRST, then the summary (2 user messages).
+func TestCompleteGoalTool_PublishesExplanationThenSummary(t *testing.T) {
+	ws := tempWorkspace(t)
+	spy := &publishSpy{}
+	ctx := newPublishTestCtx("sess-pub-19", spy)
+	ctx = WithToolCallExplanation(ctx, "goal đã xong, em gọi complete_goal để archive goal")
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+
+	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
+		"summary": "Hoàn tất — đã kiểm tra toàn bộ 12 SOP.",
+	})
+	if res.IsError {
+		t.Fatalf("complete_goal error: %s", res.ContentForLLM())
+	}
+	if got, want := spy.publishedCount(), 2; got != want {
+		t.Fatalf("publish count = %d, want %d (explanation + summary)", got, want)
+	}
+	if got, want := spy.published[0], "goal đã xong, em gọi complete_goal để archive goal"; got != want {
+		t.Fatalf("published[0] = %q, want %q (explanation first)", got, want)
+	}
+	if got, want := spy.published[1], "Hoàn tất — đã kiểm tra toàn bộ 12 SOP."; got != want {
+		t.Fatalf("published[1] = %q, want %q (summary second)", got, want)
+	}
+}
+
+// T20 — no LLM content text → only the summary is published (1 message).
+func TestCompleteGoalTool_NoExplanationPublishesSummaryOnly(t *testing.T) {
+	ws := tempWorkspace(t)
+	spy := &publishSpy{}
+	ctx := newPublishTestCtx("sess-pub-20", spy)
+	NewSetGoalTool(ws).Execute(ctx, map[string]any{
+		"name":             "n",
+		"objective":        "o",
+		"success_criteria": []string{"c"},
+	})
+
+	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{
+		"summary": "Chỉ có summary, không có content text.",
+	})
+	if res.IsError {
+		t.Fatalf("complete_goal error: %s", res.ContentForLLM())
+	}
+	if got, want := spy.publishedCount(), 1; got != want {
+		t.Fatalf("publish count = %d, want %d (summary only)", got, want)
+	}
+	if got, want := spy.published[0], "Chỉ có summary, không có content text."; got != want {
+		t.Fatalf("published[0] = %q, want %q", got, want)
 	}
 }
