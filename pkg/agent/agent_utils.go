@@ -233,6 +233,38 @@ func shouldPublishToolFeedback(cfg *config.Config, ts *turnState) bool {
 	return cfg != nil && cfg.Agents.Defaults.IsToolFeedbackEnabled()
 }
 
+// goalPhaseDisplayName renders a user-facing phase label for progress
+// context lines (e.g. "Goal-Checkpoint"). The enum values are lowercase
+// wire identifiers, so display names are capitalized here once.
+func goalPhaseDisplayName(phase GoalPhase) string {
+	switch phase {
+	case GoalPhaseSet:
+		return "Set"
+	case GoalPhaseOpen:
+		return "Open"
+	case GoalPhaseCheckpoint:
+		return "Checkpoint"
+	case GoalPhaseFinal:
+		return "Final"
+	case GoalPhasePostFinal:
+		return "Post-Final"
+	default:
+		// Fail-closed: unknown/empty phase renders as the default phase.
+		return "Set"
+	}
+}
+
+// toolFeedbackIterContext builds the one-line progress context shown on tool
+// feedback messages, e.g. "📊 #3/250 · Goal-Checkpoint". maxIterationsCap is
+// the configured absolute ceiling (config max_iterations_cap), iteration is
+// the 1-indexed current iteration.
+func toolFeedbackIterContext(ts *turnState) string {
+	if ts == nil {
+		return ""
+	}
+	return fmt.Sprintf("📊 #%d/%d · Goal-%s", ts.iteration, ts.maxIterationsCap, goalPhaseDisplayName(ts.currentGoalPhase()))
+}
+
 func cloneEventArguments(args map[string]any) map[string]any {
 	if len(args) == 0 {
 		return nil

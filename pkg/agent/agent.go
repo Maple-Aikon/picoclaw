@@ -179,6 +179,7 @@ const (
 	providerReloadGracePeriod  = 30 * time.Second
 	metadataKeyMessageKind     = "message_kind"
 	metadataKeyToolCalls       = "tool_calls"
+	metadataKeyIterContext     = "iter_context"
 	metadataKeyOutboundKind    = "outbound_kind"
 	messageKindThought         = "thought"
 	messageKindToolFeedback    = "tool_feedback"

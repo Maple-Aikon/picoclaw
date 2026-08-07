@@ -33,10 +33,15 @@ func FormatArgsJSON(args map[string]any, prettyPrint, disableEscapeHTML bool) st
 // FormatToolFeedbackMessage renders a tool feedback message for chat channels.
 // It keeps the tool name on the first line for animation and can include both
 // a human explanation and the serialized tool arguments in the body.
-func FormatToolFeedbackMessage(toolName, explanation, argsPreview string) string {
+//
+// iterContext is an optional one-line progress context (e.g. "📊 #3/250 ·
+// Goal-Checkpoint") rendered right after the tool header, before the
+// explanation body. An empty iterContext omits the line entirely.
+func FormatToolFeedbackMessage(toolName, explanation, argsPreview, iterContext string) string {
 	toolName = strings.TrimSpace(toolName)
 	explanation = strings.TrimSpace(explanation)
 	argsPreview = strings.TrimSpace(argsPreview)
+	iterContext = strings.TrimSpace(iterContext)
 
 	bodyLines := make([]string, 0, 2)
 	if explanation != "" {
@@ -48,13 +53,25 @@ func FormatToolFeedbackMessage(toolName, explanation, argsPreview string) string
 	body := strings.Join(bodyLines, "\n")
 
 	if toolName == "" {
-		return body
+		if iterContext == "" {
+			return body
+		}
+		if body == "" {
+			return iterContext
+		}
+		return iterContext + "\n" + body
 	}
 	if body == "" {
-		return fmt.Sprintf("\U0001f527 `%s`", toolName)
+		if iterContext == "" {
+			return fmt.Sprintf("\U0001f527 `%s`", toolName)
+		}
+		return fmt.Sprintf("\U0001f527 `%s`\n%s", toolName, iterContext)
+	}
+	if iterContext == "" {
+		return fmt.Sprintf("\U0001f527 `%s`\n%s", toolName, body)
 	}
 
-	return fmt.Sprintf("\U0001f527 `%s`\n%s", toolName, body)
+	return fmt.Sprintf("\U0001f527 `%s`\n%s\n%s", toolName, iterContext, body)
 }
 
 // FitToolFeedbackMessage keeps tool feedback within a single outbound message.

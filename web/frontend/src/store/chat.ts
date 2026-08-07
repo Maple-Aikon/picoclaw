@@ -47,6 +47,7 @@ export interface ChatMessage {
   modelName?: string
   attachments?: ChatAttachment[]
   toolCalls?: ChatToolCall[]
+  iterContext?: string
 }
 
 export interface ContextUsage {

@@ -411,6 +411,7 @@ export function ChatPage() {
                     kind={msg.kind}
                     modelName={msg.modelName}
                     toolCalls={msg.toolCalls}
+                    iterContext={msg.iterContext}
                     timestamp={msg.timestamp}
                   />
                 ) : (

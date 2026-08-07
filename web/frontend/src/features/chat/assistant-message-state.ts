@@ -5,18 +5,31 @@ import {
 import type { AssistantMessageKind, ChatMessage } from "@/store/chat"
 
 type AssistantToolCalls = ChatMessage["toolCalls"]
-type ExistingAssistantMessageState = Pick<ChatMessage, "kind" | "toolCalls">
+type ExistingAssistantMessageState = Pick<
+  ChatMessage,
+  "kind" | "toolCalls" | "iterContext"
+>
+
+function parseIterContext(payload: Record<string, unknown>): string | undefined {
+  if (typeof payload.iter_context !== "string") {
+    return undefined
+  }
+  const iterContext = payload.iter_context.trim()
+  return iterContext || undefined
+}
 
 export interface AssistantMessageCreateState {
   content: string
   kind: AssistantMessageKind
   toolCalls?: AssistantToolCalls
+  iterContext?: string
 }
 
 export interface AssistantMessageUpdateState {
   content: string
   kind: AssistantMessageKind
   toolCalls?: AssistantToolCalls
+  iterContext?: string
 }
 
 function normalizeAssistantMessageKind(
@@ -67,11 +80,13 @@ export function parseAssistantMessageCreateState(
 ): AssistantMessageCreateState {
   const content = typeof payload.content === "string" ? payload.content : ""
   const toolCalls = parseAssistantToolCalls(payload, content)
+  const iterContext = parseIterContext(payload)
 
   return {
     content,
     kind: parseAssistantMessageKind(payload, toolCalls),
     toolCalls,
+    ...(iterContext ? { iterContext } : {}),
   }
 }
 
@@ -81,6 +96,7 @@ export function parseAssistantMessageUpdateState(
 ): AssistantMessageUpdateState {
   const content = typeof payload.content === "string" ? payload.content : ""
   const toolCalls = parseAssistantToolCalls(payload, content)
+  const iterContext = parseIterContext(payload) ?? existing?.iterContext
 
   if (hasExplicitAssistantKindPayload(payload)) {
     const kind = parseAssistantMessageKind(payload, toolCalls)
@@ -88,6 +104,7 @@ export function parseAssistantMessageUpdateState(
       content,
       kind,
       toolCalls: kind === "tool_calls" ? toolCalls : undefined,
+      ...(iterContext ? { iterContext } : {}),
     }
   }
 
@@ -96,6 +113,7 @@ export function parseAssistantMessageUpdateState(
       content,
       kind: "tool_calls",
       toolCalls,
+      ...(iterContext ? { iterContext } : {}),
     }
   }
 
@@ -104,6 +122,7 @@ export function parseAssistantMessageUpdateState(
       content,
       kind: "normal",
       toolCalls: undefined,
+      ...(iterContext ? { iterContext } : {}),
     }
   }
 
@@ -112,11 +131,13 @@ export function parseAssistantMessageUpdateState(
       content,
       kind: existing.kind ?? "normal",
       toolCalls: undefined,
+      ...(iterContext ? { iterContext } : {}),
     }
   }
 
   return {
     content,
     kind: existing?.kind ?? "normal",
+    ...(iterContext ? { iterContext } : {}),
   }
 }

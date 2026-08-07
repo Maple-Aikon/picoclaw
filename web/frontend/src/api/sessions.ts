@@ -35,6 +35,7 @@ export interface SessionDetail {
         tool_feedback_explanation?: string
       }
     }[]
+    iter_context?: string
   }[]
   summary: string
   created: string

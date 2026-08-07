@@ -107,7 +107,7 @@ export function handlePicoMessage(
     case "message.create":
     case "media.create": {
       const messageId = (payload.message_id as string) || `pico-${Date.now()}`
-      const { content, kind, toolCalls } =
+      const { content, kind, toolCalls, iterContext } =
         parseAssistantMessageCreateState(payload)
       const attachments = parseAttachments(payload)
       const contextUsage = parseContextUsage(payload)
@@ -129,6 +129,7 @@ export function handlePicoMessage(
             kind,
             ...(modelName ? { modelName } : {}),
             ...(toolCalls ? { toolCalls } : {}),
+            ...(iterContext ? { iterContext } : {}),
             attachments,
             timestamp,
           },
@@ -165,7 +166,7 @@ export function handlePicoMessage(
               return msg
             }
             found = true
-            const { content, kind, toolCalls } =
+            const { content, kind, toolCalls, iterContext } =
               parseAssistantMessageUpdateState(payload, msg)
             return {
               ...msg,
@@ -173,6 +174,7 @@ export function handlePicoMessage(
               content,
               kind,
               toolCalls,
+              ...(iterContext ? { iterContext } : {}),
               ...(modelName ? { modelName } : {}),
               ...(attachments ? { attachments } : {}),
             }
@@ -181,7 +183,7 @@ export function handlePicoMessage(
             return messages
           }
 
-          const { content, kind, toolCalls } =
+          const { content, kind, toolCalls, iterContext } =
             parseAssistantMessageUpdateState(payload)
 
           return [
@@ -192,6 +194,7 @@ export function handlePicoMessage(
               content,
               kind,
               toolCalls,
+              ...(iterContext ? { iterContext } : {}),
               ...(modelName ? { modelName } : {}),
               ...(attachments ? { attachments } : {}),
               timestamp,

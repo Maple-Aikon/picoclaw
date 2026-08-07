@@ -173,6 +173,7 @@ func (p *Pipeline) gatePreCheckDeny(
 				toolName,
 				toolFeedbackExplanationForToolCall(exec.response, tc, *messages),
 				toolFeedbackArgsPreviewWithOptions(tc.Arguments, al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(), al.cfg.Agents.Defaults.ToolFeedback.PrettyPrint, al.cfg.Agents.Defaults.ToolFeedback.DisableEscapeHTML),
+				toolFeedbackIterContext(ts),
 			),
 			outboundTurnMessageOptions{kind: messageKindToolFeedback},
 		))
@@ -321,6 +322,7 @@ toolLoop:
 							toolName,
 							toolFeedbackExplanation,
 							toolFeedbackArgsPreviewWithOptions(toolArgs, toolFeedbackMaxLen, al.cfg.Agents.Defaults.ToolFeedback.PrettyPrint, al.cfg.Agents.Defaults.ToolFeedback.DisableEscapeHTML),
+							toolFeedbackIterContext(ts),
 						)
 						fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
 						_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(
@@ -658,6 +660,7 @@ toolLoop:
 				toolName,
 				toolFeedbackExplanation,
 				toolFeedbackArgsPreviewWithOptions(toolArgs, toolFeedbackMaxLen, al.cfg.Agents.Defaults.ToolFeedback.PrettyPrint, al.cfg.Agents.Defaults.ToolFeedback.DisableEscapeHTML),
+				toolFeedbackIterContext(ts),
 			)
 			fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
 			_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(

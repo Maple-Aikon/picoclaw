@@ -55,6 +55,7 @@ type sessionChatMessage struct {
 	Media       []string                `json:"media,omitempty"`
 	Attachments []sessionChatAttachment `json:"attachments,omitempty"`
 	ToolCalls   []utils.VisibleToolCall `json:"tool_calls,omitempty"`
+	IterContext string                  `json:"iter_context,omitempty"`
 }
 
 type sessionChatAttachment struct {
@@ -536,6 +537,7 @@ func sessionTranscriptMessages(
 				msg.ModelName,
 				toolFeedbackMaxArgsLength,
 				msg.CreatedAt,
+				msg.IterContext,
 			)
 			visibleToolMessages := visibleAssistantToolMessages(msg.ToolCalls, msg.ModelName, msg.CreatedAt)
 
@@ -703,6 +705,7 @@ func assistantToolCallsMessage(
 	modelName string,
 	toolFeedbackMaxArgsLength int,
 	createdAt *time.Time,
+	iterContext string,
 ) (sessionChatMessage, bool) {
 	if len(toolCalls) == 0 {
 		return sessionChatMessage{}, false
@@ -717,11 +720,12 @@ func assistantToolCallsMessage(
 	}
 
 	return sessionChatMessage{
-		Role:      "assistant",
-		Kind:      "tool_calls",
-		ModelName: modelName,
-		CreatedAt: createdAt,
-		ToolCalls: visibleToolCalls,
+		Role:        "assistant",
+		Kind:        "tool_calls",
+		ModelName:   modelName,
+		CreatedAt:   createdAt,
+		ToolCalls:   visibleToolCalls,
+		IterContext: iterContext,
 	}, true
 }
 

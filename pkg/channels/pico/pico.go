@@ -328,6 +328,9 @@ func (c *PicoChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]stri
 	if modelName := strings.TrimSpace(msg.Context.Raw[PayloadKeyModelName]); modelName != "" {
 		payload[PayloadKeyModelName] = modelName
 	}
+	if iterContext := strings.TrimSpace(msg.Context.Raw[PayloadKeyIterContext]); iterContext != "" {
+		payload[PayloadKeyIterContext] = iterContext
+	}
 	switch {
 	case isThought:
 		payload[PayloadKeyKind] = MessageKindThought

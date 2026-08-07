@@ -53,6 +53,8 @@ export async function loadSessionMessages(
       message.role === "assistant"
         ? parseToolCallsValue(message.tool_calls)
         : undefined,
+    iterContext:
+      message.role === "assistant" ? message.iter_context : undefined,
     attachments: toChatAttachments({
       media: message.media,
       attachments: message.attachments,
@@ -87,7 +89,7 @@ function messageSignature(message: ChatMessage): string {
     message.timestamp,
   )}\u0000${message.kind ?? ""}\u0000${message.modelName ?? ""}\u0000${attachmentSignature}\u0000${toolCallsSignature(
     message.toolCalls,
-  )}`
+  )}\u0000${message.iterContext ?? ""}`
 }
 
 function comparableTimestamp(timestamp: number | string): number {

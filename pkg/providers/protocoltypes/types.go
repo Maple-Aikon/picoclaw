@@ -98,6 +98,12 @@ type Message struct {
 	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
 	ToolCallID       string         `json:"tool_call_id,omitempty"`
 
+	// IterContext is a one-line user-facing progress context for tool-call
+	// messages (e.g. "📊 #3/250 · Goal-Checkpoint"). It is display-only
+	// metadata persisted in the session transcript for web UI rendering;
+	// providers ignore it.
+	IterContext string `json:"iter_context,omitempty"`
+
 	// Prompt metadata is internal to the agent runtime. It records where a
 	// message or system part came from without changing provider/session JSON.
 	PromptLayer  string `json:"-"`

@@ -35,6 +35,7 @@ interface AssistantMessageProps {
   kind?: AssistantMessageKind
   modelName?: string
   toolCalls?: ChatToolCall[]
+  iterContext?: string
   timestamp?: string | number
 }
 
@@ -44,6 +45,7 @@ export function AssistantMessage({
   kind = "normal",
   modelName,
   toolCalls = [],
+  iterContext,
   timestamp = "",
 }: AssistantMessageProps) {
   const { t } = useTranslation()
@@ -113,6 +115,9 @@ export function AssistantMessage({
                   <IconTool className="size-3.5" />
                 )}
                 <span>{collapsedLabel}</span>
+                {iterContext && (
+                  <span className="text-muted-foreground/60">{iterContext}</span>
+                )}
                 {trimmedModelName && (
                   <span className="text-muted-foreground/45">{trimmedModelName}</span>
                 )}

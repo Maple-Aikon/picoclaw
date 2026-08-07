@@ -27,6 +27,7 @@ const (
 	PayloadKeyKind        = "kind"
 	PayloadKeyPlaceholder = "placeholder"
 	PayloadKeyToolCalls   = "tool_calls"
+	PayloadKeyIterContext = "iter_context"
 	PayloadKeyModelName   = "model_name"
 
 	MessageKindThought   = "thought"

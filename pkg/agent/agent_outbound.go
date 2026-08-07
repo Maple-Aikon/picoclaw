@@ -231,7 +231,8 @@ func (al *AgentLoop) publishPicoToolCallInterim(
 		kind:      messageKindToolCalls,
 		modelName: modelName,
 		raw: map[string]string{
-			metadataKeyToolCalls: string(rawToolCalls),
+			metadataKeyToolCalls:   string(rawToolCalls),
+			metadataKeyIterContext: toolFeedbackIterContext(ts),
 		},
 	})
 

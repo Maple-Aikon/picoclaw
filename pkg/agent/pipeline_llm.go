@@ -893,6 +893,11 @@ func (p *Pipeline) proceedPastLLM(
 	}
 	exec.messages = append(exec.messages, assistantMsg)
 	if !ts.opts.NoHistory {
+		// Persist a display-only progress context on tool-call messages so the
+		// web transcript can render "📊 #3/250 · Goal-Checkpoint" per call.
+		if len(assistantMsg.ToolCalls) > 0 {
+			assistantMsg.IterContext = toolFeedbackIterContext(ts)
+		}
 		ts.agent.Sessions.AddFullMessage(ts.sessionKey, assistantMsg)
 		ts.recordPersistedMessage(assistantMsg)
 		ts.ingestMessage(turnCtx, al, assistantMsg)
