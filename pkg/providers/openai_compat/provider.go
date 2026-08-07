@@ -788,6 +788,15 @@ func parseStreamResponse(
 					"error": err.Error(),
 				})
 				args["raw"] = raw
+			} else {
+				// Some providers (e.g. MiniMax-M3) double-escape string args: they
+				// serialize the arguments JSON, embed it into a text marker, then
+				// the text layer escapes again — so a real newline arrives as the
+				// literal 2-char "\n" after one unmarshal. Decode the remaining
+				// whitespace escapes so user-facing strings (goal summaries, steps)
+				// render as real line breaks. Correct providers are unaffected:
+				// their strings already contain real newlines after unmarshal.
+				unescapeArgStrings(args)
 			}
 		}
 		toolCalls = append(toolCalls, ToolCall{
@@ -810,6 +819,35 @@ func parseStreamResponse(
 		FinishReason:     finishReason,
 		Usage:            usage,
 	}, nil
+}
+
+// unescapeArgStrings recursively decodes whitespace escape sequences that
+// survived a single JSON unmarshal as literals (e.g. the 2-char string "\n"
+// instead of a real newline). Only whitespace escapes are handled — backslash
+// sequences that carry meaning ("\\", "\"") are left untouched.
+func unescapeArgStrings(v any) any {
+	switch t := v.(type) {
+	case string:
+		if !strings.ContainsRune(t, '\\') {
+			return t
+		}
+		t = strings.ReplaceAll(t, `\n`, "\n")
+		t = strings.ReplaceAll(t, `\t`, "\t")
+		t = strings.ReplaceAll(t, `\r`, "\r")
+		return t
+	case map[string]any:
+		for k, val := range t {
+			t[k] = unescapeArgStrings(val)
+		}
+		return t
+	case []any:
+		for i, val := range t {
+			t[i] = unescapeArgStrings(val)
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 func normalizeModel(model, apiBase string) string {

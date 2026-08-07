@@ -364,6 +364,43 @@ func TestProviderChat_ParsesToolCallsWithObjectArguments(t *testing.T) {
 	}
 }
 
+func TestProviderChatStream_DoubleEscapedNewlineArgsDecoded(t *testing.T) {
+	// MiniMax-M3 style: a real newline arrives as the literal 2-char "\\n"
+	// inside the streamed arguments JSON (double-escaped through the text
+	// marker layer). After one unmarshal the value must be a real newline.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"complete_goal\",\"arguments\":\"{\\\"summary\\\":\\\"a\\\\nb\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+		))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	p := NewProvider("key", server.URL, "")
+	out, err := p.ChatStream(
+		t.Context(),
+		[]Message{{Role: "user", Content: "hi"}},
+		nil,
+		"gpt-4o",
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+	if len(out.ToolCalls) != 1 {
+		t.Fatalf("len(ToolCalls) = %d, want 1", len(out.ToolCalls))
+	}
+	summary, ok := out.ToolCalls[0].Arguments["summary"].(string)
+	if !ok {
+		t.Fatalf("summary not a string: %#v", out.ToolCalls[0].Arguments["summary"])
+	}
+	if got, want := summary, "a\nb"; got != want {
+		t.Fatalf("summary = %q, want %q (literal \\n must become a real newline)", got, want)
+	}
+}
+
 func TestProviderChat_ParsesReasoningContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]any{
