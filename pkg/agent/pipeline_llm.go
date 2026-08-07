@@ -759,6 +759,11 @@ func (p *Pipeline) proceedPastLLM(
 				PostCompleteGoalReport: ts.postCompleteGoalReportSent,
 				ToolKnowledgeRegistry:  ts.agent.Tools,
 			}); action != RecoveryNone {
+				// Phase 12.56: publish the LLM's spoken text BEFORE recovery
+				// intervenes — text-only responses carry content the user
+				// should read even though the turn continues (retry forces
+				// the LLM to act, not to re-say). Best-effort + void.
+				publishTextOnlyBeforeRecovery(ctx, ts, exec)
 				// Phase 12.27: RecoveryRetryNextIteration (Open phase only)
 				// — carry the message forward via ts.pendingRecoveryMessage
 				// and let the caller bump iter naturally. Do NOT invoke
@@ -1150,6 +1155,27 @@ func (p *Pipeline) handleHookReplay(
 	return ControlContinue, nil
 }
 
+// publishTextOnlyBeforeRecovery publishes the LLM's spoken text (a
+// no-tool-call response with non-empty Content) to the user BEFORE recovery
+// retry intervenes. Text-only responses carry content the LLM intended for
+// the user; the retry forces the LLM to ACT (call a tool), not to re-say —
+// so the words are sent once and kept. Void + best-effort (PublishToUser
+// semantics: no fail path by design).
+//
+// Phase 12.56 wire: called at (1) the no-tool-call branch of CallLLM before
+// dispatching same-iter/next-iter recovery, and (2) inside
+// handleGoalRecovery for attempts > 0 before re-prompting again. Tool-call
+// responses are excluded (they have their own publish flow).
+func publishTextOnlyBeforeRecovery(ctx context.Context, ts *turnState, exec *turnExecution) {
+	if exec == nil || exec.response == nil {
+		return
+	}
+	if exec.response.Content == "" || len(exec.response.ToolCalls) > 0 {
+		return
+	}
+	ts.PublishToUser(ctx, exec.response.Content)
+}
+
 // handleGoalRecovery processes a recovery trigger using a same-iteration
 // BoundedRetry loop, restoring the original Phase 5 design intent (plan
 // §5.3, recovery_goal.go:8).
@@ -1321,11 +1347,22 @@ func (p *Pipeline) handleGoalRecovery(
 			if ts.emptyResponseRecoveryCount >= EmptyResponseRecoveryCap || ts.textOnlySoftRetriesDone > 0 || ts.textOnlyHardRetriesDone > 0 || ts.toolExecRecoveryAttempts != nil {
 				logFields["action"] = "exhausted_archive"
 				logger.InfoCF("agent", "Goal recovery exhausted in same iteration", logFields)
+				if rc.Attempt > 0 {
+					// Phase 12.56: last words of the final retry attempt
+					// reach the user before the goal is archived.
+					publishTextOnlyBeforeRecovery(attemptCtx, ts, exec)
+				}
 				ts.goalArchiveRequested = true
 				return RetryDecisionAbort, nil
 			}
 			return RetryDecisionDone, nil
 		case RecoveryRetrySameIteration, RecoveryForceComplete:
+			if rc.Attempt > 0 {
+				// Phase 12.56: the retry attempt's text-only content is
+				// published before re-prompting again. Attempt 0 is the
+				// caller's response, already published at the CallLLM site.
+				publishTextOnlyBeforeRecovery(attemptCtx, ts, exec)
+			}
 			// Update msg for next attempt's callMessages injection.
 			msg = nextMsg
 			return RetryDecisionRetry, nil
