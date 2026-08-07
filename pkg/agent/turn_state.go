@@ -779,7 +779,13 @@ func (ts *turnState) PublishToUser(ctx context.Context, text string) {
 // message (header + explanation), then the summary as a second message
 // (header + ": summary"). No explanation → summary-only single message.
 // Void + best-effort, mirrors PublishToUser.
-func (ts *turnState) PublishGoalSummary(ctx context.Context, explanation, summary string) {
+//
+// Phase 12.55.3: phase is the execute-time snapshot passed by the caller
+// (complete_goal reads it from ctx via goal.ToolCallPhaseFromContext).
+// Never re-resolve via currentGoalPhase() here — by the time this runs
+// the goal file has been archived, so hasGoal()=false → GoalPhaseSet.
+// Empty phase falls back to live resolution (unit-fixture compat).
+func (ts *turnState) PublishGoalSummary(ctx context.Context, phase, explanation, summary string) {
 	if ts == nil {
 		return
 	}
@@ -789,7 +795,10 @@ func (ts *turnState) PublishGoalSummary(ctx context.Context, explanation, summar
 	if ts.channel == "" || ts.chatID == "" {
 		return
 	}
-	header := toolFeedbackIterContext(ts)
+	if phase == "" {
+		phase = string(ts.currentGoalPhase())
+	}
+	header := toolFeedbackIterContextFor(ts, GoalPhase(phase))
 	if explanation != "" {
 		ts.al.PublishResponseIfNeeded(ctx, ts.channel, ts.chatID, ts.sessionKey, header+"\n"+explanation)
 	}

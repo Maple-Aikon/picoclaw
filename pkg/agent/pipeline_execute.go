@@ -759,6 +759,10 @@ toolLoop:
 			explanation = strings.TrimSpace(tc.ExtraContent.ToolFeedbackExplanation)
 		}
 		execCtx = goalpkg.WithToolCallExplanation(execCtx, explanation)
+		// Phase 12.55.3: snapshot the phase AT EXECUTE TIME — complete_goal
+		// publishes its summary header from this value; re-resolving after
+		// Archive would read a missing active goal file → GoalPhaseSet.
+		execCtx = goalpkg.WithToolCallPhase(execCtx, string(ts.currentGoalPhase()))
 		if IsAgentDebugEnabled() {
 			AgentDebugToolExec(
 				ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(),

@@ -23,7 +23,8 @@ import (
 // and the goalFinalized state at publish time (T14 ordering check).
 type publishSpy struct {
 	published          []string
-	finalizedAtPublish []bool // finalized flag value AT the moment each publish fired
+	phases             []string // phase snapshot passed to PublishGoalSummary
+	finalizedAtPublish []bool   // finalized flag value AT the moment each publish fired
 	finalized          bool
 }
 
@@ -32,7 +33,8 @@ func (s *publishSpy) PublishToUser(_ context.Context, text string) {
 	s.published = append(s.published, text)
 	s.finalizedAtPublish = append(s.finalizedAtPublish, s.finalized)
 }
-func (s *publishSpy) PublishGoalSummary(_ context.Context, explanation, summary string) {
+func (s *publishSpy) PublishGoalSummary(_ context.Context, phase, explanation, summary string) {
+	s.phases = append(s.phases, phase)
 	if explanation != "" {
 		s.published = append(s.published, explanation)
 		s.finalizedAtPublish = append(s.finalizedAtPublish, s.finalized)
@@ -261,11 +263,13 @@ func TestCompleteGoalTool_PublishesFullSummaryUncut(t *testing.T) {
 
 // T19 — when the LLM sends content text alongside complete_goal, the
 // explanation is published FIRST, then the summary (2 user messages).
+// The phase snapshot (execute-time, from ctx) flows through verbatim.
 func TestCompleteGoalTool_PublishesExplanationThenSummary(t *testing.T) {
 	ws := tempWorkspace(t)
 	spy := &publishSpy{}
 	ctx := newPublishTestCtx("sess-pub-19", spy)
 	ctx = WithToolCallExplanation(ctx, "goal đã xong, em gọi complete_goal để archive goal")
+	ctx = WithToolCallPhase(ctx, "open")
 	NewSetGoalTool(ws).Execute(ctx, map[string]any{
 		"name":             "n",
 		"objective":        "o",
@@ -286,6 +290,9 @@ func TestCompleteGoalTool_PublishesExplanationThenSummary(t *testing.T) {
 	}
 	if got, want := spy.published[1], "Hoàn tất — đã kiểm tra toàn bộ 12 SOP."; got != want {
 		t.Fatalf("published[1] = %q, want %q (summary second)", got, want)
+	}
+	if len(spy.phases) != 1 || spy.phases[0] != "open" {
+		t.Fatalf("PublishGoalSummary must receive the execute-time phase snapshot \"open\", got %v", spy.phases)
 	}
 }
 

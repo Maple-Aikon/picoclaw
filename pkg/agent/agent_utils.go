@@ -262,10 +262,21 @@ func toolFeedbackIterContext(ts *turnState) string {
 	if ts == nil {
 		return ""
 	}
-	if ts.turnID != "" {
-		return fmt.Sprintf("📊 %s (#%d/%d) Goal-%s", ts.turnID, ts.iteration, ts.maxIterationsCap, goalPhaseDisplayName(ts.currentGoalPhase()))
+	return toolFeedbackIterContextFor(ts, ts.currentGoalPhase())
+}
+
+// toolFeedbackIterContextFor is the phase-explicit variant. The phase is
+// passed in by the caller instead of live-resolved — used by
+// PublishGoalSummary (Phase 12.55.3) where the goal file has already been
+// archived, so live resolution would fail-closed to GoalPhaseSet.
+func toolFeedbackIterContextFor(ts *turnState, phase GoalPhase) string {
+	if ts == nil {
+		return ""
 	}
-	return fmt.Sprintf("📊 (#%d/%d) Goal-%s", ts.iteration, ts.maxIterationsCap, goalPhaseDisplayName(ts.currentGoalPhase()))
+	if ts.turnID != "" {
+		return fmt.Sprintf("📊 %s (#%d/%d) Goal-%s", ts.turnID, ts.iteration, ts.maxIterationsCap, goalPhaseDisplayName(phase))
+	}
+	return fmt.Sprintf("📊 (#%d/%d) Goal-%s", ts.iteration, ts.maxIterationsCap, goalPhaseDisplayName(phase))
 }
 
 func cloneEventArguments(args map[string]any) map[string]any {

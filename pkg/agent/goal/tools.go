@@ -33,6 +33,8 @@ type turnStateKey struct{}
 
 type toolCallExplanationKey struct{}
 
+type toolCallPhaseKey struct{}
+
 // TurnStateAccess is the minimal surface goal tools need from a turn.
 // *agent.turnState satisfies this implicitly (Phase 11: no need to add
 // a named type alias — the methods are enough).
@@ -51,8 +53,11 @@ type TurnStateAccess interface {
 	// PublishGoalSummary publishes the complete_goal outcome as user-facing
 	// messages carrying the iteration/phase header: the LLM's explanation
 	// (content text, when present) first, then the summary. Each is a
-	// separate outbound message. Void + best-effort.
-	PublishGoalSummary(ctx context.Context, explanation, summary string)
+	// separate outbound message. phase is the goal phase AT EXECUTE TIME
+	// (snapshot by the pipeline before the tool runs — re-resolving after
+	// archive yields GoalPhaseSet because the active goal file is gone).
+	// Void + best-effort.
+	PublishGoalSummary(ctx context.Context, phase, explanation, summary string)
 }
 
 // WithTurnState attaches a TurnStateAccess to ctx. Pipeline execute code
@@ -77,6 +82,22 @@ func WithToolCallExplanation(ctx context.Context, explanation string) context.Co
 // WithToolCallExplanation. Returns "" when absent.
 func ToolCallExplanationFromContext(ctx context.Context) string {
 	s, _ := ctx.Value(toolCallExplanationKey{}).(string)
+	return s
+}
+
+// WithToolCallPhase attaches the goal phase AT EXECUTE TIME (snapshotted
+// by the pipeline before the tool call runs) to ctx. complete_goal reads
+// it for the publish header — after Archive the active goal file is gone
+// so re-resolving the phase via hasGoal() would fail-closed to Set.
+// Empty string = fall back to live resolution.
+func WithToolCallPhase(ctx context.Context, phase string) context.Context {
+	return context.WithValue(ctx, toolCallPhaseKey{}, phase)
+}
+
+// ToolCallPhaseFromContext reads the phase attached by WithToolCallPhase.
+// Returns "" when absent.
+func ToolCallPhaseFromContext(ctx context.Context) string {
+	s, _ := ctx.Value(toolCallPhaseKey{}).(string)
 	return s
 }
 
@@ -784,8 +805,10 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, args map[string]any) *to
 	// Phase 12.55.2: explanation (LLM content text, when present) is
 	// published first, then the summary — each with the iteration/phase
 	// header. Empty explanation → summary-only single message.
+	// Phase 12.55.3: phase is the execute-time snapshot from ctx (see
+	// WithToolCallPhase) — re-resolving after Archive would yield Set.
 	if ts := TurnStateFromContext(ctx); ts != nil && summary != "" {
-		ts.PublishGoalSummary(ctx, strings.TrimSpace(ToolCallExplanationFromContext(ctx)), summary) // FULL summary — no truncate, void, best-effort
+		ts.PublishGoalSummary(ctx, ToolCallPhaseFromContext(ctx), strings.TrimSpace(ToolCallExplanationFromContext(ctx)), summary) // FULL summary — no truncate, void, best-effort
 	}
 	// Phase 11: mark the turn as finalized so the iteration loop breaks
 	// immediately after this tool result is processed. Without this, the

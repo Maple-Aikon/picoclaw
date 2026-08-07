@@ -309,6 +309,12 @@ drained:
 	if !strings.HasPrefix(got, "📊 ") {
 		t.Errorf("summary message must carry the iteration/phase header, got %q", got)
 	}
+	// Phase 12.55.3: header phase must be the phase AT EXECUTE TIME
+	// (complete_goal ran at iter 2 in phase open), NOT re-resolved after
+	// archive (which removes the active goal file → hasGoal()=false → Set).
+	if !strings.Contains(got, "Goal-Open") {
+		t.Errorf("summary header must say Goal-Open (phase at execute), got %q", got)
+	}
 	if !strings.Contains(got, ": summary\n") {
 		t.Errorf("summary message must carry the ': summary' suffix on the header line, got %q", got)
 	}
