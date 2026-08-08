@@ -783,9 +783,9 @@ func (ts *turnState) PublishGoalSummary(ctx context.Context, phase, explanation,
 	}
 	header := toolFeedbackIterContextFor(ts, GoalPhase(phase))
 	if explanation != "" {
-		ts.al.PublishResponseIfNeeded(ctx, ts.channel, ts.chatID, ts.sessionKey, header+"\n"+explanation)
+		ts.al.PublishResponseIfNeeded(ctx, ts.channel, ts.chatID, ts.sessionKey, header+"\n\n"+explanation)
 	}
-	ts.al.PublishResponseIfNeeded(ctx, ts.channel, ts.chatID, ts.sessionKey, header+": summary\n"+summary)
+	ts.al.PublishResponseIfNeeded(ctx, ts.channel, ts.chatID, ts.sessionKey, header+": summary\n\n"+summary)
 }
 
 // MarkGoalFinalized is the Phase 11 hook that complete_goal calls to
