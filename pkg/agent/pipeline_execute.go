@@ -127,6 +127,7 @@ func (p *Pipeline) gatePreCheckDeny(
 	tc providers.ToolCall,
 	toolName string,
 	turnCtx context.Context,
+	publishedExplanations map[string]struct{},
 ) bool {
 	al := p.al
 	if ts.agent.Tools == nil || ts.agent.Tools.IsAllowed(toolName) {
@@ -179,6 +180,14 @@ func (p *Pipeline) gatePreCheckDeny(
 		))
 		fbCancel()
 	}
+	// Phase 12.58.3: with replacing feedback the explanation attached to a
+	// blocked tool call would be lost once the next feedback overwrites the
+	// tracked message — publish it as a durable standalone message too.
+	if shouldPublishToolFeedbackExplanation(al.cfg, ts) {
+		publishToolFeedbackExplanationOnce(
+			turnCtx, al, ts, toolFeedbackExplanationContent(exec.response), publishedExplanations,
+		)
+	}
 	return true
 }
 
@@ -191,6 +200,10 @@ func (p *Pipeline) ExecuteTools(
 ) ToolControl {
 	al := p.al
 	normalizedToolCalls := exec.normalizedToolCalls
+
+	// Phase 12.58.3: dedupe durable explanation messages within this tool
+	// loop pass — a multi-call response shares one response.Content.
+	publishedExplanations := make(map[string]struct{})
 
 	ts.setPhase(TurnPhaseTools)
 	messages := exec.messages
@@ -273,7 +286,7 @@ toolLoop:
 		// decision, anh Maple 2026-08-03).
 		// Phase 12.35 gate pre-check (W3 refactor 2026-08-07): extracted to
 		// gatePreCheckDeny — blocked-by-gate synthetic result + recovery wire.
-		if p.gatePreCheckDeny(ts, exec, &messages, tc, toolName, turnCtx) {
+		if p.gatePreCheckDeny(ts, exec, &messages, tc, toolName, turnCtx, publishedExplanations) {
 			continue
 		}
 		if al.hooks != nil {
@@ -331,6 +344,15 @@ toolLoop:
 							outboundTurnMessageOptions{kind: messageKindToolFeedback},
 						))
 						fbCancel()
+					}
+					// Phase 12.58.3: durable explanation message when the LLM
+					// sent content text alongside this tool call.
+					if shouldPublishToolFeedbackExplanation(al.cfg, ts) {
+						publishToolFeedbackExplanationOnce(
+							turnCtx, al, ts,
+							toolFeedbackExplanationContent(exec.response),
+							publishedExplanations,
+						)
 					}
 
 					toolDuration := time.Duration(0)
@@ -669,6 +691,15 @@ toolLoop:
 				outboundTurnMessageOptions{kind: messageKindToolFeedback},
 			))
 			fbCancel()
+		}
+		// Phase 12.58.3: durable explanation message when the LLM sent
+		// content text alongside this (async) tool call.
+		if shouldPublishToolFeedbackExplanation(al.cfg, ts) {
+			publishToolFeedbackExplanationOnce(
+				turnCtx, al, ts,
+				toolFeedbackExplanationContent(exec.response),
+				publishedExplanations,
+			)
 		}
 
 		toolCallID := tc.ID

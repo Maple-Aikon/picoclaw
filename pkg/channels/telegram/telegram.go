@@ -246,7 +246,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 		}
 	}
 	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(trackedChatID)
-	if !isToolFeedback {
+	if !isToolFeedback && !channels.OutboundMessageIsToolFeedbackExplanation(msg) {
 		if msgIDs, handled := c.finalizeToolFeedbackMessageForChat(ctx, trackedChatID, msg); handled {
 			return msgIDs, nil
 		}
@@ -343,7 +343,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 
 	if isToolFeedback && len(messageIDs) > 0 {
 		c.RecordToolFeedbackMessage(trackedChatID, messageIDs[0], toolFeedbackContent)
-	} else if !isToolFeedback && hasTrackedMsg {
+	} else if !isToolFeedback && !channels.OutboundMessageIsToolFeedbackExplanation(msg) && hasTrackedMsg {
 		c.dismissTrackedToolFeedbackMessage(ctx, trackedChatID, trackedMsgID)
 	}
 

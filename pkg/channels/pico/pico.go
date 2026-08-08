@@ -68,7 +68,8 @@ func outboundMessageIsToolCalls(msg bus.OutboundMessage) bool {
 func outboundMessageFinalizesTrackedToolFeedback(msg bus.OutboundMessage) bool {
 	return !outboundMessageIsToolFeedback(msg) &&
 		!outboundMessageIsThought(msg) &&
-		!outboundMessageIsToolCalls(msg)
+		!outboundMessageIsToolCalls(msg) &&
+		!channels.OutboundMessageIsToolFeedbackExplanation(msg)
 }
 
 // writeJSON sends a JSON message to the connection with write locking.

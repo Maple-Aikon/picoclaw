@@ -177,6 +177,19 @@ func outboundMessageIsToolCalls(msg bus.OutboundMessage) bool {
 	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_calls")
 }
 
+// OutboundMessageIsToolFeedbackExplanation reports whether msg carries the
+// tool_feedback_explanation kind — a durable per-call explanation message
+// published alongside replace-able tool feedback (separate_messages=false).
+// Channels treat it as a normal message (its own chat message, no
+// track/edit), but it must NOT finalize or dismiss the tracked tool
+// feedback message — the tracked message keeps updating across calls.
+func OutboundMessageIsToolFeedbackExplanation(msg bus.OutboundMessage) bool {
+	if len(msg.Context.Raw) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback_explanation")
+}
+
 func outboundMessageHasAuxiliaryKind(msg bus.OutboundMessage) bool {
 	if len(msg.Context.Raw) == 0 {
 		return false
@@ -399,7 +412,7 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 	// marker and placeholder.
 	// Note: tool_calls messages must NOT be dropped as they represent new tool
 	// invocations for the current turn that must be delivered to the UI.
-	if isAuxiliaryMessage && !isToolCalls {
+	if isAuxiliaryMessage && !isToolCalls && !OutboundMessageIsToolFeedbackExplanation(msg) {
 		if _, loaded := m.streamActive.Load(streamKey); loaded {
 			return nil, true
 		}
@@ -494,7 +507,7 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 					trackedChatID := trackedToolFeedbackMessageChatID(ch, chatID, &msg.Context)
 					if tracker, ok := ch.(toolFeedbackMessageTracker); ok && isToolFeedback {
 						tracker.RecordToolFeedbackMessage(trackedChatID, entry.id, trackedContent)
-					} else if !isToolFeedback {
+					} else if !isToolFeedback && !OutboundMessageIsToolFeedbackExplanation(msg) {
 						dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
 					}
 					return []string{entry.id}, true

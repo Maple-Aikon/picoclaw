@@ -186,7 +186,7 @@ func (c *DiscordChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]s
 	}
 	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(channelID)
 	c.maybeStartTTS(channelID, msg.Content, isToolFeedback)
-	if !isToolFeedback {
+	if !isToolFeedback && !channels.OutboundMessageIsToolFeedbackExplanation(msg) {
 		if msgIDs, handled := c.FinalizeToolFeedbackMessage(ctx, msg); handled {
 			return msgIDs, nil
 		}
@@ -202,7 +202,7 @@ func (c *DiscordChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]s
 	}
 	if isToolFeedback {
 		c.RecordToolFeedbackMessage(channelID, msgID, msg.Content)
-	} else if hasTrackedMsg {
+	} else if !channels.OutboundMessageIsToolFeedbackExplanation(msg) && hasTrackedMsg {
 		c.dismissTrackedToolFeedbackMessage(ctx, channelID, trackedMsgID)
 	}
 	return []string{msgID}, nil

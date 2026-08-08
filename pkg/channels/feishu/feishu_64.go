@@ -174,7 +174,7 @@ func (c *FeishuChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 				return []string{msgID}, nil
 			}
 		}
-	} else {
+	} else if !channels.OutboundMessageIsToolFeedbackExplanation(msg) {
 		if msgIDs, handled := c.FinalizeToolFeedbackMessage(ctx, msg); handled {
 			return msgIDs, nil
 		}
@@ -195,7 +195,7 @@ func (c *FeishuChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 		}
 		if isToolFeedback {
 			c.RecordToolFeedbackMessage(msg.ChatID, msgID, msg.Content)
-		} else if hasTrackedMsg {
+		} else if !channels.OutboundMessageIsToolFeedbackExplanation(msg) && hasTrackedMsg {
 			c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
 		}
 		return []string{msgID}, nil
@@ -206,7 +206,7 @@ func (c *FeishuChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 	if err == nil {
 		if isToolFeedback {
 			c.RecordToolFeedbackMessage(msg.ChatID, msgID, msg.Content)
-		} else if hasTrackedMsg {
+		} else if !channels.OutboundMessageIsToolFeedbackExplanation(msg) && hasTrackedMsg {
 			c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
 		}
 		return []string{msgID}, nil
@@ -228,7 +228,7 @@ func (c *FeishuChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 		if textErr == nil {
 			if isToolFeedback {
 				c.RecordToolFeedbackMessage(msg.ChatID, msgID, msg.Content)
-			} else if hasTrackedMsg {
+			} else if !channels.OutboundMessageIsToolFeedbackExplanation(msg) && hasTrackedMsg {
 				c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
 			}
 			return []string{msgID}, nil

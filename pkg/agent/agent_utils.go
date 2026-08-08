@@ -233,6 +233,66 @@ func shouldPublishToolFeedback(cfg *config.Config, ts *turnState) bool {
 	return cfg != nil && cfg.Agents.Defaults.IsToolFeedbackEnabled()
 }
 
+// shouldPublishToolFeedbackExplanation gates the durable per-call
+// explanation message. It fires only when separate_messages=false: with
+// separate messages each feedback already lives in its own durable chat
+// message including the explanation, so a separate copy would duplicate
+// it. With replacing feedback the explanation would otherwise vanish when
+// the next feedback overwrites the single tracked message.
+func shouldPublishToolFeedbackExplanation(cfg *config.Config, ts *turnState) bool {
+	if ts == nil || ts.channel == "" || ts.channel == "pico" || ts.opts.SuppressToolFeedback {
+		return false
+	}
+	if cfg == nil || !cfg.Agents.Defaults.IsToolFeedbackEnabled() {
+		return false
+	}
+	return !cfg.Agents.Defaults.IsToolFeedbackSeparateMessagesEnabled()
+}
+
+// toolFeedbackExplanationContent returns the LLM-authored explanation text
+// for a tool call — the response content only. No fallback to the
+// user-message continuation hint: the durable explanation message fires
+// only when the LLM actually said something alongside the tool call.
+func toolFeedbackExplanationContent(response *providers.LLMResponse) string {
+	if response == nil {
+		return ""
+	}
+	return strings.TrimSpace(response.Content)
+}
+
+// publishToolFeedbackExplanationOnce publishes the LLM's tool-call
+// explanation as its own durable message — header + blank line +
+// explanation, the same shape as the complete_goal explanation message
+// (Phase 12.58.1). Dedupes identical explanations within one tool loop
+// pass (a multi-call response shares one response.Content). Void +
+// best-effort.
+func publishToolFeedbackExplanationOnce(
+	ctx context.Context,
+	al *AgentLoop,
+	ts *turnState,
+	explanation string,
+	published map[string]struct{},
+) {
+	if explanation == "" || al == nil || ts == nil {
+		return
+	}
+	if _, dup := published[explanation]; dup {
+		return
+	}
+	published[explanation] = struct{}{}
+	if ts.channel == "" || ts.chatID == "" {
+		return
+	}
+	header := toolFeedbackIterContext(ts)
+	fbCtx, fbCancel := context.WithTimeout(ctx, 3*time.Second)
+	_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(
+		ts,
+		header+"\n\n"+explanation,
+		outboundTurnMessageOptions{kind: messageKindToolFeedbackExplanation},
+	))
+	fbCancel()
+}
+
 // goalPhaseDisplayName renders a user-facing phase label for progress
 // context lines (e.g. "Goal-Checkpoint"). The enum values are lowercase
 // wire identifiers, so display names are capitalized here once.

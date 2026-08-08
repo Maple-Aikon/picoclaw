@@ -421,7 +421,7 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 		}
 	}
 	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(msg.ChatID)
-	if !isToolFeedback {
+	if !isToolFeedback && !channels.OutboundMessageIsToolFeedbackExplanation(msg) {
 		if msgIDs, handled := c.FinalizeToolFeedbackMessage(ctx, msg); handled {
 			return msgIDs, nil
 		}
@@ -437,7 +437,7 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 	msgID := resp.EventID.String()
 	if isToolFeedback {
 		c.RecordToolFeedbackMessage(msg.ChatID, msgID, msg.Content)
-	} else if hasTrackedMsg {
+	} else if !channels.OutboundMessageIsToolFeedbackExplanation(msg) && hasTrackedMsg {
 		c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
 	}
 	return []string{msgID}, nil

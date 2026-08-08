@@ -1749,3 +1749,37 @@ func testMediaGroupMessage(mediaGroupID string) telego.Message {
 		MediaGroupID: mediaGroupID,
 	}
 }
+func TestSend_ToolFeedbackExplanationKeepsTrackedProgressMessage(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			switch {
+			case strings.Contains(url, "sendMessage"):
+				return successResponseWithMessageID(t, 1), nil
+			default:
+				t.Fatalf("unexpected API call: %s", url)
+				return nil, nil
+			}
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.RecordToolFeedbackMessage("12345", "1", "🔧 `read_file`")
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "📊 (#1/200) Goal-Set\n\nI will read README.md first.",
+		Context: bus.InboundContext{
+			Channel: "telegram",
+			ChatID:  "12345",
+			Raw: map[string]string{
+				"message_kind": "tool_feedback_explanation",
+			},
+		},
+	})
+
+	assert.NoError(t, err)
+	require.Len(t, caller.calls, 1)
+	assert.Contains(t, caller.calls[0].URL, "sendMessage")
+	msgID, ok := ch.currentToolFeedbackMessage("12345")
+	require.True(t, ok, "tracked tool feedback must survive the explanation message")
+	assert.Equal(t, "1", msgID)
+}
