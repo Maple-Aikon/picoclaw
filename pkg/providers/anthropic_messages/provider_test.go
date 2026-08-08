@@ -8,6 +8,8 @@ package anthropicmessages
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -392,6 +394,18 @@ func TestGetDefaultModel(t *testing.T) {
 	if got != expected {
 		t.Errorf("GetDefaultModel() = %q, want %q", got, expected)
 	}
+
+	// New constructor with provider-specific default model
+	p2 := NewProviderWithTimeoutAndDefaultModel("test-key", "", "", 0, "MiniMax-M3")
+	if got := p2.GetDefaultModel(); got != "MiniMax-M3" {
+		t.Errorf("NewProviderWithTimeoutAndDefaultModel GetDefaultModel() = %q, want %q", got, "MiniMax-M3")
+	}
+
+	// Empty default model falls back to package default (backward compat)
+	p3 := NewProviderWithTimeoutAndDefaultModel("test-key", "", "", 0, "")
+	if got := p3.GetDefaultModel(); got != "claude-sonnet-4.6" {
+		t.Errorf("empty defaultModel GetDefaultModel() = %q, want %q", got, "claude-sonnet-4.6")
+	}
 }
 
 // TestBuildRequestBodyEdgeCases tests edge cases for buildRequestBody.
@@ -713,6 +727,182 @@ func TestProviderChatErrors(t *testing.T) {
 			}
 			if err.Error() != tt.wantErrMsg {
 				t.Errorf("Chat() error = %q, want %q", err.Error(), tt.wantErrMsg)
+			}
+		})
+	}
+}
+
+// TestChatExtraBody verifies the wire contract for SetExtraBody:
+// - extra fields are merged into the request body
+// - model/max_tokens/messages/system/tools are never overridden
+// - SetExtraBody(nil) is a no-op (no panic)
+func TestChatExtraBody(t *testing.T) {
+	tests := []struct {
+		name       string
+		extraBody   map[string]any
+		wantFields map[string]any
+	}{
+		{
+			name:     "thinking adaptive injected",
+			extraBody: map[string]any{"thinking": map[string]any{"type": "adaptive"}},
+			wantFields: map[string]any{
+				"thinking": map[string]any{"type": "adaptive"},
+			},
+		},
+		{
+			name:     "nil extra body is no-op",
+			extraBody: nil,
+			wantFields: map[string]any{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotPath, gotAPIKey, gotVersion string
+			var gotBody map[string]any
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				gotAPIKey = r.Header.Get("X-API-Key")
+				gotVersion = r.Header.Get("Anthropic-Version")
+				_ = json.NewDecoder(r.Body).Decode(&gotBody)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":1,"output_tokens":1}}`))
+			}))
+			defer srv.Close()
+
+			p := NewProviderWithTimeoutAndDefaultModel("test-key", srv.URL, "test-agent", 0, "MiniMax-M3")
+			p.SetExtraBody(tt.extraBody)
+
+			resp, err := p.Chat(context.Background(),
+				[]Message{{Role: "user", Content: "hi"}},
+				nil, "MiniMax-M3", map[string]any{"max_tokens": 9000})
+			if err != nil {
+				t.Fatalf("Chat() error = %v", err)
+			}
+			if resp == nil || resp.Content != "ok" {
+				t.Fatalf("Chat() resp = %+v, want content ok", resp)
+			}
+
+			// Wire assertions
+			if gotPath != "/v1/messages" {
+				t.Errorf("request path = %q, want /v1/messages", gotPath)
+			}
+			if gotAPIKey != "test-key" {
+				t.Errorf("X-API-Key = %q, want test-key", gotAPIKey)
+			}
+			if gotVersion != defaultAPIVersion {
+				t.Errorf("Anthropic-Version = %q, want %q", gotVersion, defaultAPIVersion)
+			}
+
+			// Core fields must never be overridden by extra body
+			if gotBody["model"] != "MiniMax-M3" {
+				t.Errorf("body model = %v, want MiniMax-M3 (must not be overridden)", gotBody["model"])
+			}
+			if gotBody["max_tokens"] != float64(9000) {
+				t.Errorf("body max_tokens = %v, want 9000 (must not be overridden)", gotBody["max_tokens"])
+			}
+			if _, ok := gotBody["messages"]; !ok {
+				t.Error("body messages missing (must not be dropped)")
+			}
+
+			for wantKey, wantVal := range tt.wantFields {
+				gotVal, ok := gotBody[wantKey]
+				if !ok {
+					t.Errorf("body missing extra key %q", wantKey)
+					continue
+				}
+				if !reflect.DeepEqual(gotVal, wantVal) {
+					t.Errorf("body[%q] = %#v, want %#v", wantKey, gotVal, wantVal)
+				}
+			}
+		})
+	}
+}
+
+// TestChatExtraBodyDoesNotOverrideCoreFields verifies that an extra body key
+// colliding with a core field (model) is ignored — the built value wins.
+func TestChatExtraBodyDoesNotOverrideCoreFields(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	p := NewProviderWithTimeoutAndDefaultModel("test-key", srv.URL, "test-agent", 0, "MiniMax-M3")
+	p.SetExtraBody(map[string]any{"model": "evil-model", "thinking": map[string]any{"type": "adaptive"}})
+
+	if _, err := p.Chat(context.Background(),
+		[]Message{{Role: "user", Content: "hi"}},
+		nil, "MiniMax-M3", map[string]any{"max_tokens": 9000}); err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+
+	if gotBody["model"] != "MiniMax-M3" {
+		t.Errorf("body model = %v, want MiniMax-M3 (extra body must not override)", gotBody["model"])
+	}
+	if _, ok := gotBody["thinking"]; !ok {
+		t.Error("body thinking missing (non-colliding extra key must still be injected)")
+	}
+}
+
+// TestParseResponseBodyThinking verifies thinking block parsing (T4/T5):
+// thinking+text → ReasoningContent=thinking, Content=text;
+// thinking-only → Content="", ReasoningContent full, FinishReason preserved.
+func TestParseResponseBodyThinking(t *testing.T) {
+	tests := []struct {
+		name             string
+		body             string
+		wantContent      string
+		wantReasoning    string
+		wantFinishReason string
+		wantToolCalls    int
+	}{
+		{
+			name: "thinking + text blocks",
+			body: `{"id":"msg-t","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Let me reason about this step by step.","signature":"sig-abc"},{"type":"text","text":"The answer is 42."}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":10,"output_tokens":20}}`,
+			wantContent:      "The answer is 42.",
+			wantReasoning:    "Let me reason about this step by step.",
+			wantFinishReason: "stop",
+			wantToolCalls:    0,
+		},
+		{
+			name: "thinking only (reasoning-only response)",
+			body: `{"id":"msg-r","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"I should call set_goal now.","signature":"sig-xyz"}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":10,"output_tokens":20}}`,
+			wantContent:      "",
+			wantReasoning:    "I should call set_goal now.",
+			wantFinishReason: "stop",
+			wantToolCalls:    0,
+		},
+		{
+			name: "thinking + tool_use (no text)",
+			body: `{"id":"msg-tt","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Tool time.","signature":"sig-1"},{"type":"tool_use","id":"tu-1","name":"set_goal","input":{"objective":"x"}}],"stop_reason":"tool_use","model":"MiniMax-M3","usage":{"input_tokens":10,"output_tokens":20}}`,
+			wantContent:      "",
+			wantReasoning:    "Tool time.",
+			wantFinishReason: "tool_calls",
+			wantToolCalls:    1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := parseResponseBody([]byte(tt.body))
+			if err != nil {
+				t.Fatalf("parseResponseBody() error = %v", err)
+			}
+			if resp.Content != tt.wantContent {
+				t.Errorf("Content = %q, want %q", resp.Content, tt.wantContent)
+			}
+			if resp.ReasoningContent != tt.wantReasoning {
+				t.Errorf("ReasoningContent = %q, want %q", resp.ReasoningContent, tt.wantReasoning)
+			}
+			if resp.FinishReason != tt.wantFinishReason {
+				t.Errorf("FinishReason = %q, want %q", resp.FinishReason, tt.wantFinishReason)
+			}
+			if len(resp.ToolCalls) != tt.wantToolCalls {
+				t.Errorf("ToolCalls length = %d, want %d", len(resp.ToolCalls), tt.wantToolCalls)
 			}
 		})
 	}

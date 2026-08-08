@@ -8,6 +8,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers/azure"
 	"github.com/sipeed/picoclaw/pkg/providers/bedrock"
 	"github.com/sipeed/picoclaw/pkg/providers/common"
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 // createClaudeAuthProvider creates a Claude provider using OAuth credentials from auth store.
@@ -272,6 +274,32 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 		provider.SetProviderName(protocol)
 		return finalizeProviderFromConfig(provider, modelID, cfg)
 
+	case "minimax-anthropic":
+		// MiniMax Anthropic-compatible API; thinking driven by extra_body config (Q3)
+		if cfg.APIKey() == "" && cfg.APIBase == "" {
+			return nil, "", fmt.Errorf("api_key or api_base is required for HTTP-based protocol %q", protocol)
+		}
+		apiBase := cfg.APIBase
+		if apiBase == "" {
+			apiBase = getDefaultAPIBase(protocol)
+		}
+		provider := anthropicmessages.NewProviderWithTimeoutAndDefaultModel(
+			cfg.APIKey(),
+			apiBase,
+			userAgent,
+			cfg.RequestTimeout,
+			"MiniMax-M3",
+		)
+		provider.SetExtraBody(cfg.ExtraBody)
+		logger.DebugCF("agent", "Created minimax-anthropic provider", map[string]any{
+			"protocol":        "minimax-anthropic",
+			"model":           modelID,
+			"model_name":      cfg.ModelName,
+			"api_base":        apiBase,
+			"extra_body_keys": extraBodyKeys(cfg.ExtraBody),
+		})
+		return finalizeProviderFromConfig(provider, modelID, cfg)
+
 	case "anthropic":
 		if authMethod == "oauth" || authMethod == "token" {
 			// Use OAuth credentials from auth store
@@ -417,3 +445,14 @@ func getDefaultAPIBase(protocol string) string {
 	}
 	return option.DefaultAPIBase
 }
+
+// extraBodyKeys returns sorted keys of an extra body map for debug logging.
+func extraBodyKeys(extraBody map[string]any) []string {
+	keys := make([]string, 0, len(extraBody))
+	for k := range extraBody {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+

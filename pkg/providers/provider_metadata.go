@@ -460,6 +460,19 @@ var modelProviderOptionsByName = map[string]ModelProviderOption{
 		Priority:            42,
 		httpAPI:             true,
 	},
+	"minimax-anthropic": {
+		ID:                  "minimax-anthropic",
+		DisplayName:         "MiniMax (Anthropic)",
+		Domain:              "minimax.io",
+		DefaultAPIBase:      "https://api.minimax.io/anthropic",
+		CreateAllowed:       true,
+		DefaultModelAllowed: true,
+		SupportsFetch:       false, // MiniMax has no /models endpoint for the Anthropic API
+		Priority:            41.5, // right below minimax (42)
+		CommonModels:        []string{"MiniMax-M3", "MiniMax-M2.5"},
+		Aliases:             []string{"minimax_anthropic"},
+		httpAPI:             true,
+	},
 	"longcat": {
 		ID:                  "longcat",
 		DisplayName:         "LongCat",

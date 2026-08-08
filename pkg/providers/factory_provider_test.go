@@ -1029,6 +1029,27 @@ func TestCreateProviderFromConfig_CodingPlanAnthropic(t *testing.T) {
 	}
 }
 
+func TestCreateProviderFromConfig_MiniMaxAnthropic(t *testing.T) {
+	cfg := &config.ModelConfig{
+		ModelName: "test-minimax-anthropic",
+		Model:     "minimax-anthropic/MiniMax-M3",
+	}
+	cfg.SetAPIKey("test-key")
+
+	provider, modelID, err := CreateProviderFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("CreateProviderFromConfig() error = %v", err)
+	}
+	if provider == nil {
+		t.Fatal("CreateProviderFromConfig() returned nil provider")
+	}
+	wantModelID := "MiniMax-M3"
+	if modelID != wantModelID {
+		t.Errorf("modelID = %q, want %q", modelID, wantModelID)
+	}
+	var _ LLMProvider = provider
+}
+
 func TestGetDefaultAPIBase_CodingPlanAnthropic(t *testing.T) {
 	expectedURL := "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
 	if got := getDefaultAPIBase("coding-plan-anthropic"); got != expectedURL {
@@ -1036,6 +1057,25 @@ func TestGetDefaultAPIBase_CodingPlanAnthropic(t *testing.T) {
 	}
 	if got := getDefaultAPIBase("alibaba-coding-anthropic"); got != expectedURL {
 		t.Fatalf("getDefaultAPIBase(%q) = %q, want %q", "alibaba-coding-anthropic", got, expectedURL)
+	}
+}
+
+func TestGetDefaultAPIBase_MiniMaxAnthropic(t *testing.T) {
+	expectedURL := "https://api.minimax.io/anthropic"
+	if got := getDefaultAPIBase("minimax-anthropic"); got != expectedURL {
+		t.Fatalf("getDefaultAPIBase(%q) = %q, want %q", "minimax-anthropic", got, expectedURL)
+	}
+	if got := getDefaultAPIBase("minimax_anthropic"); got != expectedURL {
+		t.Fatalf("getDefaultAPIBase(%q) = %q, want %q (alias must resolve)", "minimax_anthropic", got, expectedURL)
+	}
+}
+
+func TestIsSupportedModelProvider_MiniMaxAnthropic(t *testing.T) {
+	if !IsSupportedModelProvider("minimax-anthropic") {
+		t.Error("IsSupportedModelProvider(\"minimax-anthropic\") = false, want true")
+	}
+	if !IsSupportedModelProvider("minimax_anthropic") {
+		t.Error("IsSupportedModelProvider(\"minimax_anthropic\") = false, want true (alias must resolve)")
 	}
 }
 

@@ -39,10 +39,12 @@ const (
 // Provider implements Anthropic Messages API via HTTP (without SDK).
 // It supports custom endpoints that use Anthropic's native message format.
 type Provider struct {
-	apiKey     string
-	apiBase    string
-	httpClient *http.Client
-	userAgent  string
+	apiKey       string
+	apiBase      string
+	httpClient   *http.Client
+	userAgent    string
+	defaultModel string
+	extraBody    map[string]any
 }
 
 // NewProvider creates a new Anthropic Messages API provider.
@@ -68,6 +70,15 @@ func NewProviderWithTimeout(apiKey, apiBase, userAgent string, timeoutSeconds in
 	}
 }
 
+// NewProviderWithTimeoutAndDefaultModel creates a provider with custom request
+// timeout and a provider-specific default model. When defaultModel is empty,
+// GetDefaultModel falls back to the package-level default.
+func NewProviderWithTimeoutAndDefaultModel(apiKey, apiBase, userAgent string, timeoutSeconds int, defaultModel string) *Provider {
+	p := NewProviderWithTimeout(apiKey, apiBase, userAgent, timeoutSeconds)
+	p.defaultModel = defaultModel
+	return p
+}
+
 // Chat sends messages to the Anthropic Messages API and returns the response.
 func (p *Provider) Chat(
 	ctx context.Context,
@@ -85,6 +96,15 @@ func (p *Provider) Chat(
 	if err != nil {
 		return nil, fmt.Errorf("building request body: %w", err)
 	}
+
+	// Merge extra body fields — only set keys not already present so
+	// model/max_tokens/messages/system/tools are never overridden.
+	for key, value := range p.extraBody {
+		if _, exists := requestBody[key]; !exists {
+			requestBody[key] = value
+		}
+	}
+
 
 	// Serialize to JSON
 	jsonBody, err := json.Marshal(requestBody)
@@ -151,7 +171,18 @@ func (p *Provider) Chat(
 
 // GetDefaultModel returns the default model for this provider.
 func (p *Provider) GetDefaultModel() string {
+	if p.defaultModel != "" {
+		return p.defaultModel
+	}
 	return "claude-sonnet-4.6"
+}
+
+// SetExtraBody sets additional fields to merge into the request body in Chat.
+// The merge only sets keys that are not already present in the built body, so
+// model/max_tokens/messages/system/tools are never overridden. Nil or empty
+// maps are no-ops.
+func (p *Provider) SetExtraBody(extraBody map[string]any) {
+	p.extraBody = extraBody
 }
 
 // buildRequestBody converts internal message format to Anthropic Messages API format.
@@ -317,12 +348,15 @@ func parseResponseBody(body []byte) (*LLMResponse, error) {
 
 	// Extract content and tool calls
 	var content strings.Builder
+	var reasoning strings.Builder
 	toolCalls := make([]ToolCall, 0) // Initialize as empty slice (not nil) for consistent JSON serialization
 
 	for _, block := range resp.Content {
 		switch block.Type {
 		case "text":
 			content.WriteString(block.Text)
+		case "thinking":
+			reasoning.WriteString(block.Thinking)
 		case "tool_use":
 			argsJSON, _ := json.Marshal(block.Input)
 			toolCalls = append(toolCalls, ToolCall{
@@ -351,9 +385,10 @@ func parseResponseBody(body []byte) (*LLMResponse, error) {
 	}
 
 	return &LLMResponse{
-		Content:      content.String(),
-		ToolCalls:    toolCalls,
-		FinishReason: finishReason,
+		Content:          content.String(),
+		ReasoningContent: reasoning.String(),
+		ToolCalls:        toolCalls,
+		FinishReason:     finishReason,
 		Usage: &UsageInfo{
 			PromptTokens:     int(resp.Usage.InputTokens),
 			CompletionTokens: int(resp.Usage.OutputTokens),
@@ -375,11 +410,12 @@ type anthropicMessageResponse struct {
 }
 
 type contentBlock struct {
-	Type  string         `json:"type"`
-	Text  string         `json:"text,omitempty"`
-	ID    string         `json:"id,omitempty"`
-	Name  string         `json:"name,omitempty"`
-	Input map[string]any `json:"input,omitempty"`
+	Type     string         `json:"type"`
+	Text     string         `json:"text,omitempty"`
+	Thinking string         `json:"thinking,omitempty"`
+	ID       string         `json:"id,omitempty"`
+	Name     string         `json:"name,omitempty"`
+	Input    map[string]any `json:"input,omitempty"`
 }
 
 type usageInfo struct {

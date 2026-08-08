@@ -87,6 +87,10 @@ func TestNormalizeProvider(t *testing.T) {
 		{"qwen-international", "qwen-intl"},
 		{"dashscope-intl", "qwen-intl"},
 		{"dashscope-us", "qwen-us"},
+		// MiniMax Anthropic aliases
+		{"minimax-anthropic", "minimax-anthropic"},
+		{"minimax_anthropic", "minimax-anthropic"},
+		{"MINIMAX-ANTHROPIC", "minimax-anthropic"},
 		{"", ""},
 	}
 
