@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -274,6 +275,40 @@ func (h *llmJSONRoundTripUserAppendHook) BeforeCompact(
 	return req, HookDecision{Action: HookActionContinue}, nil
 }
 
+type llmDupIDHook struct{}
+
+// llmDupIDHook injects duplicate + empty tool-call ids into the payload to
+// verify the post-hook pass-3 sanitize (Phase 12.61).
+func (h *llmDupIDHook) BeforeLLM(
+	ctx context.Context,
+	req *LLMHookRequest,
+) (*LLMHookRequest, HookDecision, error) {
+	next := req.Clone()
+	next.Messages = append(next.Messages,
+		providers.Message{
+			Role:      "assistant",
+			ToolCalls: []providers.ToolCall{makeToolCall("fix_0"), makeToolCall("")},
+		},
+		providers.Message{Role: "tool", ToolCallID: "fix_0"},
+		providers.Message{Role: "tool", ToolCallID: ""},
+	)
+	return next, HookDecision{Action: HookActionModify}, nil
+}
+
+func (h *llmDupIDHook) AfterLLM(
+	ctx context.Context,
+	resp *LLMHookResponse,
+) (*LLMHookResponse, HookDecision, error) {
+	return resp.Clone(), HookDecision{Action: HookActionContinue}, nil
+}
+
+func (h *llmDupIDHook) BeforeCompact(
+	ctx context.Context,
+	req *CompactHookRequest,
+) (*CompactHookRequest, HookDecision, error) {
+	return req, HookDecision{Action: HookActionContinue}, nil
+}
+
 type llmToolRewriteHook struct{}
 
 func (h *llmToolRewriteHook) BeforeLLM(
@@ -343,6 +378,42 @@ func TestHookManager_BeforeLLMControlsSystemPromptMutation(t *testing.T) {
 	}
 	if got.Messages[1].Content != "hello" {
 		t.Fatalf("user content = %q, want hello", got.Messages[1].Content)
+	}
+}
+
+// T7: post-hook re-sanitize — hook inject duplicate/empty tool-call ids vào
+// payload → BeforeLLM output ids unique (pass 3 chạy lần cuối trước khi gửi).
+func TestHookManager_BeforeLLMPostHookSanitizeToolCallIDs(t *testing.T) {
+	hm := NewHookManager(nil)
+	if err := hm.Mount(NamedHook("dup-ids", &llmDupIDHook{})); err != nil {
+		t.Fatalf("Mount() error = %v", err)
+	}
+
+	req := &LLMHookRequest{
+		Model: "model",
+		Messages: []providers.Message{
+			{Role: "system", Content: "system"},
+			{Role: "user", Content: "hello"},
+		},
+	}
+
+	got, _ := hm.BeforeLLM(context.Background(), req)
+	seen := map[string]bool{}
+	for _, m := range got.Messages {
+		for _, tc := range m.ToolCalls {
+			if tc.ID == "" {
+				t.Fatalf("empty id must be assigned by post-hook sanitize")
+			}
+			if seen[tc.ID] {
+				t.Fatalf("duplicate id %s after post-hook sanitize", tc.ID)
+			}
+			seen[tc.ID] = true
+		}
+		if m.ToolCallID != "" {
+			if !seen[m.ToolCallID] {
+				t.Fatalf("tool result %s has no matching assistant call", m.ToolCallID)
+			}
+		}
 	}
 }
 
@@ -1630,4 +1701,73 @@ func TestCloneStringAnyMap_EmptyMapReturnsNonNil(t *testing.T) {
 			t.Fatal("modifying clone should not affect source")
 		}
 	})
+}
+
+// T14: reflection-walk contract test (SIMP-F1) — cloneProviderMessages phải
+// deep-clone MỌI field slice của providers.Message. Field mới thêm vào struct
+// sẽ tự fail cho tới khi được clone (không enumerate cứng).
+func TestCloneProviderMessages_ReflectionWalk(t *testing.T) {
+	now := time.Now()
+	original := providers.Message{
+		Role:             "assistant",
+		Content:          "hello",
+		ModelName:        "m",
+		CreatedAt:        &now,
+		Media:            []string{"a.png"},
+		Attachments:      []providers.Attachment{{Type: "image", Ref: "r", URL: "u", Filename: "f", ContentType: "image/png"}},
+		ReasoningContent: "think",
+		ReasoningDetails: []providers.ReasoningDetail{{Format: "f", Index: 1, Type: "t", Text: "x"}},
+		SystemParts:      []providers.ContentBlock{{Type: "text", Text: "sys"}},
+		ToolCalls: []providers.ToolCall{{
+			ID: "c1", Name: "n", Arguments: map[string]any{"k": "v"},
+			Function: &providers.FunctionCall{Name: "n", Arguments: "{}"},
+			ExtraContent: &providers.ExtraContent{
+				ToolFeedbackExplanation: "why",
+				Google:                  &providers.GoogleExtra{ThoughtSignature: "sig"},
+			},
+		}},
+		ToolCallID:  "c1",
+		IterContext: "📊 #1",
+	}
+
+	cloned := cloneProviderMessages([]providers.Message{original})[0]
+	if !reflect.DeepEqual(cloned, original) {
+		t.Fatalf("clone must start equal to original")
+	}
+
+	// Mutate từng field deep trong clone — original phải không đổi.
+	cloned.Media[0] = "mutated"
+	cloned.Attachments[0].Ref = "mutated"
+	cloned.ReasoningDetails[0].Text = "mutated"
+	cloned.SystemParts[0].Text = "mutated"
+	cloned.ToolCalls[0].ID = "mutated"
+	cloned.ToolCalls[0].Arguments["k"] = "mutated"
+	cloned.ToolCalls[0].Function.Arguments = "mutated"
+	cloned.ToolCalls[0].ExtraContent.ToolFeedbackExplanation = "mutated"
+	cloned.ToolCalls[0].ExtraContent.Google.ThoughtSignature = "mutated"
+
+	want := providers.Message{
+		Role:             "assistant",
+		Content:          "hello",
+		ModelName:        "m",
+		CreatedAt:        &now,
+		Media:            []string{"a.png"},
+		Attachments:      []providers.Attachment{{Type: "image", Ref: "r", URL: "u", Filename: "f", ContentType: "image/png"}},
+		ReasoningContent: "think",
+		ReasoningDetails: []providers.ReasoningDetail{{Format: "f", Index: 1, Type: "t", Text: "x"}},
+		SystemParts:      []providers.ContentBlock{{Type: "text", Text: "sys"}},
+		ToolCalls: []providers.ToolCall{{
+			ID: "c1", Name: "n", Arguments: map[string]any{"k": "v"},
+			Function: &providers.FunctionCall{Name: "n", Arguments: "{}"},
+			ExtraContent: &providers.ExtraContent{
+				ToolFeedbackExplanation: "why",
+				Google:                  &providers.GoogleExtra{ThoughtSignature: "sig"},
+			},
+		}},
+		ToolCallID:  "c1",
+		IterContext: "📊 #1",
+	}
+	if !reflect.DeepEqual(original, want) {
+		t.Fatalf("original mutated by clone edits — deep-clone contract broken")
+	}
 }

@@ -213,6 +213,11 @@ type turnState struct {
 	attemptedSkills   []string
 	skillContextTrace []SkillContextSnapshot
 	toolKinds         []string
+
+	// toolCallSeq — monotonic per-turn counter cho layer-1 id allocation
+	// (Phase 12.61). In-memory per turn; nguồn uniqueness THẬT của id mới
+	// `call_<turnID>_<unixNano>_<seq>` (unixNano chỉ là namespace cross-restart).
+	toolCallSeq int64
 	toolExecutions    []ToolExecutionRecord
 	turnCtx           *TurnContext
 

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -484,6 +485,11 @@ func (p *Pipeline) recallAndCheckTool(
 		for _, tc := range exec.response.ToolCalls {
 			exec.normalizedToolCalls = append(exec.normalizedToolCalls, providers.NormalizeToolCall(tc))
 		}
+	}
+	// Phase 12.61: layer-1 rewrite (dup/empty/occupied) — mirror proceedPastLLM
+	// + stageRecoveryToolCalls trước khi append assistant message.
+	if exec.response != nil && len(exec.normalizedToolCalls) > 0 {
+		exec.normalizedToolCalls = ts.rewriteToolCallIDs(exec.normalizedToolCalls, collectToolCallIDs(exec.messages), time.Now)
 	}
 
 	firstTool := ""

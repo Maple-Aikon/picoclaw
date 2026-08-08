@@ -353,6 +353,11 @@ func (hm *HookManager) BeforeLLM(ctx context.Context, req *LLMHookRequest) (*LLM
 			hm.logUnsupportedAction(reg.Name, "before_llm", decision.Action)
 		}
 	}
+	// Phase 12.61 post-hook re-sanitize (pass 3): hook có thể inject/đổi tool-call
+	// ids → duplicate/empty ids rewrite lần cuối TRƯỚC khi payload gửi provider.
+	// Deterministic + pure nên chạy lại trên payload hook-returned an toàn
+	// (không đụng id unique; ids layer-1/pass-3 cũ được seed qua occupied).
+	current.Messages = sanitizeToolCallIDUniqueness(current.Messages)
 	return current, HookDecision{Action: HookActionContinue}
 }
 
@@ -875,6 +880,14 @@ func cloneProviderMessages(messages []providers.Message) []providers.Message {
 		}
 		if len(msg.ToolCalls) > 0 {
 			cloned[i].ToolCalls = cloneProviderToolCalls(msg.ToolCalls)
+		}
+		// Phase 12.61 T14 (reflection-walk contract test): MỌI field slice phải
+		// deep-clone — Attachments + ReasoningDetails thiếu từ bản gốc.
+		if len(msg.Attachments) > 0 {
+			cloned[i].Attachments = append([]providers.Attachment(nil), msg.Attachments...)
+		}
+		if len(msg.ReasoningDetails) > 0 {
+			cloned[i].ReasoningDetails = append([]providers.ReasoningDetail(nil), msg.ReasoningDetails...)
 		}
 	}
 	return cloned

@@ -34,15 +34,15 @@ type ContextBuilder struct {
 	// The cache auto-invalidates when workspace source files change (mtime check)
 	// or when the goal phase changes (Phase 12.5: GoalPhaseSet ↔ Open transitions
 	// must invalidate because the prompt contains phase-specific contributors).
-	systemPromptMutex          sync.RWMutex
-	cachedSystemPrompt         string
-	cachedSystemPromptGoalPhase string // GoalPhase value cached alongside the prompt; empty when no phase set
-	cachedSystemPromptPostCompleteGoalReport bool // Phase 12.7: cache key dimension for GoalCompleteReport hint
-	cachedSystemPromptIteration int    // Phase 12.16.1: cache key dimension for iter (1..N); prevents iter-1 prompt from being reused at later iters
-	cachedSystemPromptIterationCap int // Phase 12.38 §4: cache key dimension for current iteration cap (changes when goal_progress extends); must invalidate OPEN-phase cache when cap changes mid-turn
-	cachedSystemPromptMaxIterationsCap int // Phase 12.38 §4: cache key dimension for absolute ceiling; must invalidate OPEN-phase cache when ceiling changes
-	wasLastPostCompleteGoalReport bool // Phase 12.7: previous postCompleteGoalReport state for debug log
-	cachedAt                   time.Time // max observed mtime across tracked paths at cache build time
+	systemPromptMutex                        sync.RWMutex
+	cachedSystemPrompt                       string
+	cachedSystemPromptGoalPhase              string    // GoalPhase value cached alongside the prompt; empty when no phase set
+	cachedSystemPromptPostCompleteGoalReport bool      // Phase 12.7: cache key dimension for GoalCompleteReport hint
+	cachedSystemPromptIteration              int       // Phase 12.16.1: cache key dimension for iter (1..N); prevents iter-1 prompt from being reused at later iters
+	cachedSystemPromptIterationCap           int       // Phase 12.38 §4: cache key dimension for current iteration cap (changes when goal_progress extends); must invalidate OPEN-phase cache when cap changes mid-turn
+	cachedSystemPromptMaxIterationsCap       int       // Phase 12.38 §4: cache key dimension for absolute ceiling; must invalidate OPEN-phase cache when ceiling changes
+	wasLastPostCompleteGoalReport            bool      // Phase 12.7: previous postCompleteGoalReport state for debug log
+	cachedAt                                 time.Time // max observed mtime across tracked paths at cache build time
 
 	// existedAtCache tracks which source file paths existed the last time the
 	// cache was built. This lets sourceFilesChanged detect files that are newly
@@ -295,11 +295,11 @@ func (cb *ContextBuilder) BuildSystemPromptWithSnapshotFullKey(goalPhase string,
 
 func (cb *ContextBuilder) BuildSystemPromptParts(goalPhase string, postCompleteGoalReport bool, iteration int) []PromptPart {
 	return cb.buildSystemPromptParts(systemPromptBuildOptions{
-		IncludeSkillCatalog:      true,
-		IncludeToolUseRule:       true,
-		GoalPhase:                goalPhase,
-		PostCompleteGoalReport:   postCompleteGoalReport,
-		Iteration:                iteration,
+		IncludeSkillCatalog:    true,
+		IncludeToolUseRule:     true,
+		GoalPhase:              goalPhase,
+		PostCompleteGoalReport: postCompleteGoalReport,
+		Iteration:              iteration,
 	})
 }
 
@@ -713,27 +713,27 @@ func (cb *ContextBuilder) BuildSystemPromptWithCacheFullKey(goalPhase string, po
 	} else if previousIter != 0 && previousIter != iteration {
 		logger.DebugCF("agent", "System prompt cache invalidated by iteration change",
 			map[string]any{
-				"goal_phase":        goalPhase,
-				"previous_iter":     previousIter,
-				"new_iter":          iteration,
-				"length":            len(prompt),
+				"goal_phase":    goalPhase,
+				"previous_iter": previousIter,
+				"new_iter":      iteration,
+				"length":        len(prompt),
 			})
 	} else if previousCap != 0 && previousCap != iterationCap {
 		// Phase 12.38 §4 F52: cap-change invalidation log
 		logger.DebugCF("agent", "System prompt cache invalidated by iteration-cap change",
 			map[string]any{
-				"goal_phase":     goalPhase,
-				"iteration":      iteration,
-				"previous_cap":   previousCap,
-				"new_cap":        iterationCap,
-				"length":         len(prompt),
+				"goal_phase":   goalPhase,
+				"iteration":    iteration,
+				"previous_cap": previousCap,
+				"new_cap":      iterationCap,
+				"length":       len(prompt),
 			})
 	} else if postCompleteGoalReport != cb.wasLastPostCompleteGoalReport {
 		logger.DebugCF("agent", "System prompt cache invalidated by post-complete_goal report state change",
 			map[string]any{
-				"goal_phase":                   goalPhase,
-				"post_complete_goal_report":     postCompleteGoalReport,
-				"length":                        len(prompt),
+				"goal_phase":                goalPhase,
+				"post_complete_goal_report": postCompleteGoalReport,
+				"length":                    len(prompt),
 			})
 	} else {
 		logger.DebugCF("agent", "System prompt cached",
@@ -1479,6 +1479,8 @@ func sanitizeHistoryForProvider(history []providers.Message) []providers.Message
 			sanitized = append(sanitized, msg)
 		}
 	}
+
+	sanitized = sanitizeToolCallIDUniqueness(sanitized)
 
 	// Second pass: ensure every assistant message with tool_calls has matching
 	// tool result messages following it. This is required by strict providers

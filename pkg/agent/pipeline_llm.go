@@ -845,6 +845,14 @@ func (p *Pipeline) proceedPastLLM(
 		exec.normalizedToolCalls = []providers.ToolCall{}
 	}
 
+	// Phase 12.61 (MiniMax 400 2013 root cause): rewrite tool-call ids khi CẦN
+	// (trùng id đã tồn tại trong exec.messages / trùng trong batch / id rỗng) —
+	// id unique giữ nguyên format provider. Đặt SAU strip site (final-report
+	// iter): strip không gọi helper → toolCallSeq không đổi (T11b guard).
+	if len(exec.normalizedToolCalls) > 0 {
+		exec.normalizedToolCalls = ts.rewriteToolCallIDs(exec.normalizedToolCalls, collectToolCallIDs(exec.messages), time.Now)
+	}
+
 	toolNames := make([]string, 0, len(exec.normalizedToolCalls))
 	for _, tc := range exec.normalizedToolCalls {
 		toolNames = append(toolNames, tc.Name)
@@ -1423,6 +1431,10 @@ func (p *Pipeline) stageRecoveryToolCalls(ts *turnState, exec *turnExecution, tu
 	exec.normalizedToolCalls = make([]providers.ToolCall, 0, len(exec.response.ToolCalls))
 	for _, tc := range exec.response.ToolCalls {
 		exec.normalizedToolCalls = append(exec.normalizedToolCalls, providers.NormalizeToolCall(tc))
+	}
+	// Phase 12.61: layer-1 rewrite (dup/empty/occupied) — mirror proceedPastLLM.
+	if len(exec.normalizedToolCalls) > 0 {
+		exec.normalizedToolCalls = ts.rewriteToolCallIDs(exec.normalizedToolCalls, collectToolCallIDs(exec.messages), time.Now)
 	}
 	reasoningContent := responseReasoningContent(exec.response)
 	assistantMsg := providers.Message{

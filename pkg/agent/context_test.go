@@ -231,12 +231,20 @@ func TestSanitizeHistoryForProvider_ReusedToolCallIDAcrossRounds(t *testing.T) {
 		t.Fatalf("expected 8 messages, got %d: %+v", len(result), roles(result))
 	}
 	assertRoles(t, result, "user", "assistant", "tool", "assistant", "user", "assistant", "tool", "assistant")
-	if result[2].ToolCallID != "call_0" || result[6].ToolCallID != "call_0" {
+	// Phase 12.61: id reuse giữa các rounds giờ được rewrite (pass 3) — cả 2
+	// results preserved với id unique khác nhau (không còn trùng id trong payload).
+	if result[2].ToolCallID == result[6].ToolCallID {
 		t.Fatalf(
-			"expected both tool results to be preserved, got IDs %q and %q",
+			"expected distinct ids across rounds after pass-3 rewrite, both %q",
 			result[2].ToolCallID,
-			result[6].ToolCallID,
 		)
+	}
+	if result[2].ToolCallID == "call_0" || result[6].ToolCallID == "call_0" {
+		t.Fatalf("reused ids must be rewritten, got %q and %q", result[2].ToolCallID, result[6].ToolCallID)
+	}
+	// pairing intact: mỗi result khớp assistant call của round nó
+	if result[1].ToolCalls[0].ID != result[2].ToolCallID || result[5].ToolCalls[0].ID != result[6].ToolCallID {
+		t.Fatalf("pairing broken: %s/%s and %s/%s", result[1].ToolCalls[0].ID, result[2].ToolCallID, result[5].ToolCalls[0].ID, result[6].ToolCallID)
 	}
 }
 
@@ -248,11 +256,19 @@ func TestSanitizeHistoryForProvider_DropsAssistantWithEmptyToolCallID(t *testing
 		msg("assistant", "done"),
 	}
 
+	// Phase 12.61 (Kimi R9-F1): empty ids KHÔNG còn bị drop — pass 3 gán id mới
+	// theo FIFO occurrence, block giữ nguyên.
 	result := sanitizeHistoryForProvider(history)
-	if len(result) != 2 {
-		t.Fatalf("expected 2 messages, got %d: %+v", len(result), roles(result))
+	if len(result) != 4 {
+		t.Fatalf("expected 4 messages (empty id assigned), got %d: %+v", len(result), roles(result))
 	}
-	assertRoles(t, result, "user", "assistant")
+	assertRoles(t, result, "user", "assistant", "tool", "assistant")
+	if result[1].ToolCalls[0].ID == "" {
+		t.Fatalf("empty call id must be assigned")
+	}
+	if result[1].ToolCalls[0].ID != result[2].ToolCallID {
+		t.Fatalf("pairing broken: call %s != result %s", result[1].ToolCalls[0].ID, result[2].ToolCallID)
+	}
 }
 
 func roles(msgs []providers.Message) []string {
