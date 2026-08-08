@@ -12,7 +12,7 @@ func TestFormatToolFeedbackMessage(t *testing.T) {
 		"{\n  \"path\": \"README.md\"\n}",
 		"",
 	)
-	want := "\U0001f527 `read_file`\nI will read README.md first to confirm the current project structure.\n```json\n{\n  \"path\": \"README.md\"\n}\n```"
+	want := "\U0001f527 `read_file`\n\nI will read README.md first to confirm the current project structure.\n```json\n{\n  \"path\": \"README.md\"\n}\n```"
 	if got != want {
 		t.Fatalf("FormatToolFeedbackMessage() = %q, want %q", got, want)
 	}
@@ -20,7 +20,7 @@ func TestFormatToolFeedbackMessage(t *testing.T) {
 
 func TestFormatToolFeedbackMessage_EmptyExplanationShowsArgs(t *testing.T) {
 	got := FormatToolFeedbackMessage("read_file", "", "{\n  \"path\": \"README.md\"\n}", "")
-	want := "\U0001f527 `read_file`\n```json\n{\n  \"path\": \"README.md\"\n}\n```"
+	want := "\U0001f527 `read_file`\n\n```json\n{\n  \"path\": \"README.md\"\n}\n```"
 	if got != want {
 		t.Fatalf("FormatToolFeedbackMessage() = %q, want %q", got, want)
 	}
@@ -49,7 +49,7 @@ func TestFormatToolFeedbackMessage_IterContextAfterToolLine(t *testing.T) {
 		"",
 		"📊 #3/250 · Goal-Checkpoint",
 	)
-	want := "\U0001f527 `web_search`\n📊 #3/250 · Goal-Checkpoint\nSearching for the current news."
+	want := "\U0001f527 `web_search`\n📊 #3/250 · Goal-Checkpoint\n\nSearching for the current news."
 	if got != want {
 		t.Fatalf("FormatToolFeedbackMessage() = %q, want %q", got, want)
 	}

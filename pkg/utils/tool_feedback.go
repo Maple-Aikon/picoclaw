@@ -68,10 +68,10 @@ func FormatToolFeedbackMessage(toolName, explanation, argsPreview, iterContext s
 		return fmt.Sprintf("\U0001f527 `%s`\n%s", toolName, iterContext)
 	}
 	if iterContext == "" {
-		return fmt.Sprintf("\U0001f527 `%s`\n%s", toolName, body)
+		return fmt.Sprintf("\U0001f527 `%s`\n\n%s", toolName, body)
 	}
 
-	return fmt.Sprintf("\U0001f527 `%s`\n%s\n%s", toolName, iterContext, body)
+	return fmt.Sprintf("\U0001f527 `%s`\n%s\n\n%s", toolName, iterContext, body)
 }
 
 // FitToolFeedbackMessage keeps tool feedback within a single outbound message.
