@@ -865,6 +865,15 @@ func (al *AgentLoop) phaseStuckFallbackMessage(ts *turnState, g *goal.Goal) stri
 			return fmt.Sprintf(GoalPhaseCheckpointStuckMessage, stuckCountAtLeastOne(g.StuckAttemptCount), lastErr)
 		case GoalPhaseFinalStuckAbortReason:
 			return fmt.Sprintf(GoalPhaseFinalStuckMessage, stuckCountAtLeastOne(g.StuckAttemptCount), lastErr)
+		default:
+			// Phase 12.60: bexhausted:<loop> reasons (BoundedRetry exhaustion in
+			// recovery/replay loops — handleGoalRecovery, tool-exec retry, hook
+			// replay). Previously unmatched → returned "" → user got the
+			// misleading toolLimitResponse "Increase max_tool_iterations" advice
+			// (main-turn-12: goal archived bexhausted:goal_recovery at iter 25).
+			if strings.HasPrefix(g.AbortReason, GoalAbortReasonBexhausted+":") {
+				return fmt.Sprintf(GoalBexhaustedStuckMessage, stuckCountAtLeastOne(g.StuckAttemptCount), lastErr)
+			}
 		}
 	}
 	return ""

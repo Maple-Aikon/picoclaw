@@ -55,3 +55,18 @@ const (
 	GoalPhaseCheckpointStuckAbortReason = "goal_stuck_v1_continuation"
 	GoalPhaseFinalStuckAbortReason      = "goal_stuck_v1_finalization"
 )
+
+// GoalBexhaustedStuckMessage — return when the goal was archived with a
+// bexhausted:<loop> abort reason (Phase 12.60). These come from BoundedRetry
+// exhaustion in recovery/replay loops (handleGoalRecovery, tool-exec retry,
+// hook replay) — NOT from phase-specific lifecycle-tool failures, so the
+// Set/Checkpoint/Final messages above would name the wrong tool.
+// %d = attempt count, %s = last error message.
+// Phase 12.40.1 invariant: state-agnostic, no phase/cap/iter claims.
+const GoalBexhaustedStuckMessage = `⚠️ Goal interrupted — recovery retries were exhausted after %d attempt(s).
+
+**Last error**: %s
+
+**What this means**: the model could not restore progress after repeated recovery retries (empty response, text-only reply, tool error, or replay failure), so the goal was archived to avoid an infinite loop.
+
+**Try again**: send a new message. PicoClaw will start a fresh turn.`
