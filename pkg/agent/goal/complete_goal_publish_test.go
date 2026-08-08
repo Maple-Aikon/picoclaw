@@ -33,12 +33,8 @@ func (s *publishSpy) PublishToUser(_ context.Context, text string) {
 	s.published = append(s.published, text)
 	s.finalizedAtPublish = append(s.finalizedAtPublish, s.finalized)
 }
-func (s *publishSpy) PublishGoalSummary(_ context.Context, phase, explanation, summary string) {
+func (s *publishSpy) PublishGoalSummary(_ context.Context, phase, summary string) {
 	s.phases = append(s.phases, phase)
-	if explanation != "" {
-		s.published = append(s.published, explanation)
-		s.finalizedAtPublish = append(s.finalizedAtPublish, s.finalized)
-	}
 	s.published = append(s.published, summary)
 	s.finalizedAtPublish = append(s.finalizedAtPublish, s.finalized)
 }
@@ -261,14 +257,14 @@ func TestCompleteGoalTool_PublishesFullSummaryUncut(t *testing.T) {
 	}
 }
 
-// T19 — when the LLM sends content text alongside complete_goal, the
-// explanation is published FIRST, then the summary (2 user messages).
+// T19 — Phase 12.58.4 (Option B): complete_goal no longer publishes the
+// LLM's content text (explanation) — the tool-feedback explanation path
+// (Phase 12.58.3) delivers it. Only the summary is published (1 message).
 // The phase snapshot (execute-time, from ctx) flows through verbatim.
-func TestCompleteGoalTool_PublishesExplanationThenSummary(t *testing.T) {
+func TestCompleteGoalTool_ExplanationNotPublishedSummaryOnly(t *testing.T) {
 	ws := tempWorkspace(t)
 	spy := &publishSpy{}
 	ctx := newPublishTestCtx("sess-pub-19", spy)
-	ctx = WithToolCallExplanation(ctx, "goal đã xong, em gọi complete_goal để archive goal")
 	ctx = WithToolCallPhase(ctx, "open")
 	NewSetGoalTool(ws).Execute(ctx, map[string]any{
 		"name":             "n",
@@ -282,14 +278,11 @@ func TestCompleteGoalTool_PublishesExplanationThenSummary(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("complete_goal error: %s", res.ContentForLLM())
 	}
-	if got, want := spy.publishedCount(), 2; got != want {
-		t.Fatalf("publish count = %d, want %d (explanation + summary)", got, want)
+	if got, want := spy.publishedCount(), 1; got != want {
+		t.Fatalf("publish count = %d, want %d (summary only)", got, want)
 	}
-	if got, want := spy.published[0], "goal đã xong, em gọi complete_goal để archive goal"; got != want {
-		t.Fatalf("published[0] = %q, want %q (explanation first)", got, want)
-	}
-	if got, want := spy.published[1], "Hoàn tất — đã kiểm tra toàn bộ 12 SOP."; got != want {
-		t.Fatalf("published[1] = %q, want %q (summary second)", got, want)
+	if got, want := spy.published[0], "Hoàn tất — đã kiểm tra toàn bộ 12 SOP."; got != want {
+		t.Fatalf("published[0] = %q, want %q (summary)", got, want)
 	}
 	if len(spy.phases) != 1 || spy.phases[0] != "open" {
 		t.Fatalf("PublishGoalSummary must receive the execute-time phase snapshot \"open\", got %v", spy.phases)

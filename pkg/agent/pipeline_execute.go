@@ -778,18 +778,6 @@ toolLoop:
 		// re-invokes CallLLM, not this loop. When a retry path here
 		// does re-call (e.g. via executeToolWithRetry below), the
 		// attempt index propagates through the closure.
-		// Phase 12.55.2: surface the LLM's content text (when present) so
-		// complete_goal can publish it as the explanation message. Prefer
-		// the per-tool-call explanation when the provider attaches one;
-		// otherwise use the response content. No fallback to user message.
-		explanation := ""
-		if exec.response != nil {
-			explanation = strings.TrimSpace(exec.response.Content)
-		}
-		if tc.ExtraContent != nil && strings.TrimSpace(tc.ExtraContent.ToolFeedbackExplanation) != "" {
-			explanation = strings.TrimSpace(tc.ExtraContent.ToolFeedbackExplanation)
-		}
-		execCtx = goalpkg.WithToolCallExplanation(execCtx, explanation)
 		// Phase 12.55.3: snapshot the phase AT EXECUTE TIME — complete_goal
 		// publishes its summary header from this value; re-resolving after
 		// Archive would read a missing active goal file → GoalPhaseSet.

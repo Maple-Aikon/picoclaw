@@ -756,11 +756,10 @@ func (ts *turnState) PublishToUser(ctx context.Context, text string) {
 }
 
 // PublishGoalSummary implements goal.TurnStateAccess (Phase 12.55.2):
-// publishes the complete_goal outcome as user-facing messages with the
-// iteration/phase header. When the LLM sent content text alongside the
-// complete_goal call, that explanation is published first as its own
-// message (header + explanation), then the summary as a second message
-// (header + ": summary"). No explanation → summary-only single message.
+// publishes the complete_goal outcome as a user-facing message with the
+// iteration/phase header + summary (header + ": summary"). The LLM's
+// content text (explanation) is intentionally NOT published here — the
+// tool-feedback explanation path (Phase 12.58.3) already delivers it.
 // Void + best-effort, mirrors PublishToUser.
 //
 // Phase 12.55.3: phase is the execute-time snapshot passed by the caller
@@ -768,7 +767,7 @@ func (ts *turnState) PublishToUser(ctx context.Context, text string) {
 // Never re-resolve via currentGoalPhase() here — by the time this runs
 // the goal file has been archived, so hasGoal()=false → GoalPhaseSet.
 // Empty phase falls back to live resolution (unit-fixture compat).
-func (ts *turnState) PublishGoalSummary(ctx context.Context, phase, explanation, summary string) {
+func (ts *turnState) PublishGoalSummary(ctx context.Context, phase, summary string) {
 	if ts == nil {
 		return
 	}
@@ -782,9 +781,6 @@ func (ts *turnState) PublishGoalSummary(ctx context.Context, phase, explanation,
 		phase = string(ts.currentGoalPhase())
 	}
 	header := toolFeedbackIterContextFor(ts, GoalPhase(phase))
-	if explanation != "" {
-		ts.al.PublishResponseIfNeeded(ctx, ts.channel, ts.chatID, ts.sessionKey, header+"\n\n"+explanation)
-	}
 	ts.al.PublishResponseIfNeeded(ctx, ts.channel, ts.chatID, ts.sessionKey, header+": summary\n\n"+summary)
 }
 
