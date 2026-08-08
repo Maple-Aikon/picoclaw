@@ -80,6 +80,22 @@ When `enabled` is `true`, every tool call sends a short message to the chat befo
 {"query": "picoclaw release notes"}
 ```
 
+With `separate_messages: false` (replacing feedback), an LLM explanation attached to a tool call can also be published as its own durable message by setting `explanation_messages: true`:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "tool_feedback": {
+        "enabled": true,
+        "separate_messages": false,
+        "explanation_messages": true
+      }
+    }
+  }
+}
+```
+
 
 ### Options
 
@@ -88,6 +104,7 @@ When `enabled` is `true`, every tool call sends a short message to the chat befo
 | `enabled` | bool | `false` | Send a chat notification for each tool call |
 | `separate_messages` | bool | `false` | Keep every tool feedback update as a separate chat message instead of reusing a single placeholder/progress message |
 | `max_args_length` | int | `300` | Maximum characters of the serialised arguments included in the notification |
+| `explanation_messages` | bool | `false` | Publish the LLM explanation attached to a tool call as its own durable message (replacing feedback mode only) |
 
 ### Environment variables
 
@@ -96,6 +113,7 @@ Both fields can also be set via environment variables:
 ```bash
 PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_ENABLED=true
 PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_MAX_ARGS_LENGTH=300
+PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_EXPLANATION_MESSAGES=true
 ```
 
 > **Note:** `tool_feedback` is independent of `--debug` mode. It works in production and does not require the gateway to be started with any special flag.

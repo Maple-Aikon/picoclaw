@@ -234,11 +234,13 @@ func shouldPublishToolFeedback(cfg *config.Config, ts *turnState) bool {
 }
 
 // shouldPublishToolFeedbackExplanation gates the durable per-call
-// explanation message. It fires only when separate_messages=false: with
-// separate messages each feedback already lives in its own durable chat
-// message including the explanation, so a separate copy would duplicate
-// it. With replacing feedback the explanation would otherwise vanish when
-// the next feedback overwrites the single tracked message.
+// explanation message. It fires only when separate_messages=false AND
+// explanation_messages=true: with separate messages each feedback already
+// lives in its own durable chat message including the explanation, so a
+// separate copy would duplicate it. With replacing feedback the explanation
+// would otherwise vanish when the next feedback overwrites the single
+// tracked message — unless the user opted in via explanation_messages, the
+// explanation stays inside the tool feedback message only.
 func shouldPublishToolFeedbackExplanation(cfg *config.Config, ts *turnState) bool {
 	if ts == nil || ts.channel == "" || ts.channel == "pico" || ts.opts.SuppressToolFeedback {
 		return false
@@ -246,7 +248,8 @@ func shouldPublishToolFeedbackExplanation(cfg *config.Config, ts *turnState) boo
 	if cfg == nil || !cfg.Agents.Defaults.IsToolFeedbackEnabled() {
 		return false
 	}
-	return !cfg.Agents.Defaults.IsToolFeedbackSeparateMessagesEnabled()
+	return cfg.Agents.Defaults.IsToolFeedbackExplanationMessagesEnabled() &&
+		!cfg.Agents.Defaults.IsToolFeedbackSeparateMessagesEnabled()
 }
 
 // toolFeedbackExplanationContent returns the LLM-authored explanation text

@@ -34,6 +34,7 @@ func toolFeedbackExplanationTestConfig(t *testing.T, separate bool) *config.Conf
 	cfg.Agents.Defaults.MaxToolIterations = 10
 	cfg.Agents.Defaults.ToolFeedback.Enabled = true
 	cfg.Agents.Defaults.ToolFeedback.SeparateMessages = separate
+	cfg.Agents.Defaults.ToolFeedback.ExplanationMessages = true
 	return cfg
 }
 
@@ -145,7 +146,24 @@ func TestToolFeedbackExplanationSkippedWhenSeparateMessages(t *testing.T) {
 	}
 }
 
-// TestShouldPublishToolFeedbackExplanation matrix: enabled+replacing=true,
+// TestToolFeedbackExplanationSkippedWhenDisabled:
+// explanation_messages=false (the default) — the LLM explanation stays
+// inside the tool feedback message only; no separate user-facing message.
+func TestToolFeedbackExplanationSkippedWhenDisabled(t *testing.T) {
+	cfg := toolFeedbackExplanationTestConfig(t, false)
+	cfg.Agents.Defaults.ToolFeedback.ExplanationMessages = false
+	msgs := runToolFeedbackExplanationTurn(t, cfg, toolFeedbackExplanationProvider())
+
+	if got := len(outboundKind(msgs, messageKindToolFeedbackExplanation)); got != 0 {
+		t.Fatalf("explanation_messages=false must NOT publish a separate explanation message, got %d; outbound = %+v",
+			got, msgs)
+	}
+	if got := len(outboundKind(msgs, messageKindToolFeedback)); got == 0 {
+		t.Fatalf("expected tool feedback messages to still carry the explanation; outbound = %+v", msgs)
+	}
+}
+
+// TestShouldPublishToolFeedbackExplanation matrix: enabled+replacing+flag=true,
 // separate=true→false, disabled→false, nil config→false.
 func TestShouldPublishToolFeedbackExplanation(t *testing.T) {
 	base := toolFeedbackExplanationTestConfig(t, false)
@@ -158,6 +176,11 @@ func TestShouldPublishToolFeedbackExplanation(t *testing.T) {
 		want bool
 	}{
 		{name: "enabled and replacing", cfg: base, ts: ts, want: true},
+		{name: "explanation messages disabled", cfg: func() *config.Config {
+			c := toolFeedbackExplanationTestConfig(t, false)
+			c.Agents.Defaults.ToolFeedback.ExplanationMessages = false
+			return c
+		}(), ts: ts, want: false},
 		{name: "separate messages", cfg: func() *config.Config {
 			c := toolFeedbackExplanationTestConfig(t, true)
 			return c

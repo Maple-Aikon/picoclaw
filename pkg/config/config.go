@@ -422,6 +422,7 @@ type ToolFeedbackConfig struct {
 	SeparateMessages  bool `json:"separate_messages"   env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_SEPARATE_MESSAGES"`
 	PrettyPrint       bool `json:"pretty_print"        env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_PRETTY_PRINT"`
 	DisableEscapeHTML bool `json:"disable_escape_html" env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_DISABLE_ESCAPE_HTML"`
+	ExplanationMessages bool `json:"explanation_messages" env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_EXPLANATION_MESSAGES"`
 }
 
 type AgentDefaults struct {
@@ -482,6 +483,14 @@ func (d *AgentDefaults) IsToolFeedbackEnabled() bool {
 // in-place progress message.
 func (d *AgentDefaults) IsToolFeedbackSeparateMessagesEnabled() bool {
 	return d.ToolFeedback.SeparateMessages
+}
+
+// IsToolFeedbackExplanationMessagesEnabled returns true when an LLM
+// explanation attached to a tool call is also published as its own durable
+// user-facing message (header + blank line + explanation). When false, the
+// explanation stays inside the tool feedback message only.
+func (d *AgentDefaults) IsToolFeedbackExplanationMessagesEnabled() bool {
+	return d.ToolFeedback.ExplanationMessages
 }
 
 // GetModelName returns the effective model name for the agent defaults.
