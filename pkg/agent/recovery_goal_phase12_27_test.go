@@ -30,25 +30,27 @@ func TestTextOnlySoftRetry_Open_ReturnsRetryNextIter_NoCounter(t *testing.T) {
 	if msg != TextOnlySoftRetryOpenMessage {
 		t.Fatalf("msg=%q, want TextOnlySoftRetryOpenMessage (exact)", msg)
 	}
-	if ts.textOnlySoftRetriesDone != 1 {
-		t.Fatalf("textOnlySoftRetriesDone=%d, want 1 (natural escalation only, no cap at Open)", ts.textOnlySoftRetriesDone)
+	if ts.textOnlySoftRetriesDone != 0 {
+		t.Fatalf("textOnlySoftRetriesDone=%d, want 0 (no counter increment at Open — bump-only, Phase 12.58)", ts.textOnlySoftRetriesDone)
 	}
 }
 
-// TestTextOnlySoftRetry_Open_FiresOnEveryCall verifies Phase 12.27 Open phase
-// has NO per-iter cap on text-only — 5 consecutive fires = 5 actions (Phase 12
-// pre-cap behavior preserved at Open because iter-bump is the escalation path).
+// TestTextOnlySoftRetry_Open_FiresOnEveryCall verifies Phase 12.58 bump-only:
+// Open text-only NEVER archives — 5 consecutive fires = 5 RecoveryRetryNextIteration
+// actions (streak escalates message soft → hard; iter-bump is the only escalation).
 func TestTextOnlySoftRetry_Open_FiresOnEveryCall(t *testing.T) {
 	ts := newPhase5TurnState(t)
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: false, HasToolCalls: false}
 
 	for i := 1; i <= 5; i++ {
 		action, _ := evaluateRecovery(ts, ctx)
-		if action == RecoveryArchiveGoal && i < 3 {
-			t.Fatalf("Open phase should not archive on iter %d (no per-iter cap, iter-bump is escalation)", i)
+		if action == RecoveryArchiveGoal {
+			t.Fatalf("Open phase must never archive on text-only (bump-only), fire %d", i)
+		}
+		if action != RecoveryRetryNextIteration {
+			t.Fatalf("fire %d: action=%v, want RecoveryRetryNextIteration (exact)", i, action)
 		}
 	}
-	// By iter 3, both soft+hard fired, archive fires (matches existing TestRunTurn_Phase12_TextOnly2x_ThenArchive).
 	if ts.textOnlyStreak != 5 {
 		t.Fatalf("streak=%d, want 5", ts.textOnlyStreak)
 	}
@@ -158,24 +160,84 @@ func TestPendingRecoveryMessage_CarryToNextIter_Open(t *testing.T) {
 // top-of-loop, not in evaluateRecovery itself). This test verifies the
 // evaluation function doesn't reset mid-iter — counters are sticky within
 // the same iter at Open (escalation path uses iter-bump, not counter-cap).
-func TestEvaluateRecovery_TextOnly_PhaseOpen_IterBumpResetsCounters(t *testing.T) {
+// TestTextOnly_Open_NoCountersAcrossIterations verifies Phase 12.58 bump-only:
+// consecutive text-only fires at Open NEVER archive and NEVER increment the
+// soft/hard counters — streak alone escalates the message (soft → hard).
+func TestTextOnly_Open_NoCountersAcrossIterations(t *testing.T) {
 	ts := newPhase5TurnState(t)
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: false, HasToolCalls: false}
 
-	// First fire: soft counter increments
-	evaluateRecovery(ts, ctx)
-	if ts.textOnlySoftRetriesDone != 1 {
-		t.Fatalf("after 1st fire: soft=%d, want 1", ts.textOnlySoftRetriesDone)
+	for i := 1; i <= 4; i++ {
+		action, msg := evaluateRecovery(ts, ctx)
+		if action != RecoveryRetryNextIteration {
+			t.Fatalf("fire %d: action=%v, want RecoveryRetryNextIteration (exact)", i, action)
+		}
+		if ts.textOnlySoftRetriesDone != 0 || ts.textOnlyHardRetriesDone != 0 {
+			t.Fatalf("fire %d: soft=%d hard=%d, want 0/0 (Open never increments counters)", i, ts.textOnlySoftRetriesDone, ts.textOnlyHardRetriesDone)
+		}
+		if ts.textOnlyStreak != i {
+			t.Fatalf("fire %d: streak=%d, want %d", i, ts.textOnlyStreak, i)
+		}
+		wantMsg := TextOnlySoftRetryOpenMessage
+		if i >= 2 {
+			wantMsg = TextOnlyHardRetryOpenMessage
+		}
+		if msg != wantMsg {
+			t.Fatalf("fire %d: msg=%q, want %q (streak-based escalation)", i, msg, wantMsg)
+		}
+	}
+}
+
+// TestTextOnly_Open_ToolCallsBetween_NoArchive is the main-turn-10 regression
+// (Phase 12.58): text-only iterations interleaved with tool-call iterations
+// (which do NOT reset streak in production — no evaluateRecovery call with
+// HasToolCalls=true exists in prod callers) must never archive the goal at Open.
+func TestTextOnly_Open_ToolCallsBetween_NoArchive(t *testing.T) {
+	ts := newPhase5TurnState(t)
+	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: false, HasToolCalls: false}
+
+	// Iter 1: text-only → soft carry.
+	act, msg := evaluateRecovery(ts, ctx)
+	if act != RecoveryRetryNextIteration || msg != TextOnlySoftRetryOpenMessage {
+		t.Fatalf("iter 1: action=%v msg=%q (want RetryNextIteration + soft)", act, msg)
+	}
+	if ts.textOnlyStreak != 1 {
+		t.Fatalf("streak=%d, want 1", ts.textOnlyStreak)
 	}
 
-	// Simulate iter bump (caller's responsibility at turn_coord.go top-of-loop)
-	ts.textOnlySoftRetriesDone = 0
-	ts.textOnlyHardRetriesDone = 0
+	// Iter 2-3: tool-call iterations — production never runs evaluateRecovery
+	// here, so streak persists. Simulate by not calling evaluateRecovery.
 
-	// Next fire after iter bump: counter starts fresh
-	evaluateRecovery(ts, ctx)
-	if ts.textOnlySoftRetriesDone != 1 {
-		t.Fatalf("after iter bump + fire: soft=%d, want 1 (reset)", ts.textOnlySoftRetriesDone)
+	// Iter 4: text-only again → hard carry, still NO archive.
+	act, msg = evaluateRecovery(ts, ctx)
+	if act != RecoveryRetryNextIteration {
+		t.Fatalf("iter 4: action=%v, want RecoveryRetryNextIteration (bump-only, no archive)", act)
+	}
+	if msg != TextOnlyHardRetryOpenMessage {
+		t.Fatalf("iter 4: msg=%q, want TextOnlyHardRetryOpenMessage (streak=2)", msg)
+	}
+	if ts.textOnlyStreak != 2 {
+		t.Fatalf("streak=%d, want 2 (no reset across tool-call iterations)", ts.textOnlyStreak)
+	}
+
+	// Iter 5-6: two more text-only fires — still never archive.
+	for i := 0; i < 2; i++ {
+		act, _ = evaluateRecovery(ts, ctx)
+		if act == RecoveryArchiveGoal {
+			t.Fatalf("must never archive at Open (main-turn-10 regression), fire %d", i)
+		}
+		if act != RecoveryRetryNextIteration {
+			t.Fatalf("fire %d: action=%v, want RecoveryRetryNextIteration", i, act)
+		}
+	}
+}
+
+// TestTextOnlyHardOpenMessage_NoArchiveClaim (Phase 12.58 F8): the Open hard
+// message must NOT claim the turn will be archived — bump-only never archives
+// (turn reaches the iteration cap → toolLimitResponse fallback instead).
+func TestTextOnlyHardOpenMessage_NoArchiveClaim(t *testing.T) {
+	if strings.Contains(TextOnlyHardRetryOpenMessage, "archived") {
+		t.Fatalf("TextOnlyHardRetryOpenMessage must not threaten archiving (bump-only): %q", TextOnlyHardRetryOpenMessage)
 	}
 }
 

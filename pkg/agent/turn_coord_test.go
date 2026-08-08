@@ -1388,7 +1388,7 @@ func TestHook2_ThreeConcurrentPanics_AllArchiveGoal(t *testing.T) {
 // which would require seeding a goal first). Verifies: text-only x1
 // → soft prompt; text-only x2 → hard prompt; text-only x3 → archive.
 // Counters reset when LLM produces tool calls.
-func TestRunTurn_Phase12_TextOnly2x_ThenArchive(t *testing.T) {
+func TestRunTurn_Phase12_TextOnly_BumpOnly_NoArchive(t *testing.T) {
 	ts := newPhase5TurnState(t)
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), HasToolCalls: false, TextEmpty: false}
 
@@ -1396,21 +1396,24 @@ func TestRunTurn_Phase12_TextOnly2x_ThenArchive(t *testing.T) {
 	if act1 != RecoveryRetryNextIteration || msg1 != TextOnlySoftRetryOpenMessage {
 		t.Fatalf("1st text-only at Open: action=%v msg=%q (want RetryNextIteration + Open soft)", act1, msg1)
 	}
-	if ts.textOnlySoftRetriesDone != 1 {
-		t.Fatalf("after soft: soft_done=%d (want 1)", ts.textOnlySoftRetriesDone)
+	if ts.textOnlySoftRetriesDone != 0 {
+		t.Fatalf("after soft: soft_done=%d (want 0 — Open never increments counters, Phase 12.58)", ts.textOnlySoftRetriesDone)
 	}
 
 	act2, msg2 := evaluateRecovery(ts, ctx)
 	if act2 != RecoveryRetryNextIteration || msg2 != TextOnlyHardRetryOpenMessage {
 		t.Fatalf("2nd text-only at Open: action=%v msg=%q (want RetryNextIteration + Open hard)", act2, msg2)
 	}
-	if ts.textOnlyHardRetriesDone != 1 {
-		t.Fatalf("after hard: hard_done=%d (want 1)", ts.textOnlyHardRetriesDone)
+	if ts.textOnlyHardRetriesDone != 0 {
+		t.Fatalf("after hard: hard_done=%d (want 0 — Open never increments counters, Phase 12.58)", ts.textOnlyHardRetriesDone)
 	}
 
-	act3, _ := evaluateRecovery(ts, ctx)
-	if act3 != RecoveryArchiveGoal {
-		t.Fatalf("3rd text-only: action=%v (want ArchiveGoal)", act3)
+	act3, msg3 := evaluateRecovery(ts, ctx)
+	if act3 != RecoveryRetryNextIteration || msg3 != TextOnlyHardRetryOpenMessage {
+		t.Fatalf("3rd text-only: action=%v msg=%q (want RetryNextIteration + Open hard — bump-only, no archive)", act3, msg3)
+	}
+	if ts.textOnlyStreak != 3 {
+		t.Fatalf("streak=%d, want 3", ts.textOnlyStreak)
 	}
 
 	// Tool-call response resets counters (defensive).

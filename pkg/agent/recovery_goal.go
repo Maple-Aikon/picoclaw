@@ -138,9 +138,11 @@ const (
 	// phase (RELATIVE allowlist). Carries forward to NEXT iteration via
 	// ts.pendingRecoveryMessage — caller at turn_coord.go bumps iter.
 	TextOnlySoftRetryOpenMessage = "Your last response was text-only with no tool call. The goal is still active: continue working with an appropriate tool, or call `complete_goal` if finished. This hint will be injected at the start of the next iteration."
-	// TextOnlyHardRetryOpenMessage (Phase 12.27) — second consecutive
+	// TextOnlyHardRetryOpenMessage (Phase 12.27 + 12.58) — second consecutive
 	// text-only at Open phase. Hints MUST-decide + carry forward to next iter.
-	TextOnlyHardRetryOpenMessage = "⚠️ Two consecutive text-only responses with no tool call. You MUST decide in the next iteration: (1) call `complete_goal` if the goal is finished; (2) call `complete_goal` with a question if a critical decision needs user approval; (3) call a tool to continue working. If the next iteration is still text-only, this turn will be archived."
+	// Phase 12.58: no archive claim — Open text-only is bump-only (turn reaches
+	// the iteration cap → toolLimitResponse, never archived by this trigger).
+	TextOnlyHardRetryOpenMessage = "⚠️ Two consecutive text-only responses with no tool call. You MUST decide in the next iteration: (1) call `complete_goal` if the goal is finished; (2) call `complete_goal` with a question if a critical decision needs user approval; (3) call a tool to continue working."
 
 	// ToolExecErrorRetryMessage tells the LLM that a tool execution failed
 	// and asks it to retry the call (possibly with different args). Phase 12
@@ -315,12 +317,10 @@ const (
 	//
 	// Phase 12.37 D3: restricted-phase text-only uses 2 soft + 1 hard = 3
 	// total same-iter attempts (spec 9). Open-phase text-only stays
-	// next-iter carry (spec 7) — separate counters with cap=1+1 preserved
-	// for that path so iter-bump remains the escalation path.
+	// next-iter carry (spec 7) — bump-only (Phase 12.58): NO counters, NO
+	// archive; textOnlyStreak selects the carried message (soft → hard).
 	TextOnlySoftRetryCap         = 2  // restricted phase: 2 soft prompts per iter (spec 9)
 	TextOnlyHardRetryCap         = 1  // restricted phase: 1 hard prompt per iter (fires on 3rd text-only)
-	TextOnlySoftRetryCapOpen     = 1  // open phase: 1 soft prompt before escalating via next-iter carry (spec 7)
-	TextOnlyHardRetryCapOpen     = 1  // open phase: 1 hard prompt before archive (spec 7)
 	ToolExecErrorRetryCap         = 3  // per-tool retry up to 3 within same iteration
 	ProviderTransientRetryCap     = 3  // matches existing callLLMCore cap
 )
@@ -489,49 +489,30 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 
 	// Open phase: Trigger #2 (text-only) with next-iter carry.
 	// Phase 12.48b site 5: TextOnlyMode == TextOnlyOpenCarry dispatch.
-	// Fire soft prompt first, then hard prompt, then archive.
+	// Phase 12.58 (hướng A): bump-only — NO counters, NO archive. The
+	// carried message escalates via textOnlyStreak (soft → hard) so the
+	// LLM sees repeated text-only is not acceptable, but the turn
+	// self-terminates through the iteration cap → toolLimitResponse.
 	// At OPEN phase, we use RecoveryRetryNextIteration (NOT RecoveryRetrySameIteration):
 	// carry the message forward via ts.pendingRecoveryMessage, caller at
-	// turn_coord.go bumps iter naturally. NO counter increment — Open has
-	// no per-iter cap because iter-bump is the escalation path.
+	// turn_coord.go bumps iter naturally.
 	// Phase 12.46: explicit GoalPhaseOpen guard — SET text-only falls
 	// through to RecoveryNone (TextOnlyOpenSilent) and must NOT hit this branch.
 	if !ctx.HasToolCalls && !ctx.TextEmpty && policy.TextOnlyMode == TextOnlyOpenCarry {
 		ts.textOnlyStreak++
-		// Increment within-iteration escalation counters in order.
-		// Phase 12.37 D3: OPEN path uses cap=1+1 (separate from
-		// restricted path's 2+1) per spec 7 — next-iter carry is the
-		// escalation path, NOT same-iter retry.
-		if ts.textOnlySoftRetriesDone < TextOnlySoftRetryCapOpen {
-			ts.textOnlySoftRetriesDone++
-			logger.InfoCF("agent", "Text-only soft retry fired (Open phase, next-iter)", map[string]any{
-				"agent_id":  agentIDFromTS(ts),
-				"iteration": ctx.Iteration,
-				"phase":     ctx.Phase,
-				"soft_done": ts.textOnlySoftRetriesDone,
-				"hard_done": ts.textOnlyHardRetriesDone,
-			})
-			return RecoveryRetryNextIteration, TextOnlySoftRetryOpenMessage
+		hard := ts.textOnlyStreak >= 2
+		msg := TextOnlySoftRetryOpenMessage
+		if hard {
+			msg = TextOnlyHardRetryOpenMessage
 		}
-		if ts.textOnlyHardRetriesDone < TextOnlyHardRetryCapOpen {
-			ts.textOnlyHardRetriesDone++
-			logger.InfoCF("agent", "Text-only hard retry fired (Open phase, next-iter)", map[string]any{
-				"agent_id":  agentIDFromTS(ts),
-				"iteration": ctx.Iteration,
-				"phase":     ctx.Phase,
-				"soft_done": ts.textOnlySoftRetriesDone,
-				"hard_done": ts.textOnlyHardRetriesDone,
-			})
-			return RecoveryRetryNextIteration, TextOnlyHardRetryOpenMessage
-		}
-		// Both soft + hard fired this iteration; archive the goal.
-		logger.WarnCF("agent", "Text-only retry cap exhausted — archiving goal (Open phase)", map[string]any{
+		logger.InfoCF("agent", "Text-only next-iter recovery (Open, bump-only)", map[string]any{
 			"agent_id":  agentIDFromTS(ts),
 			"iteration": ctx.Iteration,
 			"phase":     ctx.Phase,
 			"streak":    ts.textOnlyStreak,
+			"hard":      hard,
 		})
-		return RecoveryArchiveGoal, "Text-only retry cap exhausted (1 soft + 1 hard per iteration, Open phase)."
+		return RecoveryRetryNextIteration, msg
 	} else if ctx.HasToolCalls {
 		// Reset streak + per-iteration escalation counters when LLM calls
 		// a tool (productive turn). Counters are now useless for the

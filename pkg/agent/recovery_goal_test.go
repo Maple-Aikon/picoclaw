@@ -106,8 +106,8 @@ func TestEvaluateRecovery_TextOnly2x_PhaseOpen_ForceComplete(t *testing.T) {
 	if ts.textOnlyStreak != 1 {
 		t.Fatalf("expected streak=1 after first text-only, got %d", ts.textOnlyStreak)
 	}
-	if ts.textOnlySoftRetriesDone != 1 {
-		t.Fatalf("expected soft_retries=1, got %d", ts.textOnlySoftRetriesDone)
+	if ts.textOnlySoftRetriesDone != 0 {
+		t.Fatalf("expected soft_retries=0 (Open bump-only, Phase 12.58), got %d", ts.textOnlySoftRetriesDone)
 	}
 	// Second text-only (same iter, immediately after): hard prompt fires
 	action2, msg2 := evaluateRecovery(ts, ctx)
@@ -120,21 +120,21 @@ func TestEvaluateRecovery_TextOnly2x_PhaseOpen_ForceComplete(t *testing.T) {
 	if ts.textOnlyStreak != 2 {
 		t.Fatalf("expected streak=2, got %d", ts.textOnlyStreak)
 	}
-	if ts.textOnlyHardRetriesDone != 1 {
-		t.Fatalf("expected hard_retries=1, got %d", ts.textOnlyHardRetriesDone)
+	if ts.textOnlyHardRetriesDone != 0 {
+		t.Fatalf("expected hard_retries=0 (Open bump-only, Phase 12.58), got %d", ts.textOnlyHardRetriesDone)
 	}
 }
 
 func TestEvaluateRecovery_TextOnly3x_ArchiveGoal(t *testing.T) {
 	ts := newPhase5TurnState(t)
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: false, HasToolCalls: false}
-	// Phase 12: soft + hard both fire within iteration; 3rd text-only
-	// exceeds the (1 soft + 1 hard = 2 retry) cap, archive fires.
+	// Phase 12.58: bump-only — soft + hard carry via streak; 3rd text-only
+	// still returns RecoveryRetryNextIteration (never archives at Open).
 	_, _ = evaluateRecovery(ts, ctx) // soft
 	_, _ = evaluateRecovery(ts, ctx) // hard
 	action3, _ := evaluateRecovery(ts, ctx)
-	if action3 != RecoveryArchiveGoal {
-		t.Fatalf("3rd text-only should archive goal, got %v", action3)
+	if action3 != RecoveryRetryNextIteration {
+		t.Fatalf("3rd text-only at Open must NOT archive (bump-only), got %v", action3)
 	}
 }
 
