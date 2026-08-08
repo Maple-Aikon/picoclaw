@@ -28,556 +28,62 @@ func isProvidersMapEmpty(providers map[string]any) bool {
 	return true
 }
 
+// v0ProviderRule defines the migration rule for one V0 provider row.
+type v0ProviderRule struct {
+	keys     []string
+	protocol string
+	defModel string
+	// fields lists which provider-map keys are copied into the model entry,
+	// each copied only when non-zero ("" / false / nil are skipped).
+	// nil means the default set: api_key, api_base, proxy, request_timeout.
+	fields []string
+}
+
+// v0DefaultFields is the field set shared by most providers.
+var v0DefaultFields = []string{"api_key", "api_base", "proxy", "request_timeout"}
+
 // v0ProvidersMapToModelList converts a V0 providers map to a model_list slice.
+// Row order is significant: entries appear in the same order as the rules.
 func v0ProvidersMapToModelList(providers map[string]any, userProvider, userModel string) []any {
-	// providerMigration defines migration rules for a provider
-	type providerMigration struct {
-		jsonKeys  []string
-		protocol  string
-		defModel  string
-		extractFn func(prov map[string]any) map[string]any
+	rules := []v0ProviderRule{
+		{keys: []string{"openai", "gpt"}, protocol: "openai", defModel: "openai/gpt-5.4",
+			fields: []string{"api_key", "api_base", "proxy", "request_timeout", "auth_method", "web_search"}},
+		{keys: []string{"anthropic", "claude"}, protocol: "anthropic", defModel: "anthropic/claude-sonnet-4.6",
+			fields: []string{"api_key", "api_base", "proxy", "request_timeout", "auth_method"}},
+		{keys: []string{"litellm"}, protocol: "litellm", defModel: "litellm/auto"},
+		{keys: []string{"openrouter"}, protocol: "openrouter", defModel: "openrouter/auto"},
+		{keys: []string{"groq"}, protocol: "groq", defModel: "groq/llama-3.1-70b-versatile"},
+		{keys: []string{"zhipu", "glm"}, protocol: "zhipu", defModel: "zhipu/glm-4"},
+		{keys: []string{"vllm"}, protocol: "vllm", defModel: "vllm/auto"},
+		{keys: []string{"gemini", "google"}, protocol: "gemini", defModel: "gemini/gemini-pro"},
+		{keys: []string{"nvidia"}, protocol: "nvidia", defModel: "nvidia/meta/llama-3.1-8b-instruct"},
+		{keys: []string{"ollama"}, protocol: "ollama", defModel: "ollama/llama3"},
+		{keys: []string{"moonshot", "kimi"}, protocol: "moonshot", defModel: "moonshot/kimi"},
+		{keys: []string{"shengsuanyun"}, protocol: "shengsuanyun", defModel: "shengsuanyun/auto"},
+		{keys: []string{"deepseek"}, protocol: "deepseek", defModel: "deepseek/deepseek-chat"},
+		{keys: []string{"cerebras"}, protocol: "cerebras", defModel: "cerebras/llama-3.3-70b"},
+		{keys: []string{"vivgrid"}, protocol: "vivgrid", defModel: "vivgrid/auto"},
+		{keys: []string{"volcengine", "doubao"}, protocol: "volcengine", defModel: "volcengine/doubao-pro"},
+		{keys: []string{"github_copilot", "copilot"}, protocol: "github-copilot", defModel: "github-copilot/gpt-5.4",
+			fields: []string{"api_key", "api_base", "connect_mode"}},
+		{keys: []string{"antigravity"}, protocol: "antigravity", defModel: "antigravity/gemini-2.0-flash",
+			fields: []string{"api_key", "auth_method"}},
+		{keys: []string{"qwen", "tongyi"}, protocol: "qwen", defModel: "qwen/qwen-max"},
+		{keys: []string{"mistral"}, protocol: "mistral", defModel: "mistral/mistral-small-latest"},
+		{keys: []string{"avian"}, protocol: "avian", defModel: "avian/deepseek/deepseek-v3.2"},
+		{keys: []string{"minimax"}, protocol: "minimax", defModel: "minimax/minimax"},
+		{keys: []string{"longcat"}, protocol: "longcat", defModel: "longcat/LongCat-Flash-Thinking"},
+		{keys: []string{"modelscope"}, protocol: "modelscope", defModel: "modelscope/Qwen/Qwen3-235B-A22B-Instruct-2507"},
+		{keys: []string{"novita"}, protocol: "novita", defModel: "novita/auto"},
 	}
-
-	migrations := []providerMigration{
-		{
-			jsonKeys: []string{"openai", "gpt"},
-			protocol: "openai",
-			defModel: "openai/gpt-5.4",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				if v, ok := prov["auth_method"]; ok && v != "" {
-					entry["auth_method"] = v
-				}
-				if v, ok := prov["web_search"]; ok && v != false {
-					entry["web_search"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"anthropic", "claude"},
-			protocol: "anthropic",
-			defModel: "anthropic/claude-sonnet-4.6",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				if v, ok := prov["auth_method"]; ok && v != "" {
-					entry["auth_method"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"litellm"},
-			protocol: "litellm",
-			defModel: "litellm/auto",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"openrouter"},
-			protocol: "openrouter",
-			defModel: "openrouter/auto",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"groq"},
-			protocol: "groq",
-			defModel: "groq/llama-3.1-70b-versatile",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"zhipu", "glm"},
-			protocol: "zhipu",
-			defModel: "zhipu/glm-4",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"vllm"},
-			protocol: "vllm",
-			defModel: "vllm/auto",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"gemini", "google"},
-			protocol: "gemini",
-			defModel: "gemini/gemini-pro",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"nvidia"},
-			protocol: "nvidia",
-			defModel: "nvidia/meta/llama-3.1-8b-instruct",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"ollama"},
-			protocol: "ollama",
-			defModel: "ollama/llama3",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"moonshot", "kimi"},
-			protocol: "moonshot",
-			defModel: "moonshot/kimi",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"shengsuanyun"},
-			protocol: "shengsuanyun",
-			defModel: "shengsuanyun/auto",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"deepseek"},
-			protocol: "deepseek",
-			defModel: "deepseek/deepseek-chat",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"cerebras"},
-			protocol: "cerebras",
-			defModel: "cerebras/llama-3.3-70b",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"vivgrid"},
-			protocol: "vivgrid",
-			defModel: "vivgrid/auto",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"volcengine", "doubao"},
-			protocol: "volcengine",
-			defModel: "volcengine/doubao-pro",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"github_copilot", "copilot"},
-			protocol: "github-copilot",
-			defModel: "github-copilot/gpt-5.4",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["connect_mode"]; ok && v != "" {
-					entry["connect_mode"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"antigravity"},
-			protocol: "antigravity",
-			defModel: "antigravity/gemini-2.0-flash",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["auth_method"]; ok && v != "" {
-					entry["auth_method"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"qwen", "tongyi"},
-			protocol: "qwen",
-			defModel: "qwen/qwen-max",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"mistral"},
-			protocol: "mistral",
-			defModel: "mistral/mistral-small-latest",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"avian"},
-			protocol: "avian",
-			defModel: "avian/deepseek/deepseek-v3.2",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"minimax"},
-			protocol: "minimax",
-			defModel: "minimax/minimax",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"longcat"},
-			protocol: "longcat",
-			defModel: "longcat/LongCat-Flash-Thinking",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"modelscope"},
-			protocol: "modelscope",
-			defModel: "modelscope/Qwen/Qwen3-235B-A22B-Instruct-2507",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-		{
-			jsonKeys: []string{"novita"},
-			protocol: "novita",
-			defModel: "novita/auto",
-			extractFn: func(prov map[string]any) map[string]any {
-				entry := make(map[string]any)
-				if v, ok := prov["api_key"]; ok && v != "" {
-					entry["api_key"] = v
-				}
-				if v, ok := prov["api_base"]; ok && v != "" {
-					entry["api_base"] = v
-				}
-				if v, ok := prov["proxy"]; ok && v != "" {
-					entry["proxy"] = v
-				}
-				if v, ok := prov["request_timeout"]; ok && v != nil {
-					entry["request_timeout"] = v
-				}
-				return entry
-			},
-		},
-	}
-
-	// We need access to agents.defaults for user provider/model, but we only have providers map
-	// This function is called with just the providers map, so we can't access agents.defaults
-	// The caller (migrateV0ToV1) would need to pass this information if needed
-	// For now, we skip the user provider/model matching
 
 	var result []any
 
-	for _, migration := range migrations {
-		// Find the provider in the providers map
+	for _, rule := range rules {
+		// Find the provider in the providers map (first matching key wins).
 		var provData map[string]any
 		found := false
-		for _, key := range migration.jsonKeys {
+		for _, key := range rule.keys {
 			if v, ok := providers[key]; ok {
 				if provMap, ok := v.(map[string]any); ok {
 					provData = provMap
@@ -590,23 +96,25 @@ func v0ProvidersMapToModelList(providers map[string]any, userProvider, userModel
 			continue
 		}
 
-		// Extract fields using the extraction function
-		entry := migration.extractFn(provData)
+		// Copy configured fields (non-zero only); empty entries are skipped.
+		entry := make(map[string]any)
+		for _, field := range rule.fieldsOrDefault() {
+			addIfNonZero(entry, provData, field)
+		}
 		if len(entry) == 0 {
 			continue
 		}
 
-		// Add model_name and model
-		entry["model_name"] = migration.jsonKeys[0]
-
-		// Use the user's model if the provider matches, otherwise use the default
-		modelToUse := migration.defModel
+		// model_name is always the first key; model uses the user's model when
+		// their provider matches, prefixed with the protocol unless it already
+		// contains a slash.
+		entry["model_name"] = rule.keys[0]
+		modelToUse := rule.defModel
 		if userProvider != "" && userModel != "" {
-			for _, key := range migration.jsonKeys {
+			for _, key := range rule.keys {
 				if userProvider == key {
-					// Build the model string with protocol prefix if needed
 					if !strings.Contains(userModel, "/") {
-						modelToUse = migration.protocol + "/" + userModel
+						modelToUse = rule.protocol + "/" + userModel
 					} else {
 						modelToUse = userModel
 					}
@@ -620,4 +128,34 @@ func v0ProvidersMapToModelList(providers map[string]any, userProvider, userModel
 	}
 
 	return result
+}
+
+// fieldsOrDefault returns the rule's field set, falling back to the default.
+func (r v0ProviderRule) fieldsOrDefault() []string {
+	if r.fields != nil {
+		return r.fields
+	}
+	return v0DefaultFields
+}
+
+// addIfNonZero copies prov[name] into entry unless the value is zero
+// (nil, empty string, or false). Numeric values (e.g. request_timeout) are
+// always copied.
+func addIfNonZero(entry, prov map[string]any, name string) {
+	if v, ok := prov[name]; ok && !v0IsZero(v) {
+		entry[name] = v
+	}
+}
+
+// v0IsZero reports whether v is a zero value under V0 migration rules.
+func v0IsZero(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case string:
+		return t == ""
+	case bool:
+		return !t
+	}
+	return false
 }
