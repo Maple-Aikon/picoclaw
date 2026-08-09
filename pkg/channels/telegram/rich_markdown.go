@@ -23,22 +23,55 @@ var richTableSepRE = regexp.MustCompile(`^\s*\|[\s:|-]*\-[\s:|-]*\|\s*$`)
 // byte-identical, so the transform is idempotent and safe for prose.
 func normalizeRichMarkdown(md string) string {
 	lines := strings.Split(md, "\n")
+
+	// Pass 1: mark table rows and unescape pipes inside their code spans
+	// (existing behavior).
+	tableRow := make([]bool, len(lines))
 	inTable := false
 	for i := 0; i < len(lines); i++ {
 		row := richTableRowRE.MatchString(lines[i])
 		if inTable && row {
 			lines[i] = unescapePipesInCodeSpans(lines[i])
+			tableRow[i] = true
 			continue
 		}
 		if !inTable && row && i+1 < len(lines) && richTableSepRE.MatchString(lines[i+1]) {
 			// Header row of a new table; the separator follows.
 			lines[i] = unescapePipesInCodeSpans(lines[i])
+			tableRow[i] = true
 			inTable = true
 			continue
 		}
 		inTable = false
 	}
-	return strings.Join(lines, "\n")
+
+	// Pass 2: collapse newline runs to exactly one paragraph break ("\n\n")
+	// OUTSIDE table rows. Telegram rich mode renders a single "\n" as a
+	// space (user-visible bug, 2026-08-09), so single newlines between
+	// prose lines must become "\n\n". Table rows keep their single
+	// newlines so the table stays contiguous. Idempotent: any run of 1+
+	// newlines becomes exactly one "\n\n", and "\n\n" is unchanged.
+	var b strings.Builder
+	b.Grow(len(md) + 16)
+	prevContent := -1 // index of the last non-empty line written
+	pendingEmpty := false
+	for i := 0; i < len(lines); i++ {
+		if lines[i] == "" {
+			pendingEmpty = true
+			continue
+		}
+		if prevContent >= 0 {
+			if !pendingEmpty && tableRow[prevContent] && tableRow[i] {
+				b.WriteByte('\n') // adjacent table rows: keep contiguous
+			} else {
+				b.WriteString("\n\n")
+			}
+		}
+		b.WriteString(lines[i])
+		prevContent = i
+		pendingEmpty = false
+	}
+	return b.String()
 }
 
 // unescapePipesInCodeSpans replaces `\|` with `|` only inside backtick code

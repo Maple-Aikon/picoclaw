@@ -86,3 +86,59 @@ func TestNormalizeRichMarkdown_NoTableNoChange(t *testing.T) {
 		t.Errorf("no-table markdown must stay untouched\n got: %q\nwant: %q", got, in)
 	}
 }
+
+// TestNormalizeRichMarkdown_SingleNewlineToParagraph — Telegram rich mode
+// renders a single \n as a space (verified 2026-08-09). Single newlines
+// between prose lines must become a paragraph break.
+func TestNormalizeRichMarkdown_SingleNewlineToParagraph(t *testing.T) {
+	in := "line one\nline two"
+	want := "line one\n\nline two"
+	if got := normalizeRichMarkdown(in); got != want {
+		t.Errorf("single newline must become paragraph break\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestNormalizeRichMarkdown_NewlineRunCollapses — runs of 2+ newlines
+// collapse to exactly one paragraph break (idempotent target form).
+func TestNormalizeRichMarkdown_NewlineRunCollapses(t *testing.T) {
+	in := "a\n\n\nb\n\n\n\nc"
+	want := "a\n\nb\n\nc"
+	if got := normalizeRichMarkdown(in); got != want {
+		t.Errorf("newline runs must collapse to one paragraph break\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestNormalizeRichMarkdown_ProseAroundTable — prose + table + prose: only
+// single newlines OUTSIDE the table become paragraph breaks; table rows
+// stay contiguous; a blank line between tables is preserved as a break.
+func TestNormalizeRichMarkdown_ProseAroundTable(t *testing.T) {
+	in := "intro\n| a |\n|---|---|\n| b | 1 |\n\noutro"
+	want := "intro\n\n| a |\n|---|---|\n| b | 1 |\n\noutro"
+	if got := normalizeRichMarkdown(in); got != want {
+		t.Errorf("prose/table mix mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestNormalizeRichMarkdown_TwoTablesSeparatedByBlankLine — blank line
+// between two tables must stay a paragraph break (not merge the tables).
+func TestNormalizeRichMarkdown_TwoTablesSeparatedByBlankLine(t *testing.T) {
+	in := "| a |\n|---|---|\n| 1 |\n\n| b |\n|---|---|\n| 2 |"
+	want := "| a |\n|---|---|\n| 1 |\n\n| b |\n|---|---|\n| 2 |"
+	if got := normalizeRichMarkdown(in); got != want {
+		t.Errorf("two tables must stay separated\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestNormalizeRichMarkdown_ProseIdempotent — applying twice to prose with
+// single newlines yields the same (already-normalized) output.
+func TestNormalizeRichMarkdown_ProseIdempotent(t *testing.T) {
+	in := "a\nb\n\nc"
+	once := normalizeRichMarkdown(in)
+	twice := normalizeRichMarkdown(once)
+	if twice != once {
+		t.Errorf("prose normalizer is not idempotent\n once: %q\ntwice: %q", once, twice)
+	}
+	if once != "a\n\nb\n\nc" {
+		t.Errorf("unexpected normalized form: %q", once)
+	}
+}
