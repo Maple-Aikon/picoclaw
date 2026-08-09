@@ -49,7 +49,9 @@ func TestFormatToolFeedbackMessage_IterContextAfterToolLine(t *testing.T) {
 		"",
 		"📊 #3/250 · Goal-Checkpoint",
 	)
-	want := "\U0001f527 `web_search`\n📊 #3/250 · Goal-Checkpoint\n\nSearching for the current news."
+	// Rich mode (Telegram Rich Messages) collapses a single \n inside a
+	// paragraph block, so the header lines must be separated by \n\n.
+	want := "\U0001f527 `web_search`\n\n📊 #3/250 · Goal-Checkpoint\n\nSearching for the current news."
 	if got != want {
 		t.Fatalf("FormatToolFeedbackMessage() = %q, want %q", got, want)
 	}
@@ -57,7 +59,7 @@ func TestFormatToolFeedbackMessage_IterContextAfterToolLine(t *testing.T) {
 
 func TestFormatToolFeedbackMessage_IterContextOnlyWithToolLine(t *testing.T) {
 	got := FormatToolFeedbackMessage("web_search", "", "", "📊 #3/250 · Goal-Checkpoint")
-	want := "\U0001f527 `web_search`\n📊 #3/250 · Goal-Checkpoint"
+	want := "\U0001f527 `web_search`\n\n📊 #3/250 · Goal-Checkpoint"
 	if got != want {
 		t.Fatalf("FormatToolFeedbackMessage() = %q, want %q", got, want)
 	}
@@ -183,4 +185,12 @@ func jsonValEq(a, b any) bool {
 	aJSON, _ := json.Marshal(a)
 	bJSON, _ := json.Marshal(b)
 	return string(aJSON) == string(bJSON)
+}
+
+func TestFormatToolFeedbackMessage_IterContextWithoutToolNameWithBody(t *testing.T) {
+	got := FormatToolFeedbackMessage("", "Searching for the current news.", "", "📊 #3/250 · Goal-Checkpoint")
+	want := "📊 #3/250 · Goal-Checkpoint\n\nSearching for the current news."
+	if got != want {
+		t.Fatalf("FormatToolFeedbackMessage() = %q, want %q", got, want)
+	}
 }

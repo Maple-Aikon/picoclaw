@@ -37,6 +37,12 @@ func FormatArgsJSON(args map[string]any, prettyPrint, disableEscapeHTML bool) st
 // iterContext is an optional one-line progress context (e.g. "📊 #3/250 ·
 // Goal-Checkpoint") rendered right after the tool header, before the
 // explanation body. An empty iterContext omits the line entirely.
+//
+// Header lines are separated by "\n\n" (blank line), NOT a single "\n":
+// Telegram Rich Messages collapse a single newline into inline whitespace
+// inside a paragraph block (verified 2026-08-09), so a single "\n" would
+// render the tool name and the 📊 context on the same line. "\n\n" forces a
+// paragraph break in rich mode and renders as a blank line in HTML mode.
 func FormatToolFeedbackMessage(toolName, explanation, argsPreview, iterContext string) string {
 	toolName = strings.TrimSpace(toolName)
 	explanation = strings.TrimSpace(explanation)
@@ -59,19 +65,19 @@ func FormatToolFeedbackMessage(toolName, explanation, argsPreview, iterContext s
 		if body == "" {
 			return iterContext
 		}
-		return iterContext + "\n" + body
+		return iterContext + "\n\n" + body
 	}
 	if body == "" {
 		if iterContext == "" {
 			return fmt.Sprintf("\U0001f527 `%s`", toolName)
 		}
-		return fmt.Sprintf("\U0001f527 `%s`\n%s", toolName, iterContext)
+		return fmt.Sprintf("\U0001f527 `%s`\n\n%s", toolName, iterContext)
 	}
 	if iterContext == "" {
 		return fmt.Sprintf("\U0001f527 `%s`\n\n%s", toolName, body)
 	}
 
-	return fmt.Sprintf("\U0001f527 `%s`\n%s\n\n%s", toolName, iterContext, body)
+	return fmt.Sprintf("\U0001f527 `%s`\n\n%s\n\n%s", toolName, iterContext, body)
 }
 
 // FitToolFeedbackMessage keeps tool feedback within a single outbound message.
