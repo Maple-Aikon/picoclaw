@@ -431,7 +431,7 @@ func (c *TelegramChannel) sendChunk(
 		pMsg, err := c.bot.SendRichMessage(ctx, &telego.SendRichMessageParams{
 			ChatID:          tu.ID(params.chatID),
 			MessageThreadID: params.threadID,
-			RichMessage:     telego.InputRichMessage{Markdown: params.content},
+			RichMessage:     telego.InputRichMessage{Markdown: normalizeRichMarkdown(params.content)},
 			ReplyParameters: telegramReplyParameters(params.replyToID),
 		})
 		if err != nil {
@@ -530,7 +530,7 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 		editMsg = &telego.EditMessageTextParams{
 			ChatID:      tu.ID(cid),
 			MessageID:   mid,
-			RichMessage: &telego.InputRichMessage{Markdown: content},
+			RichMessage: &telego.InputRichMessage{Markdown: normalizeRichMarkdown(content)},
 		}
 	} else {
 		editMsg = tu.EditMessageText(tu.ID(cid), mid, parseContent(content))
@@ -1808,7 +1808,7 @@ func (s *telegramStreamer) pushDraftThrottled(ctx context.Context, content strin
 			ChatID:          s.chatID,
 			MessageThreadID: s.threadID,
 			DraftID:         s.draftID,
-			RichMessage:     telego.InputRichMessage{Markdown: content},
+			RichMessage:     telego.InputRichMessage{Markdown: normalizeRichMarkdown(content)},
 		}); err != nil {
 			logger.WarnCF("telegram", "sendRichMessageDraft failed, disabling streaming", map[string]any{
 				"error": err.Error(),
@@ -1930,7 +1930,7 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 			ChatID:          s.chatID,
 			MessageThreadID: s.threadID,
 			DraftID:         s.draftID,
-			RichMessage:     telego.InputRichMessage{Markdown: content},
+			RichMessage:     telego.InputRichMessage{Markdown: normalizeRichMarkdown(content)},
 		}); err != nil {
 			logger.WarnCF("telegram", "sendRichMessageDraft failed, disabling streaming", map[string]any{
 				"error": err.Error(),
@@ -1990,7 +1990,7 @@ func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 		if _, err := s.bot.SendRichMessage(ctx, &telego.SendRichMessageParams{
 			ChatID:          tu.ID(s.chatID),
 			MessageThreadID: s.threadID,
-			RichMessage:     telego.InputRichMessage{Markdown: content},
+			RichMessage:     telego.InputRichMessage{Markdown: normalizeRichMarkdown(content)},
 		}); err != nil {
 			// Fallback to plain text
 			tgMsg := tu.Message(tu.ID(s.chatID), content)
