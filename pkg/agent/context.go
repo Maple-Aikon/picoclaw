@@ -1492,6 +1492,19 @@ func sanitizeHistoryForProvider(history []providers.Message) []providers.Message
 	// IDs across separate turns (for example "call_0"), so global deduplication
 	// would incorrectly delete later valid tool results and leave an
 	// assistant(tool_calls) -> assistant sequence behind.
+	//
+	// Tension with pass 3 (sanitizeToolCallIDUniqueness, runs right above):
+	// pass 3's `counts` map is GLOBAL across the whole array, so an ID
+	// legitimately reused across separate turns gets BOTH occurrences rewritten
+	// to fresh unique IDs — deliberately more aggressive than this pass's
+	// block-scoped rationale. That is safe: pass 3 preserves call↔result pairing
+	// via a per-block FIFO queue, so the payload stays valid; the "legit reuse"
+	// case becomes "rewrite both" instead of "keep both" (same valid outcome,
+	// different IDs). Net effect: after pass 3 every ID in the payload is
+	// globally unique, so this pass never observes cross-turn collisions — the
+	// two passes are complementary: pass 3 guarantees uniqueness, pass 2
+	// guarantees completeness (every tool call has matching results). If pass 3
+	// is ever made block-scoped, revisit this comment.
 	final := make([]providers.Message, 0, len(sanitized))
 	for i := 0; i < len(sanitized); i++ {
 		msg := sanitized[i]
