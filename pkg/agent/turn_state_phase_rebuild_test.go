@@ -9,9 +9,12 @@ import (
 
 // Test fixture helper: build a turnState + turnExecution with a real
 // ContextBuilder (no skills loaded — empty tempDir).
+// initialLastBuiltIter: the iteration the last system prompt was built
+// at (paired with initialLastBuilt phase; 0 = no rebuild yet).
 func newPhaseRebuildTestFixture(
 	t *testing.T,
 	initialLastBuilt string,
+	initialLastBuiltIter int,
 	currentPhase GoalPhase,
 ) (*turnState, *turnExecution, []providers.Message) {
 	t.Helper()
@@ -21,11 +24,12 @@ func newPhaseRebuildTestFixture(
 		agent: &AgentInstance{
 			ContextBuilder: cb,
 		},
-		activeSkills:         nil,
-		userMessage:          "test",
-		media:                nil,
-		opts:                 processOptions{Dispatch: DispatchRequest{}},
-		lastBuiltPromptPhase: initialLastBuilt,
+		activeSkills:            nil,
+		userMessage:             "test",
+		media:                   nil,
+		opts:                    processOptions{Dispatch: DispatchRequest{}},
+		lastBuiltPromptPhase:    initialLastBuilt,
+		lastBuiltPromptIteration: initialLastBuiltIter,
 	}
 	ts.opts.Dispatch.SessionKey = "test-session"
 	ts.opts.SessionKey = "test-session"
@@ -50,12 +54,15 @@ func newPhaseRebuildTestFixture(
 // =====================================================================
 
 func TestPhaseChangeRebuild_FirstIter_TriggersRebuild(t *testing.T) {
-	ts, exec, messages := newPhaseRebuildTestFixture(t, "", GoalPhaseSet)
+	ts, exec, messages := newPhaseRebuildTestFixture(t, "", 0, GoalPhaseSet)
 
-	result := ts.maybeRebuildPromptForPhaseChange(messages, exec, nil, 1)
+	result := ts.maybeRebuildPromptForStateChange(messages, exec, nil, 1)
 
 	if ts.lastBuiltPromptPhase != string(GoalPhaseSet) {
 		t.Errorf("expected lastBuiltPromptPhase = %q, got %q", string(GoalPhaseSet), ts.lastBuiltPromptPhase)
+	}
+	if ts.lastBuiltPromptIteration != 1 {
+		t.Errorf("expected lastBuiltPromptIteration = 1, got %d", ts.lastBuiltPromptIteration)
 	}
 	if len(result) < 1 {
 		t.Fatalf("expected at least 1 message in result, got %d", len(result))
@@ -66,13 +73,13 @@ func TestPhaseChangeRebuild_FirstIter_TriggersRebuild(t *testing.T) {
 }
 
 // =====================================================================
-// T2: Same phase → no rebuild
+// T2: Same phase + same iteration → no rebuild
 // =====================================================================
 
 func TestPhaseChangeRebuild_SamePhase_NoRebuild(t *testing.T) {
-	ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhaseOpen), GoalPhaseOpen)
+	ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhaseOpen), 3, GoalPhaseOpen)
 
-	result := ts.maybeRebuildPromptForPhaseChange(messages, exec, nil, 3)
+	result := ts.maybeRebuildPromptForStateChange(messages, exec, nil, 3)
 
 	if ts.lastBuiltPromptPhase != string(GoalPhaseOpen) {
 		t.Errorf("expected lastBuiltPromptPhase unchanged = %q, got %q", string(GoalPhaseOpen), ts.lastBuiltPromptPhase)
@@ -86,15 +93,45 @@ func TestPhaseChangeRebuild_SamePhase_NoRebuild(t *testing.T) {
 }
 
 // =====================================================================
+// T2b: Same phase + DIFFERENT iteration → rebuild (compass must always
+// reflect the current iter — Phase 12.67b)
+// =====================================================================
+
+func TestPhaseChangeRebuild_SamePhase_IterChange_TriggersRebuild(t *testing.T) {
+	ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhaseOpen), 2, GoalPhaseOpen)
+
+	messages = append(messages, providers.Message{Role: "user", Content: "userMsg1"})
+
+	result := ts.maybeRebuildPromptForStateChange(messages, exec, nil, 5)
+
+	if ts.lastBuiltPromptPhase != string(GoalPhaseOpen) {
+		t.Errorf("expected lastBuiltPromptPhase = %q, got %q", string(GoalPhaseOpen), ts.lastBuiltPromptPhase)
+	}
+	if ts.lastBuiltPromptIteration != 5 {
+		t.Errorf("expected lastBuiltPromptIteration = 5, got %d", ts.lastBuiltPromptIteration)
+	}
+	if result[0].Content == "ORIGINAL_SYSTEM_PROMPT" {
+		t.Errorf("expected messages[0] rebuilt (iter changed), still ORIGINAL_SYSTEM_PROMPT")
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages (rebuilt system + userMsg1), got %d", len(result))
+	}
+	if result[1].Content != "userMsg1" {
+		t.Errorf("expected messages[1] preserved (userMsg1), got %q", result[1].Content)
+	}
+}
+
+
+// =====================================================================
 // T3: Open → Checkpoint triggers rebuild, preserves messages[1:N]
 // =====================================================================
 
 func TestPhaseChangeRebuild_OpenToCheckpoint_TriggersRebuild(t *testing.T) {
-	ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhaseOpen), GoalPhaseCheckpoint)
+	ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhaseOpen), 2, GoalPhaseCheckpoint)
 
 	messages = append(messages, providers.Message{Role: "user", Content: "userMsg1"})
 
-	result := ts.maybeRebuildPromptForPhaseChange(messages, exec, nil, 5)
+	result := ts.maybeRebuildPromptForStateChange(messages, exec, nil, 5)
 
 	if ts.lastBuiltPromptPhase != string(GoalPhaseCheckpoint) {
 		t.Errorf("expected lastBuiltPromptPhase = %q, got %q", string(GoalPhaseCheckpoint), ts.lastBuiltPromptPhase)
@@ -117,7 +154,7 @@ func TestPhaseChangeRebuild_OpenToCheckpoint_TriggersRebuild(t *testing.T) {
 // =====================================================================
 
 func TestPhaseChangeRebuild_CheckpointToOpen_TriggersRebuild(t *testing.T) {
-	ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhaseCheckpoint), GoalPhaseOpen)
+	ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhaseCheckpoint), 1, GoalPhaseOpen)
 
 	messages = append(messages,
 		providers.Message{Role: "user", Content: "userMsg1"},
@@ -125,7 +162,7 @@ func TestPhaseChangeRebuild_CheckpointToOpen_TriggersRebuild(t *testing.T) {
 		providers.Message{Role: "user", Content: "userMsg2"},
 	)
 
-	result := ts.maybeRebuildPromptForPhaseChange(messages, exec, nil, 6)
+	result := ts.maybeRebuildPromptForStateChange(messages, exec, nil, 6)
 
 	if ts.lastBuiltPromptPhase != string(GoalPhaseOpen) {
 		t.Errorf("expected lastBuiltPromptPhase = %q, got %q", string(GoalPhaseOpen), ts.lastBuiltPromptPhase)
@@ -154,9 +191,9 @@ func TestPhaseChangeRebuild_AllPhaseTransitions(t *testing.T) {
 		for _, current := range phases {
 			name := string(lastBuilt) + "_to_" + string(current)
 			t.Run(name, func(t *testing.T) {
-				ts, exec, messages := newPhaseRebuildTestFixture(t, string(lastBuilt), current)
+				ts, exec, messages := newPhaseRebuildTestFixture(t, string(lastBuilt), 1, current)
 
-				ts.maybeRebuildPromptForPhaseChange(messages, exec, nil, 1)
+				ts.maybeRebuildPromptForStateChange(messages, exec, nil, 1)
 
 				if ts.lastBuiltPromptPhase != string(current) {
 					t.Errorf("[%s] expected lastBuiltPromptPhase = %q, got %q", name, string(current), ts.lastBuiltPromptPhase)
@@ -171,12 +208,12 @@ func TestPhaseChangeRebuild_AllPhaseTransitions(t *testing.T) {
 // =====================================================================
 
 func TestPhaseChangeRebuild_RebuiltPromptHasPhaseSpecificHint(t *testing.T) {
-	tsSet, execSet, messagesSet := newPhaseRebuildTestFixture(t, "", GoalPhaseSet)
-	resultSet := tsSet.maybeRebuildPromptForPhaseChange(messagesSet, execSet, nil, 1)
+	tsSet, execSet, messagesSet := newPhaseRebuildTestFixture(t, "", 0, GoalPhaseSet)
+	resultSet := tsSet.maybeRebuildPromptForStateChange(messagesSet, execSet, nil, 1)
 	setPrompt := resultSet[0].Content
 
-	tsCp, execCp, messagesCp := newPhaseRebuildTestFixture(t, string(GoalPhaseOpen), GoalPhaseCheckpoint)
-	resultCp := tsCp.maybeRebuildPromptForPhaseChange(messagesCp, execCp, nil, 5)
+	tsCp, execCp, messagesCp := newPhaseRebuildTestFixture(t, string(GoalPhaseOpen), 2, GoalPhaseCheckpoint)
+	resultCp := tsCp.maybeRebuildPromptForStateChange(messagesCp, execCp, nil, 5)
 	cpPrompt := resultCp[0].Content
 
 	if strings.TrimSpace(setPrompt) == strings.TrimSpace(cpPrompt) {

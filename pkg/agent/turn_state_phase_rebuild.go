@@ -5,13 +5,25 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
-// Phase 12.33: rebuild system prompt when goal phase changes mid-turn.
+// Phase 12.33 + 12.67b: rebuild system prompt when the prompt STATE
+// (goal phase OR iteration) changes mid-turn.
 //
 // Without this hook, messages[0] persists from iter 0 across all iters
 // of a turn, even when GoalPhase changes (e.g., Open → Checkpoint at
 // iter=MaxIter). The LLM at iter 5 (phase=Checkpoint) sees the iter 0
 // SET-phase prompt with "call set_goal" instruction, contradicting the
 // actual CHECKPOINT-phase allowlist ([goal_progress, complete_goal]).
+//
+// Phase 12.67b extends the trigger from phase-only to (phase, iteration):
+// the dynamic compass line ("Goal phase: open (iter N / total M)",
+// formatIterCompass) is rendered from req.Iteration at build time, but
+// the same phase can span many iterations (OPEN: iters 2..25). Without
+// the iteration dimension, the compass froze at the first iter of each
+// phase — the LLM read "iter 2" at iter 12, so compass claims went stale
+// while the wire (allowlist, phase resolver) moved on. Rebuilding on
+// every iter change keeps the compass the latest; the cost is one
+// system-prompt rebuild per iteration (OPEN consults the iteration-
+// keyed cache, non-Open phases rebuild directly per Phase 12.16.1).
 //
 // Wire trace evidence (2026-07-31 06:55 ICT): HORUS Protocol 6-iter
 // turn showed only 2 prompt_build events (both at iter 0). LLM at
@@ -41,33 +53,37 @@ import (
 // history+currentUserMessage to newMessages, which would DUPLICATE
 // the user message when we append messages[1:] on top.
 
-// maybeRebuildPromptForPhaseChange returns the messages array with
-// messages[0] replaced if the goal phase changed since the last build.
-// If the phase hasn't changed, returns the input messages unchanged
-// (no rebuild cost). Caller is responsible for assigning the returned
-// value back to `exec.messages` and `messages` (the local).
+// maybeRebuildPromptForStateChange returns the messages array with
+// messages[0] replaced if the prompt state (goal phase OR iteration)
+// changed since the last build. If the state hasn't changed, returns the
+// input messages unchanged (no rebuild cost). Caller is responsible for
+// assigning the returned value back to `exec.messages` and `messages`
+// (the local).
 //
 // The hook does NOT depend on exec (history/summary) — BuildSystemPrompt
 // only needs the phase + postCompleteGoalReport + iteration to produce
 // the system prompt string.
-func (ts *turnState) maybeRebuildPromptForPhaseChange(
+func (ts *turnState) maybeRebuildPromptForStateChange(
 	messages []providers.Message,
 	exec *turnExecution,
 	cfg *config.Config,
 	iteration int,
 ) []providers.Message {
 	currentPhase := string(ts.currentGoalPhase())
+	stateChanged := ts.lastBuiltPromptPhase != currentPhase ||
+		ts.lastBuiltPromptIteration != iteration
 
 	if IsAgentDebugEnabled() {
 		agentDebugf("prompt_cache", map[string]any{
-			"event_stage":                "phase_change_check",
-			"iteration":                  iteration,
-			"ts_current_goal_phase":      currentPhase,
+			"event_stage":               "phase_change_check",
+			"iteration":                 iteration,
+			"ts_current_goal_phase":     currentPhase,
 			"ts_last_built_prompt_phase": ts.lastBuiltPromptPhase,
-			"rebuild_needed":             ts.lastBuiltPromptPhase != currentPhase,
+			"ts_last_built_prompt_iter":  ts.lastBuiltPromptIteration,
+			"rebuild_needed":            stateChanged,
 		})
 	}
-	if ts.lastBuiltPromptPhase == currentPhase {
+	if !stateChanged {
 		return messages // no rebuild needed
 	}
 
@@ -102,6 +118,7 @@ func (ts *turnState) maybeRebuildPromptForPhaseChange(
 			newMessages = append(newMessages, messages[1:]...)
 		}
 		ts.lastBuiltPromptPhase = currentPhase
+		ts.lastBuiltPromptIteration = iteration
 		return newMessages
 	}
 	rebuiltSystem := rebuiltAll[0]
@@ -111,11 +128,13 @@ func (ts *turnState) maybeRebuildPromptForPhaseChange(
 		newMessages = append(newMessages, messages[1:]...)
 	}
 	ts.lastBuiltPromptPhase = currentPhase
+	ts.lastBuiltPromptIteration = iteration
 	if IsAgentDebugEnabled() {
 		agentDebugf("prompt_cache", map[string]any{
 			"event_stage":                "phase_change_rebuild",
 			"iteration":                  iteration,
 			"ts_last_built_prompt_phase": ts.lastBuiltPromptPhase,
+			"ts_last_built_prompt_iter":  ts.lastBuiltPromptIteration,
 			"new_prompt_len":             len(rebuiltSystem.Content),
 		})
 	}

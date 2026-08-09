@@ -257,12 +257,21 @@ type turnState struct {
 
 	// Phase 12.33: tracks the GoalPhase value that was current when
 	// messages[0] (system prompt) was last built. Used by
-	// maybeRebuildPromptForPhaseChange to detect when the goal phase
+	// maybeRebuildPromptForStateChange to detect when the goal phase
 	// changed between iterations (e.g., Open → Checkpoint at iter=MaxIter)
 	// and force a system prompt rebuild so the LLM sees the phase-
 	// appropriate hint text instead of the stale iter-0 prompt.
 	// Empty string = no rebuild has happened yet (initial iter).
 	lastBuiltPromptPhase string
+
+	// Phase 12.67b: iteration at which messages[0] (system prompt) was
+	// last built. Paired with lastBuiltPromptPhase so the dynamic phase
+	// compass ("Goal phase: open (iter N / total M)") is always rebuilt
+	// with the CURRENT iteration — without this, the compass frozen at the
+	// first iter of a phase stays stale for every later iter of that phase
+	// (e.g. OPEN spans iters 2..25 but the prompt kept saying "iter 2").
+	// 0 = no rebuild has happened yet.
+	lastBuiltPromptIteration int
 
 	// Replay counter: bound AfterLLM hook replay attempts within a single iteration.
 	// Replay attempts are recovery retries (e.g. malformed tool-call recovery)

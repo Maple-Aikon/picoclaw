@@ -126,8 +126,8 @@ func TestPhase12_47_T9a_PostFinal_StuckNoOp(t *testing.T) {
 // =====================================================================
 
 func TestPhase12_47_T9b_PostFinal_RebuildFires(t *testing.T) {
-	ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhaseFinal), GoalPhasePostFinal)
-	result := ts.maybeRebuildPromptForPhaseChange(messages, exec, nil, 6)
+	ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhaseFinal), 1, GoalPhasePostFinal)
+	result := ts.maybeRebuildPromptForStateChange(messages, exec, nil, 6)
 	if ts.lastBuiltPromptPhase != string(GoalPhasePostFinal) {
 		t.Fatalf("lastBuiltPromptPhase phải = post_final, got %q", ts.lastBuiltPromptPhase)
 	}
@@ -137,8 +137,8 @@ func TestPhase12_47_T9b_PostFinal_RebuildFires(t *testing.T) {
 }
 
 func TestPhase12_47_T9c_PostFinal_NoRebuildSamePhase(t *testing.T) {
-	ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhasePostFinal), GoalPhasePostFinal)
-	result := ts.maybeRebuildPromptForPhaseChange(messages, exec, nil, 6)
+	ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhasePostFinal), 6, GoalPhasePostFinal)
+	result := ts.maybeRebuildPromptForStateChange(messages, exec, nil, 6)
 	if len(result) < 1 || result[0].Content != "ORIGINAL_SYSTEM_PROMPT" {
 		t.Fatalf("không rebuild khi cùng phase post_final; got %q", result[0].Content)
 	}
