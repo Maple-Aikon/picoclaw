@@ -2031,15 +2031,20 @@ func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 
 func (s *telegramStreamer) Cancel(ctx context.Context) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Buffered path: drop buffer and clear visible draft via the pusher.
-	if s.buffer != nil {
-		_ = s.buffer.Cancel(ctx)
+	buf := s.buffer
+	if buf != nil {
+		// Buffer path: draftBuffer.Cancel -> streamerPusher.ClearDraft
+		// re-acquires streamer.mu (see pusher contract at :1788), so we
+		// must NOT hold it here — holding it self-deadlocks (non-reentrant
+		// sync.Mutex). Read s.buffer under the lock, then release before
+		// the buffer call.
+		s.mu.Unlock()
+		_ = buf.Cancel(ctx)
 		return
 	}
 
 	s.clearDraft(ctx)
+	s.mu.Unlock()
 }
 
 func (s *telegramStreamer) clearDraft(ctx context.Context) {
