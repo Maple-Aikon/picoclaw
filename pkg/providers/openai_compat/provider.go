@@ -796,7 +796,7 @@ func parseStreamResponse(
 				// whitespace escapes so user-facing strings (goal summaries, steps)
 				// render as real line breaks. Correct providers are unaffected:
 				// their strings already contain real newlines after unmarshal.
-				unescapeArgStrings(args)
+				common.UnescapeArgStrings(args)
 			}
 		}
 		toolCalls = append(toolCalls, ToolCall{
@@ -821,34 +821,8 @@ func parseStreamResponse(
 	}, nil
 }
 
-// unescapeArgStrings recursively decodes whitespace escape sequences that
-// survived a single JSON unmarshal as literals (e.g. the 2-char string "\n"
-// instead of a real newline). Only whitespace escapes are handled — backslash
-// sequences that carry meaning ("\\", "\"") are left untouched.
-func unescapeArgStrings(v any) any {
-	switch t := v.(type) {
-	case string:
-		if !strings.ContainsRune(t, '\\') {
-			return t
-		}
-		t = strings.ReplaceAll(t, `\n`, "\n")
-		t = strings.ReplaceAll(t, `\t`, "\t")
-		t = strings.ReplaceAll(t, `\r`, "\r")
-		return t
-	case map[string]any:
-		for k, val := range t {
-			t[k] = unescapeArgStrings(val)
-		}
-		return t
-	case []any:
-		for i, val := range t {
-			t[i] = unescapeArgStrings(val)
-		}
-		return t
-	default:
-		return v
-	}
-}
+// unescapeArgStrings is now providers.UnescapeArgStrings (pkg/providers/unescape.go),
+// shared with the Anthropic-compatible parse path.
 
 func normalizeModel(model, apiBase string) string {
 	before, after, ok := strings.Cut(model, "/")

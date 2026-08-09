@@ -987,3 +987,52 @@ func TestBuildRequestBody_ToolCallFunctionNameFallback(t *testing.T) {
 		t.Errorf("tool_result tool_use_id = %v, want call_1", toolContent[0]["tool_use_id"])
 	}
 }
+// TestParseResponseBody_UnescapesDoubleEscapedToolArgs is a wire-level test
+// for the MiniMax-M3 double-escape quirk on the Anthropic-compatible path:
+// the model serializes a real newline as the literal 2-char "\\n" inside the
+// tool_use input JSON. After one unmarshal the value is the literal backslash-n
+// (not a real newline) — UnescapeArgStrings must decode it so user-facing
+// strings (complete_goal summaries) render real line breaks.
+func TestParseResponseBody_UnescapesDoubleEscapedToolArgs(t *testing.T) {
+	body := []byte(`{
+		"id": "msg-999",
+		"type": "message",
+		"role": "assistant",
+		"content": [
+			{
+				"type": "tool_use",
+				"id": "toolu-999",
+				"name": "complete_goal",
+				"input": {"summary": "line1\\n\\nline2", "status": "done"}
+			}
+		],
+		"stop_reason": "tool_use",
+		"model": "test-model",
+		"usage": {"input_tokens": 10, "output_tokens": 10}
+	}`)
+
+	got, err := parseResponseBody(body)
+	if err != nil {
+		t.Fatalf("parseResponseBody() error = %v", err)
+	}
+	if len(got.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %d calls, want 1", len(got.ToolCalls))
+	}
+	tc := got.ToolCalls[0]
+	if gotName := tc.Name; gotName != "complete_goal" {
+		t.Fatalf("tool name = %q, want %q", gotName, "complete_goal")
+	}
+	summary, ok := tc.Arguments["summary"].(string)
+	if !ok {
+		t.Fatalf("Arguments[summary] = %#v, want string", tc.Arguments["summary"])
+	}
+	if want := "line1\n\nline2"; summary != want {
+		t.Fatalf("summary = %q, want %q (literal backslash-n must become a real newline)", summary, want)
+	}
+	// Function.Arguments is the re-marshaled JSON — must also carry the
+	// decoded value (serialized as an escaped newline, per JSON rules).
+	// Keys sort alphabetically in Go's json.Marshal (status < summary).
+	if gotJSON, wantJSON := tc.Function.Arguments, `{"status":"done","summary":"line1\n\nline2"}`; gotJSON != wantJSON {
+		t.Fatalf("Function.Arguments = %s, want %s", gotJSON, wantJSON)
+	}
+}

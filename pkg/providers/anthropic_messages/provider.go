@@ -372,6 +372,13 @@ func parseResponseBody(body []byte) (*LLMResponse, error) {
 		case "thinking":
 			reasoning.WriteString(block.Thinking)
 		case "tool_use":
+			// MiniMax-M3 double-escape quirk (same family as Phase 12.55.1's
+			// OpenAI-compat fix): the model escapes whitespace again when
+			// embedding the arguments JSON, so after one unmarshal a real
+			// newline arrives as the literal 2-char "\n". Decode so
+			// user-facing tool args (complete_goal summaries) render line
+			// breaks. In-place map mutation; nil input is a no-op.
+			common.UnescapeArgStrings(block.Input)
 			argsJSON, _ := json.Marshal(block.Input)
 			toolCalls = append(toolCalls, ToolCall{
 				ID:        block.ID,
