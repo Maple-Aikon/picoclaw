@@ -19,7 +19,10 @@ func TestGateSkipMessageForPhase_Set(t *testing.T) {
 }
 
 // TestGateSkipMessageForPhase_Checkpoint — Checkpoint phase: goal_progress
-// + complete_goal available. Must mention both.
+// + complete_goal available. Must mention both. Phase 12.67: must state
+// the TERMINAL consequence of complete_goal (permanent archive, no resume)
+// so the LLM does not pick it as a harmless "send reply" mechanism
+// (root cause of main-turn-2 2026-08-09: goal archived unintentionally).
 func TestGateSkipMessageForPhase_Checkpoint(t *testing.T) {
 	got := gateSkipMessageForPhase("read_file", GoalPhaseCheckpoint)
 	if !contains(got, "goal_progress") {
@@ -27,6 +30,15 @@ func TestGateSkipMessageForPhase_Checkpoint(t *testing.T) {
 	}
 	if !contains(got, "complete_goal") {
 		t.Errorf("Checkpoint variant must mention complete_goal: %s", got)
+	}
+	if !contains(got, "ALIVE") {
+		t.Errorf("Checkpoint variant must say goal_progress keeps the goal ALIVE: %s", got)
+	}
+	if !contains(got, "cannot be resumed") {
+		t.Errorf("Checkpoint variant must state complete_goal cannot be resumed: %s", got)
+	}
+	if !contains(got, "PERMANENTLY ARCHIVES") {
+		t.Errorf("Checkpoint variant must state complete_goal permanently archives: %s", got)
 	}
 	assertNoPhaseClaim(t, got)
 }

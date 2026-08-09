@@ -71,6 +71,15 @@ DO NOT call any other tool (e.g. read_file, write_file, web_search, etc.) while 
 
 When goal_progress fires, your remaining_steps MUST contain at least 1 item — empty remaining_steps is rejected by the wire guard. When complete_goal fires, your summary must be 1-1000 chars.`
 
+// goalPhaseCheckpointHintBodyText — Phase 12.67: decision rule rendered
+// ALONGSIDE the compass header on the production path (MaxIterationsCap>0).
+// Separated from the legacy template so the dynamic-header change (Phase
+// 12.39, b2340eca) can never drop the body again — mirrors the OPEN/FINAL
+// body-constant pattern (goalPhaseOpenHintBodyText / goalPhaseFinalHintBodyText).
+// Consequence-based wording: no phase/iter/cap claims (Phase 12.40.1
+// invariant — assertNoPhaseClaim must pass).
+const goalPhaseCheckpointHintBodyText = `Decision rule: if any success_criteria is still unmet, call goal_progress — it keeps this goal alive and restores the full toolset so you can keep working. complete_goal permanently archives the goal; it CANNOT be resumed later. Call complete_goal ONLY when the goal is genuinely finished, or you must wait for user input. All other tools are rejected while you are here.`
+
 // goalPhaseCheckpointHintContributor returns a Capability-layer / Tooling-slot
 // PromptPart when the request is in GoalPhaseCheckpoint phase. Returns nil
 // for any other phase (Open, Set, Final) so the hint does not bleed.
@@ -88,10 +97,14 @@ func goalPhaseCheckpointHintContributor(req PromptBuildRequest) *PromptPart {
 		return nil
 	}
 	// Dynamic header from helper (Phase 12.39). Falls back to legacy
-	// template when MaxIterationsCap=0 (backward compat).
-	var header string
+	// template when MaxIterationsCap=0 (backward compat). Phase 12.67:
+	// the decision body is a SEPARATE constant rendered on BOTH paths —
+	// the 12.39 regression (body lived inside the legacy template, so
+	// compass != "" dropped it entirely) must not recur.
+	var header, body string
 	if compass := formatIterCompass(req, GoalPhaseCheckpoint, false); compass != "" {
 		header = compass + "\n"
+		body = goalPhaseCheckpointHintBodyText + "\n"
 	} else {
 		// Legacy fallback: use the original template (with iter placeholder).
 		header = fmt.Sprintf(goalPhaseCheckpointHintTextTemplate, req.Iteration)
@@ -105,7 +118,7 @@ func goalPhaseCheckpointHintContributor(req PromptBuildRequest) *PromptPart {
 		Slot:    PromptSlotTooling,
 		Source:  PromptSource{ID: PromptSourceGoalPhaseCheckpointHint, Name: "goal_phase_checkpoint_hint"},
 		Title:   "Goal Phase Checkpoint Hint",
-		Content: header + "\n",
+		Content: header + body,
 		Stable:  false,
 		Cache:   PromptCacheNone,
 	}

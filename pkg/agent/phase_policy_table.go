@@ -146,7 +146,7 @@ var agentPolicies = map[GoalPhase]*AgentPhasePolicy{
 		ToolExecHint:      ToolExecErrorCheckpointPhaseHint,
 		ContextSuffix:     " At the time of this retry, the turn was in the CHECKPOINT phase.",
 		StuckBucket:       StuckCheckpoint,
-		GateSkipText:      fmt.Sprintf("tool %%q is temporarily unavailable. goal_progress and complete_goal are the only available tools — call goal_progress to continue, or complete_goal to finalize. %s", DefaultGateSkipSuffix),
+		GateSkipText:      fmt.Sprintf("tool %%q is temporarily unavailable. goal_progress keeps the goal ALIVE and restores the full toolset so you can keep working; complete_goal PERMANENTLY ARCHIVES the goal and it cannot be resumed. Use complete_goal only when the work is truly finished, or you must wait for user input. %s", DefaultGateSkipSuffix),
 		DiscoveryRuleText: `5. **Tool Discovery** - At CHECKPOINT phase, tool_search_tool_bm25 and tool_search_tool_regex are locked. Do not search; only call ` + `"goal_progress"` + ` or ` + `"complete_goal"` + ` (the only 2 visible tools). Discovery will unlock at your next turn's OPEN phase.`,
 		MCPAvailText:      "locked at this phase; will unlock at next turn's OPEN phase",
 	},

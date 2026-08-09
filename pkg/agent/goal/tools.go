@@ -681,6 +681,8 @@ func (t *CompleteGoalTool) Name() string {
 func (t *CompleteGoalTool) Description() string {
 	return `Mark the current session's goal as completed and archive its file. The original file at <workspace>/memory/goal/<session>.md is moved to <workspace>/memory/goal/archive/<session>-<timestamp>.md. After this call:
 
+IMPORTANT: this is a TERMINAL action — the goal is archived permanently and CANNOT be resumed or continued in a later turn. If you still have tool work to do (or plan to continue after user approval), call goal_progress to continue the goal lifecycle instead — it keeps the goal alive and restores the full toolset.
+
 - The goal is no longer discoverable via list_goals (archived by definition).
 - view_goal returns "<no goal set>".
 - A subsequent set_goal call will start a new goal.

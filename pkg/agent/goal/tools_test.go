@@ -1350,3 +1350,19 @@ func (m *mockExtenderForTest) RequestExtendIterationCap(n int, reason string) bo
 func (m *mockExtenderForTest) FlushPendingExtend() (applied bool, newCap int, delta int) {
 	return false, m.currentCap, 0
 }
+
+// TestCompleteGoalDescription_TerminalWarning — Phase 12.67: the tool
+// description MUST state that complete_goal is a TERMINAL action (goal
+// archived permanently, cannot be resumed) and point to goal_progress as
+// the alternative when tool work remains. Root cause of main-turn-2
+// 2026-08-09: LLM called complete_goal as a harmless "send reply" while
+// it still had tool work to do — the description never said the goal
+// would be archived for good.
+func TestCompleteGoalDescription_TerminalWarning(t *testing.T) {
+	desc := (&CompleteGoalTool{}).Description()
+	for _, want := range []string{"TERMINAL", "CANNOT be resumed", "goal_progress"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("complete_goal description must contain %q (terminal-archive awareness); got:\n%s", want, desc)
+		}
+	}
+}
