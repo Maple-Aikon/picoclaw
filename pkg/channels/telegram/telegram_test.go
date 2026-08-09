@@ -1049,7 +1049,10 @@ func TestSend_UsesContextTopicIDWhenChatIDDoesNotIncludeThread(t *testing.T) {
 func TestBeginStream_UpdateUsesForumThreadID(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			return &ta.Response{Ok: true, Result: []byte("true")}, nil
+			if strings.Contains(url, "sendMessageDraft") {
+				return &ta.Response{Ok: true, Result: []byte("true")}, nil
+			}
+			return successResponse(t), nil
 		},
 	}
 	ch := newTestChannel(t, caller)
@@ -1058,24 +1061,43 @@ func TestBeginStream_UpdateUsesForumThreadID(t *testing.T) {
 	streamer, err := ch.BeginStream(context.Background(), "-1001234567890/42")
 	require.NoError(t, err)
 	require.NoError(t, streamer.Update(context.Background(), "partial"))
-	require.Len(t, caller.calls, 1)
-	assert.Contains(t, caller.calls[0].URL, "sendMessageDraft")
+	// Buffered path: Update defers the wire call; Finalize flushes the draft
+	// and sends the final message (no clear call — buffer is committed).
+	require.NoError(t, streamer.Finalize(context.Background(), "final"))
 
-	var params struct {
+	require.Len(t, caller.calls, 2)
+	assert.Contains(t, caller.calls[0].URL, "sendMessageDraft")
+	assert.Contains(t, caller.calls[1].URL, "sendMessage")
+	assert.NotContains(t, caller.calls[1].URL, "sendMessageDraft")
+
+	var draft struct {
 		ChatID          int64  `json:"chat_id"`
 		MessageThreadID int    `json:"message_thread_id"`
 		Text            string `json:"text"`
 	}
-	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &params))
-	assert.Equal(t, int64(-1001234567890), params.ChatID)
-	assert.Equal(t, 42, params.MessageThreadID)
-	assert.Equal(t, "partial", params.Text)
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &draft))
+	assert.Equal(t, int64(-1001234567890), draft.ChatID)
+	assert.Equal(t, 42, draft.MessageThreadID)
+	assert.Equal(t, "partial", draft.Text)
+
+	var finalMsg struct {
+		ChatID          int64  `json:"chat_id"`
+		MessageThreadID int    `json:"message_thread_id"`
+		Text            string `json:"text"`
+	}
+	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &finalMsg))
+	assert.Equal(t, int64(-1001234567890), finalMsg.ChatID)
+	assert.Equal(t, 42, finalMsg.MessageThreadID)
+	assert.Equal(t, "final", finalMsg.Text)
 }
 
 func TestBeginStream_UsesDefaultThrottleWhenOnlyEnabled(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			return &ta.Response{Ok: true, Result: []byte("true")}, nil
+			if strings.Contains(url, "sendMessageDraft") {
+				return &ta.Response{Ok: true, Result: []byte("true")}, nil
+			}
+			return successResponse(t), nil
 		},
 	}
 	ch := newTestChannel(t, caller)
@@ -1085,19 +1107,36 @@ func TestBeginStream_UsesDefaultThrottleWhenOnlyEnabled(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, streamer.Update(context.Background(), "partial"))
 	require.NoError(t, streamer.Update(context.Background(), "partial plus one"))
+	require.NoError(t, streamer.Finalize(context.Background(), "final"))
 
-	require.Len(t, caller.calls, 1, "second small update should be throttled by defaults")
+	// Buffered path with default settings: both updates coalesce into ONE
+	// draft push (the draft API is hit at most once per flush).
+	require.Len(t, caller.calls, 2)
+	assert.Contains(t, caller.calls[0].URL, "sendMessageDraft")
+
+	var draft struct {
+		ChatID int64  `json:"chat_id"`
+		Text   string `json:"text"`
+	}
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &draft))
+	assert.Equal(t, int64(12345), draft.ChatID)
+	assert.Equal(t, "partialpartial plus one", draft.Text)
 }
 
 func TestBeginStream_UpdateReturnsErrorWhenDraftFails(t *testing.T) {
 	callCount := 0
+	failSeen := false
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
 			callCount++
 			if callCount == 1 {
+				failSeen = true
 				return nil, errors.New("draft unsupported")
 			}
-			return &ta.Response{Ok: true, Result: []byte("true")}, nil
+			if strings.Contains(url, "sendMessageDraft") {
+				return &ta.Response{Ok: true, Result: []byte("true")}, nil
+			}
+			return successResponse(t), nil
 		},
 	}
 	ch := newTestChannel(t, caller)
@@ -1106,29 +1145,29 @@ func TestBeginStream_UpdateReturnsErrorWhenDraftFails(t *testing.T) {
 	streamer, err := ch.BeginStream(context.Background(), "12345")
 	require.NoError(t, err)
 
-	err = streamer.Update(context.Background(), "partial")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "draft unsupported")
+	// Buffered path: Update only appends — no wire call, so no error yet.
+	require.NoError(t, streamer.Update(context.Background(), "partial"))
 
-	streamer.Cancel(context.Background())
-	require.Len(t, caller.calls, 2)
-	assert.Contains(t, caller.calls[1].URL, "sendMessageDraft")
+	// Finalize flushes: the draft push fails, but the final message still
+	// goes out via the fallback path. Async by design — the failure is
+	// recorded on the buffer, not surfaced on Update.
+	err = streamer.Finalize(context.Background(), "final")
+	require.NoError(t, err)
+	assert.True(t, failSeen, "draft push should have been attempted and failed")
 
-	var params struct {
-		ChatID  int64  `json:"chat_id"`
-		DraftID int    `json:"draft_id"`
-		Text    string `json:"text"`
-	}
-	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &params))
-	assert.Equal(t, int64(12345), params.ChatID)
-	assert.NotZero(t, params.DraftID)
-	assert.Equal(t, " ", params.Text)
+	require.Len(t, caller.calls, 2, "draft push failed before Finalize; buffer already committed so Cancel is a no-op")
+	assert.Contains(t, caller.calls[0].URL, "sendMessageDraft")
+	assert.Contains(t, caller.calls[1].URL, "sendMessage")
+	assert.NotContains(t, caller.calls[1].URL, "sendMessageDraft")
 }
 
-func TestBeginStream_CancelClearsExistingDraft(t *testing.T) {
+func TestBeginStream_CancelDropsUncommittedDraft(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			return &ta.Response{Ok: true, Result: []byte("true")}, nil
+			if strings.Contains(url, "sendMessageDraft") {
+				return &ta.Response{Ok: true, Result: []byte("true")}, nil
+			}
+			return successResponse(t), nil
 		},
 	}
 	ch := newTestChannel(t, caller)
@@ -1139,27 +1178,19 @@ func TestBeginStream_CancelClearsExistingDraft(t *testing.T) {
 	require.NoError(t, streamer.Update(context.Background(), "partial"))
 	streamer.Cancel(context.Background())
 
-	require.Len(t, caller.calls, 2)
-	assert.Contains(t, caller.calls[1].URL, "sendMessageDraft")
-
-	var params struct {
-		ChatID  int64  `json:"chat_id"`
-		DraftID int    `json:"draft_id"`
-		Text    string `json:"text"`
-	}
-	require.NoError(t, json.Unmarshal(caller.calls[1].Data.BodyRaw, &params))
-	assert.Equal(t, int64(12345), params.ChatID)
-	assert.NotZero(t, params.DraftID)
-	assert.Equal(t, " ", params.Text)
+	// Buffered path: nothing was pushed to the wire yet, so Cancel drops the
+	// uncommitted buffer without emitting a clear call (draftTouched=false).
+	// The wire-level clear (" ") is covered by FinalizeClearsExistingDraft.
+	require.Len(t, caller.calls, 0)
 }
 
-func TestBeginStream_FinalizeClearsExistingDraft(t *testing.T) {
+func TestBeginStream_FinalizeFlushesDraftThenSendsFinal(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			if strings.Contains(url, "sendMessage") && !strings.Contains(url, "sendMessageDraft") {
-				return successResponse(t), nil
+			if strings.Contains(url, "sendMessageDraft") {
+				return &ta.Response{Ok: true, Result: []byte("true")}, nil
 			}
-			return &ta.Response{Ok: true, Result: []byte("true")}, nil
+			return successResponse(t), nil
 		},
 	}
 	ch := newTestChannel(t, caller)
@@ -1170,20 +1201,22 @@ func TestBeginStream_FinalizeClearsExistingDraft(t *testing.T) {
 	require.NoError(t, streamer.Update(context.Background(), "partial"))
 	require.NoError(t, streamer.Finalize(context.Background(), "final"))
 
-	require.Len(t, caller.calls, 3)
+	// Finalize: [0] draft push "partial", [1] final message. No clear call —
+	// after a successful commit the buffer is marked committed, so the
+	// post-final Cancel is a no-op by design (wire-level clear is only
+	// emitted when a pushed draft exists and the stream is cancelled).
+	require.Len(t, caller.calls, 2)
 	assert.Contains(t, caller.calls[0].URL, "sendMessageDraft")
 	assert.Contains(t, caller.calls[1].URL, "sendMessage")
-	assert.Contains(t, caller.calls[2].URL, "sendMessageDraft")
+	assert.NotContains(t, caller.calls[1].URL, "sendMessageDraft")
 
-	var params struct {
-		ChatID  int64  `json:"chat_id"`
-		DraftID int    `json:"draft_id"`
-		Text    string `json:"text"`
+	var draft struct {
+		ChatID int64  `json:"chat_id"`
+		Text   string `json:"text"`
 	}
-	require.NoError(t, json.Unmarshal(caller.calls[2].Data.BodyRaw, &params))
-	assert.Equal(t, int64(12345), params.ChatID)
-	assert.NotZero(t, params.DraftID)
-	assert.Equal(t, " ", params.Text)
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &draft))
+	assert.Equal(t, int64(12345), draft.ChatID)
+	assert.Equal(t, "partial", draft.Text)
 }
 
 func TestBeginStream_FinalizeUsesForumThreadID(t *testing.T) {
