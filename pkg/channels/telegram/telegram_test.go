@@ -739,7 +739,7 @@ func TestSend_ToolFeedbackStaysSingleMessageAfterHTMLExpansion(t *testing.T) {
 func TestFitToolFeedbackForTelegram_ReservesAnimationFrame(t *testing.T) {
 	content := "🔧 `read_file`\n" + strings.Repeat("a", 4096)
 
-	fitted := fitToolFeedbackForTelegram(content, false, 4096)
+	fitted := fitToolFeedbackForTelegram(content, formatModeHTML, 4096)
 	animated := strings.Replace(
 		fitted,
 		"`\n",
@@ -747,7 +747,7 @@ func TestFitToolFeedbackForTelegram_ReservesAnimationFrame(t *testing.T) {
 		1,
 	)
 
-	if got := len([]rune(parseContent(animated, false))); got > 4096 {
+	if got := len([]rune(parseContent(animated))); got > 4096 {
 		t.Fatalf("animated parsed length = %d, want <= 4096", got)
 	}
 }
