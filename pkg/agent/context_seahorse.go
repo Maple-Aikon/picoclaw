@@ -486,6 +486,12 @@ func seahorseToProviderMessages(result *seahorse.AssembleResult) []protocoltypes
 				pm.ToolCalls = append(pm.ToolCalls, protocoltypes.ToolCall{
 					ID:   part.ToolCallID,
 					Type: "function", // Required by OpenAI-compatible APIs (GLM, etc.)
+					// Phase 12.62: set BOTH fields — some adapters read the
+					// top-level Name (anthropic_messages buildRequestBody),
+					// others read Function.Name (openai serializeToolCalls).
+					// Function-only shape dropped tool_use blocks on the
+					// Anthropic wire → MiniMax 400 2013 (main-turn-2).
+					Name: part.Name,
 					Function: &protocoltypes.FunctionCall{
 						Name:      part.Name,
 						Arguments: part.Arguments,

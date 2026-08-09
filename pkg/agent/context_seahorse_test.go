@@ -286,6 +286,15 @@ func TestSeahorseToProviderMessagesWithToolCalls(t *testing.T) {
 	if result[0].ToolCalls[0].Function.Name != "read_file" {
 		t.Errorf("ToolCall name = %q, want read_file", result[0].ToolCalls[0].Function.Name)
 	}
+	// Phase 12.62: top-level Name must be populated too — anthropic_messages
+	// buildRequestBody reads tc.Name first; Function-only shape orphaned
+	// tool_results on the Anthropic wire (MiniMax 400 2013, main-turn-2).
+	if result[0].ToolCalls[0].Name != "read_file" {
+		t.Errorf("ToolCall top-level Name = %q, want read_file", result[0].ToolCalls[0].Name)
+	}
+	if result[0].ToolCalls[0].Function.Arguments != `{"path":"/tmp"}` {
+		t.Errorf("ToolCall arguments = %q, want preserved JSON string", result[0].ToolCalls[0].Function.Arguments)
+	}
 	// GLM API and other OpenAI-compatible APIs require Type: "function"
 	if result[0].ToolCalls[0].Type != "function" {
 		t.Errorf("ToolCall Type = %q, want 'function' (required by GLM/OpenAI APIs)",

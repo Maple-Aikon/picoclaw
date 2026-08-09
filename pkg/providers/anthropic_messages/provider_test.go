@@ -907,3 +907,83 @@ func TestParseResponseBodyThinking(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildRequestBody_ToolCallFunctionNameFallback(t *testing.T) {
+	// Regression (Phase 12.62): seahorse replay reconstructs ToolCalls with
+	// Function.Name only (tc.Name empty) — buildRequestBody must emit the
+	// tool_use block or the tool_result becomes orphaned → MiniMax 400 2013
+	// "tool result's tool id(call_san_1) not found" (main-turn-2, 2026-08-09).
+	messages := []Message{
+		{Role: "user", Content: "Create a goal"},
+		{Role: "assistant", Content: "", ToolCalls: []ToolCall{
+			{
+				ID:   "call_1",
+				Type: "function",
+				// Name intentionally empty — the seahorse replay shape.
+				Function: &FunctionCall{
+					Name:      "set_goal",
+					Arguments: `{"objective":"x"}`,
+				},
+			},
+		}},
+		{Role: "tool", ToolCallID: "call_1", Content: "created"},
+	}
+
+	got, err := buildRequestBody(messages, nil, "test-model", map[string]any{"max_tokens": 8192})
+	if err != nil {
+		t.Fatalf("buildRequestBody() error: %v", err)
+	}
+
+	apiMessages, ok := got["messages"].([]any)
+	if !ok {
+		t.Fatalf("messages is not []any")
+	}
+	if len(apiMessages) != 3 {
+		for i, m := range apiMessages {
+			t.Logf("message[%d]: %+v", i, m)
+		}
+		t.Fatalf("expected 3 API messages (user, assistant, tool-result user), got %d", len(apiMessages))
+	}
+
+	assistantMsg, ok := apiMessages[1].(map[string]any)
+	if !ok {
+		t.Fatalf("assistant message is not map[string]any")
+	}
+	content, ok := assistantMsg["content"].([]any)
+	if !ok {
+		t.Fatalf("assistant content is not []any: %T", assistantMsg["content"])
+	}
+
+	var toolUse map[string]any
+	for _, block := range content {
+		if b, ok := block.(map[string]any); ok && b["type"] == "tool_use" {
+			toolUse = b
+			break
+		}
+	}
+	if toolUse == nil {
+		t.Fatalf("tool_use block missing: Function-only ToolCall must still emit tool_use (content %+v)", content)
+	}
+	if toolUse["id"] != "call_1" {
+		t.Errorf("tool_use id = %v, want call_1", toolUse["id"])
+	}
+	if toolUse["name"] != "set_goal" {
+		t.Errorf("tool_use name = %v, want set_goal", toolUse["name"])
+	}
+	if input, ok := toolUse["input"].(map[string]any); !ok || input["objective"] != "x" {
+		t.Errorf("tool_use input = %v, want {objective: x} parsed from Function.Arguments", toolUse["input"])
+	}
+
+	// Pairing must survive: the tool_result references the same id.
+	toolMsg, ok := apiMessages[2].(map[string]any)
+	if !ok {
+		t.Fatalf("tool result message is not map[string]any")
+	}
+	toolContent, ok := toolMsg["content"].([]map[string]any)
+	if !ok || len(toolContent) != 1 {
+		t.Fatalf("expected 1 tool_result block, got %+v", toolMsg["content"])
+	}
+	if toolContent[0]["tool_use_id"] != "call_1" {
+		t.Errorf("tool_result tool_use_id = %v, want call_1", toolContent[0]["tool_use_id"])
+	}
+}

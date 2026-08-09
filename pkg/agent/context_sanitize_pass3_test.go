@@ -1,11 +1,17 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/providers/anthropic_messages"
 )
 
 // ---- T4: sanitize pass 3 — block-scoped FIFO + deterministic + idempotent ----
@@ -278,4 +284,135 @@ func TestSanitizeToolCallIDUniqueness(t *testing.T) {
 			t.Fatalf("pairing broken after full sanitize: %v", idsOf(out))
 		}
 	})
+}
+
+// TestSanitizeThenAnthropicWire_SeahorseReplayShape — Phase 12.62 regression.
+// main-turn-2 (2026-08-09): seahorse replay reconstructs ToolCalls with
+// Function.Name only (tc.Name empty) → anthropic_messages buildRequestBody
+// dropped every tool_use block → orphaned tool_results → MiniMax 400 2013
+// "tool result's tool id(call_san_1) not found".
+// This test runs the FULL chain on the real shapes: seahorse replay →
+// sanitizeHistoryForProvider (pass 3 id rewrite) → anthropic wire conversion.
+func TestSanitizeThenAnthropicWire_SeahorseReplayShape(t *testing.T) {
+	// seahorse replay shape: tc.Name empty, name lives in Function.Name only.
+	funcOnly := func(id, name, args string) providers.ToolCall {
+		return providers.ToolCall{
+			ID:   id,
+			Type: "function",
+			Function: &providers.FunctionCall{
+				Name:      name,
+				Arguments: args,
+			},
+		}
+	}
+	// Duplicate ids exactly like the MiniMax payload (fix_0 ×2, fix_fb_0 ×2).
+	msgs := []providers.Message{
+		{Role: "user", Content: "Run the task"},
+		{Role: "assistant", ToolCalls: []providers.ToolCall{funcOnly("fix_0", "set_goal", `{"objective":"x"}`)}},
+		{Role: "tool", ToolCallID: "fix_0", Content: "goal created"},
+		{Role: "assistant", ToolCalls: []providers.ToolCall{funcOnly("fix_0", "read_file", `{"path":"/tmp"}`)}},
+		{Role: "tool", ToolCallID: "fix_0", Content: "file content"},
+		{Role: "assistant", ToolCalls: []providers.ToolCall{funcOnly("fix_fb_0", "exec", `{"cmd":"ls"}`)}},
+		{Role: "tool", ToolCallID: "fix_fb_0", Content: "ok"},
+		{Role: "user", Content: "continue"},
+	}
+
+	// Stage 1: sanitize (pass 1 + pass 3 rewrite + pass 2 pairing).
+	sanitized := sanitizeHistoryForProvider(msgs)
+	// Pairing survives with rewritten unique ids.
+	calls := map[string]string{} // id -> name
+	for _, m := range sanitized {
+		for _, tc := range m.ToolCalls {
+			if tc.Name == "" && tc.Function != nil {
+				calls[tc.ID] = tc.Function.Name
+			} else {
+				calls[tc.ID] = tc.Name
+			}
+		}
+	}
+	for _, m := range sanitized {
+		if m.Role == "tool" {
+			if _, ok := calls[m.ToolCallID]; !ok {
+				t.Fatalf("sanitize left orphaned tool result %s", m.ToolCallID)
+			}
+		}
+	}
+
+	// Stage 2: anthropic wire conversion (the exact provider MiniMax uses).
+	var captured []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"m1","type":"message","role":"assistant","content":[{"type":"text","text":"done"}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	p := anthropicmessages.NewProviderWithTimeout("test-key", srv.URL, "test", 10)
+	if _, err := p.Chat(context.Background(), sanitized, nil, "MiniMax-M3", map[string]any{"max_tokens": 1024}); err != nil {
+		t.Fatalf("Chat() error: %v", err)
+	}
+	if len(captured) == 0 {
+		t.Fatal("no request body captured")
+	}
+
+	var body struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(captured, &body); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	// Every tool_use block must be present with id + name + input.
+	wireToolUse := map[string]map[string]any{} // id -> block
+	for _, msg := range body.Messages {
+		blocks, _ := msg.Content.([]any) // plain text messages have string content — skip
+		for _, raw := range blocks {
+			block, _ := raw.(map[string]any)
+			if block == nil || block["type"] != "tool_use" {
+				continue
+			}
+			id, _ := block["id"].(string)
+			if id == "" {
+				t.Fatalf("tool_use block without id: %+v", block)
+			}
+			if name, _ := block["name"].(string); name == "" {
+				t.Fatalf("tool_use block %s without name: %+v", id, block)
+			}
+			wireToolUse[id] = block
+		}
+	}
+	if len(wireToolUse) != 3 {
+		t.Fatalf("expected 3 tool_use blocks on the wire, got %d (%+v)", len(wireToolUse), wireToolUse)
+	}
+
+	// Every tool_result must reference a present tool_use id.
+	resultCount := 0
+	for _, msg := range body.Messages {
+		blocks, _ := msg.Content.([]any)
+		for _, raw := range blocks {
+			block, _ := raw.(map[string]any)
+			if block == nil || block["type"] != "tool_result" {
+				continue
+			}
+			resultCount++
+			id, _ := block["tool_use_id"].(string)
+			if _, ok := wireToolUse[id]; !ok {
+				t.Fatalf("orphaned tool_result on the wire: tool_use_id=%q not found among tool_use blocks %v", id, keysOf(wireToolUse))
+			}
+		}
+	}
+	if resultCount != 3 {
+		t.Fatalf("expected 3 tool_result blocks on the wire, got %d", resultCount)
+	}
+}
+
+func keysOf[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

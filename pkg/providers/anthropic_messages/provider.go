@@ -264,12 +264,26 @@ func buildRequestBody(
 
 			// Add tool_use blocks
 			for _, tc := range msg.ToolCalls {
-				if strings.TrimSpace(tc.Name) == "" {
+				// Phase 12.62: name may live in Function.Name only (seahorse
+				// replay reconstructs ToolCalls with Function-only fields).
+				// Dropping the block orphans its tool_result → provider 400
+				// 2013 "tool result's tool id not found" (main-turn-2).
+				name := strings.TrimSpace(tc.Name)
+				if name == "" && tc.Function != nil {
+					name = strings.TrimSpace(tc.Function.Name)
+				}
+				if name == "" {
 					continue
 				}
 
-				// Handle nil Arguments (GLM-4 may return null input)
+				// Handle nil Arguments (GLM-4 may return null input) and the
+				// Function-only replay shape (Arguments JSON string).
 				input := tc.Arguments
+				if input == nil && tc.Function != nil {
+					if err := json.Unmarshal([]byte(tc.Function.Arguments), &input); err != nil {
+						input = nil
+					}
+				}
 				if input == nil {
 					input = map[string]any{}
 				}
@@ -277,7 +291,7 @@ func buildRequestBody(
 				toolUse := map[string]any{
 					"type":  "tool_use",
 					"id":    tc.ID,
-					"name":  tc.Name,
+					"name":  name,
 					"input": input,
 				}
 				content = append(content, toolUse)
