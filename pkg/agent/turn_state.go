@@ -217,9 +217,9 @@ type turnState struct {
 	// toolCallSeq — monotonic per-turn counter cho layer-1 id allocation
 	// (Phase 12.61). In-memory per turn; nguồn uniqueness THẬT của id mới
 	// `call_<turnID>_<unixNano>_<seq>` (unixNano chỉ là namespace cross-restart).
-	toolCallSeq int64
-	toolExecutions    []ToolExecutionRecord
-	turnCtx           *TurnContext
+	toolCallSeq    int64
+	toolExecutions []ToolExecutionRecord
+	turnCtx        *TurnContext
 
 	channel     string
 	chatID      string
@@ -227,14 +227,14 @@ type turnState struct {
 	userMessage string
 	media       []string
 
-	phase                 TurnPhase
-	iteration             int
-	assistantText         string // Phase 11: LLM text output from most recent iteration; used by complete_goal to decide final reply (assistantText vs summary param).
-	iterationCap          int    // (Phase 10.1 restored: goal_progress can self-extend up to agent.MaxIterationsCap)
-	maxIterationsCap      int    // (Phase 10.1) absolute ceiling for iterationCap; set from agent.MaxIterationsCap at turn start (0 = unbounded)
-	lastExtensionReason   string // Phase 10.1: reason string from the most recent ExtendIterationCap call (for audit/diagnostics)
-	lastExtensionAtIter   int    // Phase 10.1: iteration number when ExtendIterationCap last fired (0 = never extended)
-	goalFinalized         bool   // Phase 11: set true after complete_goal tool call so the loop breaks immediately.
+	phase               TurnPhase
+	iteration           int
+	assistantText       string // Phase 11: LLM text output from most recent iteration; used by complete_goal to decide final reply (assistantText vs summary param).
+	iterationCap        int    // (Phase 10.1 restored: goal_progress can self-extend up to agent.MaxIterationsCap)
+	maxIterationsCap    int    // (Phase 10.1) absolute ceiling for iterationCap; set from agent.MaxIterationsCap at turn start (0 = unbounded)
+	lastExtensionReason string // Phase 10.1: reason string from the most recent ExtendIterationCap call (for audit/diagnostics)
+	lastExtensionAtIter int    // Phase 10.1: iteration number when ExtendIterationCap last fired (0 = never extended)
+	goalFinalized       bool   // Phase 11: set true after complete_goal tool call so the loop breaks immediately.
 
 	postCompleteGoalReportSent bool // Phase 12.7: emit the final-report hint once after complete_goal; resets to true after the post-final-report iter runs.
 	pendingFinalReportIter     bool // Phase 12.9: transient signal set at top of body if this iter is the post-complete_goal final-report iter; consumed + cleared at end of body.
@@ -268,16 +268,16 @@ type turnState struct {
 	// Replay attempts are recovery retries (e.g. malformed tool-call recovery)
 	// that shouldn't consume an iteration slot in iterationCap. See plan
 	// same-iteration-replay-loop-with-reusable-boundedretry-primitive-20260717.
-	replayCount           int    // bumps per replay attempt (resets each iteration)
-	replayCap             int    // hard cap; defaults to agent.MaxReplayAttempts (or defaultRetryMaxAttempts)
+	replayCount int // bumps per replay attempt (resets each iteration)
+	replayCap   int // hard cap; defaults to agent.MaxReplayAttempts (or defaultRetryMaxAttempts)
 
 	// Goal-lifecycle retry counters (Phase 5): bound same-iteration recovery retries
 	// per-iteration so they don't consume iterationCap slots. Each field resets
 	// at iteration boundary. See plan §5.2 + §5.3 in
 	// picoclaw-goal-lifecycle-long-running-task-với-setviewcomplete-goal-goal-phase-tool-allowlist-20260719.
-	textOnlyStreak           int      // consecutive iterations with text-only LLM response (no tool calls). Goal Phase 1 only.
-	emptyResponseRecoveryCount int    // Phase 12.37: count of same-iter empty-response recovery injections (was bool one-shot; now 3-shot cap per spec 9)
-	toolExecRecoveryAttempts map[string]int // per-tool execution error retry count (not signature). Same iteration.
+	textOnlyStreak             int            // consecutive iterations with text-only LLM response (no tool calls). Goal Phase 1 only.
+	emptyResponseRecoveryCount int            // Phase 12.37: count of same-iter empty-response recovery injections (was bool one-shot; now 3-shot cap per spec 9)
+	toolExecRecoveryAttempts   map[string]int // per-tool execution error retry count (not signature). Same iteration.
 
 	// Phase 12: per-iteration escalation counters for text-only recovery.
 	// Soft retry fires first (gentle prompt), hard retry fires second (firm
@@ -295,31 +295,31 @@ type turnState struct {
 	// is set to the phase-specific value (goal_set_stuck,
 	// goal_checkpoint_stuck, goal_final_stuck) so applyFallbackForEmptyResponse
 	// can return a user-facing message that names the phase.
-	setGoalAttemptCount         int  // consecutive set_goal invalid arguments in Set phase
-	goalProgressAttemptCount    int  // consecutive goal_progress invalid arguments in Checkpoint phase
-	completeGoalAttemptCount    int  // consecutive complete_goal invalid arguments in Final phase
+	setGoalAttemptCount      int // consecutive set_goal invalid arguments in Set phase
+	goalProgressAttemptCount int // consecutive goal_progress invalid arguments in Checkpoint phase
+	completeGoalAttemptCount int // consecutive complete_goal invalid arguments in Final phase
 	// Phase 12.52a (R10 F01 split): archive flags separate the "was the goal
 	// archived at this phase" signal (bool) from the real per-failure attempt
 	// count above. Before the split, the counters were dual-purpose: the
 	// archive path ratcheted them to 2 so the abort-reason threshold fired,
 	// which inflated the user-facing "failed N times" display. Now the flag
 	// carries the archive signal and the count stays honest.
-	setGoalArchiveFlag          bool
-	goalProgressArchiveFlag     bool
-	completeGoalArchiveFlag     bool
+	setGoalArchiveFlag      bool
+	goalProgressArchiveFlag bool
+	completeGoalArchiveFlag bool
 
 	// lastPhaseStuckError (Phase 12.13) — last error message from the
 	// phase-specific lifecycle tool. Set whenever a phase-stuck counter
 	// increments. Used by phaseStuckFallbackMessage to format the
 	// user-facing error message with the actual failure cause.
-	lastPhaseStuckError      string
+	lastPhaseStuckError string
 
 	// Goal-lifecycle recovery side-effects (Phase 5): set by applyRecoveryAction.
 	// Consumed at the start of the next iteration (ControlContinue path) to
 	// inject the recovery message into the conversation, strip non-goal tools,
 	// or finalize the goal. See plan §5.2 + §8.3.
-	pendingRecoveryMessage  string // message to inject before next LLM call (empty = no injection)
-	goalArchiveRequested    bool   // if true, caller must call finalizeGoalOnTurnEnd (Phase 6 hook)
+	pendingRecoveryMessage string // message to inject before next LLM call (empty = no injection)
+	goalArchiveRequested   bool   // if true, caller must call finalizeGoalOnTurnEnd (Phase 6 hook)
 
 	// Phase 12.28.3: last tool execution result, populated at pipeline_execute.go
 	// tool-exec-end (when `hookResult *tools.ToolResult` is in scope). Read by
@@ -330,8 +330,8 @@ type turnState struct {
 	// at turn_coord.go:163-164 (alongside the other recovery counters).
 	lastToolResult *tools.ToolResult
 
-	startedAt             time.Time
-	finalContent          string
+	startedAt    time.Time
+	finalContent string
 
 	followUps []bus.InboundMessage
 
@@ -762,10 +762,11 @@ func (ts *turnState) PublishToUser(ctx context.Context, text string) {
 
 // PublishGoalSummary implements goal.TurnStateAccess (Phase 12.55.2):
 // publishes the complete_goal outcome as a user-facing message with the
-// iteration/phase header + summary (header + ": summary"). The LLM's
-// content text (explanation) is intentionally NOT published here — the
-// tool-feedback explanation path (Phase 12.58.3) already delivers it.
-// Void + best-effort, mirrors PublishToUser.
+// iteration/phase header + summary ("📊 <turnID> (#iter/cap) Goal-<phase>"
+// + blank line + summary). The LLM's content text (explanation) is
+// intentionally NOT published here — the tool-feedback explanation path
+// (Phase 12.58.3) already delivers it. Void + best-effort, mirrors
+// PublishToUser.
 //
 // Phase 12.55.3: phase is the execute-time snapshot passed by the caller
 // (complete_goal reads it from ctx via goal.ToolCallPhaseFromContext).
@@ -786,7 +787,7 @@ func (ts *turnState) PublishGoalSummary(ctx context.Context, phase, summary stri
 		phase = string(ts.currentGoalPhase())
 	}
 	header := toolFeedbackIterContextFor(ts, GoalPhase(phase))
-	ts.al.PublishResponseIfNeeded(ctx, ts.channel, ts.chatID, ts.sessionKey, header+": summary\n\n"+summary)
+	ts.al.PublishResponseIfNeeded(ctx, ts.channel, ts.chatID, ts.sessionKey, header+"\n\n"+summary)
 }
 
 // MarkGoalFinalized is the Phase 11 hook that complete_goal calls to

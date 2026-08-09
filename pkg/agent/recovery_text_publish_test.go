@@ -103,6 +103,18 @@ func outboundContains(msgs []bus.OutboundMessage, want string) bool {
 	return false
 }
 
+// outboundMessageWithText returns the first outbound message whose content
+// contains want — used to assert the 💬 header on the text-only publish
+// path (Phase 12.63).
+func outboundMessageWithText(msgs []bus.OutboundMessage, want string) (bus.OutboundMessage, bool) {
+	for _, m := range msgs {
+		if strings.Contains(m.Content, want) {
+			return m, true
+		}
+	}
+	return bus.OutboundMessage{}, false
+}
+
 // TestTextOnlyPublishedBeforeOpenNextIterRecovery: at GOAL-OPEN a text-only
 // response bumps recovery to the next iteration (RecoveryRetryNextIteration).
 // The text must reach the user BEFORE the bump.
@@ -158,6 +170,17 @@ func TestTextOnlyPublishedBeforeOpenNextIterRecovery(t *testing.T) {
 	msgs := drainOutbound(msgBus)
 	if !outboundContains(msgs, "Open words: continuing with tools next.") {
 		t.Fatalf("text-only was NOT published before next-iter recovery; outbound = %+v", msgs)
+	}
+	// Phase 12.63: the text-only message carries the 💬 header + blank line.
+	m, ok := outboundMessageWithText(msgs, "Open words: continuing with tools next.")
+	if !ok {
+		t.Fatalf("text-only message not found; outbound = %+v", msgs)
+	}
+	if !strings.HasPrefix(m.Content, "💬 ") || !strings.Contains(m.Content, "Goal-Open") {
+		t.Fatalf("text-only message must start with the 💬 header + Goal-Open, got %q", m.Content)
+	}
+	if !strings.Contains(m.Content, "\n\nOpen words: continuing with tools next.") {
+		t.Fatalf("text-only message must be header + blank line + text, got %q", m.Content)
 	}
 }
 
@@ -218,6 +241,14 @@ func TestTextOnlyPublishedBeforeCheckpointSameIterRecovery(t *testing.T) {
 	for _, want := range []string{"Open words.", "Checkpoint words."} {
 		if !outboundContains(msgs, want) {
 			t.Fatalf("text-only %q was NOT published before recovery; outbound = %+v", want, msgs)
+		}
+		m, ok := outboundMessageWithText(msgs, want)
+		if !ok {
+			t.Fatalf("text-only message %q not found; outbound = %+v", want, msgs)
+		}
+		// Phase 12.63: both publishes carry the 💬 header.
+		if !strings.HasPrefix(m.Content, "💬 ") {
+			t.Fatalf("text-only %q must start with the 💬 header, got %q", want, m.Content)
 		}
 	}
 }
@@ -301,5 +332,13 @@ func TestTextOnlyPublishedOnRetryAttemptInsideHandleGoalRecovery(t *testing.T) {
 	msgs := drainOutbound(msgBus)
 	if !outboundContains(msgs, "Retry words.") {
 		t.Fatalf("retry-attempt text-only %q was NOT published; outbound = %+v", "Retry words.", msgs)
+	}
+	m, ok := outboundMessageWithText(msgs, "Retry words.")
+	if !ok {
+		t.Fatalf("retry-attempt message not found; outbound = %+v", msgs)
+	}
+	// Phase 12.63: retry-attempt text-only also carries the 💬 header.
+	if !strings.HasPrefix(m.Content, "💬 ") {
+		t.Fatalf("retry-attempt text-only must start with the 💬 header, got %q", m.Content)
 	}
 }

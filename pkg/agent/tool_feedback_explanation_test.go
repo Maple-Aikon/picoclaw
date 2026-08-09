@@ -125,8 +125,8 @@ func TestToolFeedbackExplanationPublishedAsSeparateMessageWhenReplacing(t *testi
 			len(explanations), msgs)
 	}
 	body := explanations[0].Content
-	if !strings.HasPrefix(body, "📊") {
-		t.Fatalf("explanation message must start with the 📊 header; got %q", body)
+	if !strings.HasPrefix(body, "💭") {
+		t.Fatalf("explanation message must start with the 💭 header; got %q", body)
 	}
 	if !strings.Contains(body, "\n\nI will read README.md first.") {
 		t.Fatalf("explanation message must be header + blank line + explanation; got %q", body)

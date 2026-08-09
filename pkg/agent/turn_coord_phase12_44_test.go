@@ -304,7 +304,7 @@ drained:
 	}
 	got := outbounds[0].Content
 	// Phase 12.55.2: summary now carries the iteration/phase header
-	// ("📊 <turnID> (#iter/cap) Goal-<phase>: summary\n\n") — the summary
+	// ("📊 <turnID> (#iter/cap) Goal-<phase>" + blank line) — the summary
 	// body itself must stay verbatim at the transport boundary.
 	if !strings.HasPrefix(got, "📊 ") {
 		t.Errorf("summary message must carry the iteration/phase header, got %q", got)
@@ -315,8 +315,11 @@ drained:
 	if !strings.Contains(got, "Goal-Open") {
 		t.Errorf("summary header must say Goal-Open (phase at execute), got %q", got)
 	}
-	if !strings.Contains(got, ": summary\n\n") {
-		t.Errorf("summary message must carry the ': summary' suffix + blank line on the header (12.58.1), got %q", got)
+	// Phase 12.63: the ": summary" suffix was removed from the header —
+	// the body follows after a blank line, byte-identical to the
+	// LLM-supplied summary.
+	if strings.Contains(got, ": summary") {
+		t.Errorf("summary header must NOT carry the ': summary' suffix, got %q", got)
 	}
 	if !strings.HasSuffix(got, full) {
 		t.Error("summary at the transport boundary must end byte-identical to the LLM-supplied summary (F22A)")

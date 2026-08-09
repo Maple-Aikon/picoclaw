@@ -517,7 +517,6 @@ func (p *Pipeline) CallLLM(
 	return p.proceedPastLLM(ctx, turnCtx, ts, exec, iteration)
 }
 
-
 func (p *Pipeline) applyBeforeLLMModelRewrite(ts *turnState, exec *turnExecution) {
 	if p == nil || ts == nil || ts.agent == nil || exec == nil {
 		return
@@ -749,8 +748,8 @@ func (p *Pipeline) proceedPastLLM(
 		// re-invoke LLM in the same iteration, force-complete, or archive.
 		if (ts.hasGoal() || ts.currentGoalPhase() == GoalPhaseSet) && !exec.gracefulTerminal {
 			if action, msg := evaluateRecovery(ts, RecoveryContext{
-				Phase:                  string(ts.currentGoalPhase()),
-				Iteration:              iteration,
+				Phase:     string(ts.currentGoalPhase()),
+				Iteration: iteration,
 				// Phase 12.54: TextEmpty = Content=="" only. Reasoning is
 				// internal thinking; reasoning-only = the model is silent.
 				TextEmpty:              exec.response.Content == "",
@@ -772,11 +771,11 @@ func (p *Pipeline) proceedPastLLM(
 				if action == RecoveryRetryNextIteration {
 					ts.pendingRecoveryMessage = msg
 					logger.InfoCF("agent", "Text-only next-iter recovery: msg carried forward", map[string]any{
-						"agent_id":              ts.agent.ID,
-						"iteration":             iteration,
-						"phase":                 string(ts.currentGoalPhase()),
-						"msg_len":               len(msg),
-						"recovery_action":       actionName(action),
+						"agent_id":        ts.agent.ID,
+						"iteration":       iteration,
+						"phase":           string(ts.currentGoalPhase()),
+						"msg_len":         len(msg),
+						"recovery_action": actionName(action),
 					})
 					return ControlContinue, nil
 				}
@@ -835,12 +834,12 @@ func (p *Pipeline) proceedPastLLM(
 		}
 		logger.WarnCF("agent", "Final-report iter: tool call(s) stripped (LLM drift; tools locked by design)",
 			map[string]any{
-				"agent_id":     ts.agent.ID,
-				"iteration":    iteration,
-				"tool_count":   len(names),
-				"tool_names":   names,
-				"session_key":  ts.sessionKey,
-				"turn_id":      ts.turnID,
+				"agent_id":    ts.agent.ID,
+				"iteration":   iteration,
+				"tool_count":  len(names),
+				"tool_names":  names,
+				"session_key": ts.sessionKey,
+				"turn_id":     ts.turnID,
 			})
 		exec.normalizedToolCalls = []providers.ToolCall{}
 	}
@@ -1170,6 +1169,12 @@ func (p *Pipeline) handleHookReplay(
 // so the words are sent once and kept. Void + best-effort (PublishToUser
 // semantics: no fail path by design).
 //
+// The message carries the 💬 text-only header ("💬 <turnID> (#iter/cap)
+// Goal-<phase>" + blank line + text). This path fires only at
+// Open/Checkpoint/Final — SET text-only is a valid turn end (no recovery,
+// TextOnlySilent) and POST-FINAL is silent by design, so the header never
+// appears at those phases.
+//
 // Phase 12.56 wire: called at (1) the no-tool-call branch of CallLLM before
 // dispatching same-iter/next-iter recovery, and (2) inside
 // handleGoalRecovery for attempts > 0 before re-prompting again. Tool-call
@@ -1181,7 +1186,11 @@ func publishTextOnlyBeforeRecovery(ctx context.Context, ts *turnState, exec *tur
 	if exec.response.Content == "" || len(exec.response.ToolCalls) > 0 {
 		return
 	}
-	ts.PublishToUser(ctx, exec.response.Content)
+	text := exec.response.Content
+	if header := iterContextHeader(ts, ts.currentGoalPhase(), iconTextOnly); header != "" {
+		text = header + "\n\n" + text
+	}
+	ts.PublishToUser(ctx, text)
 }
 
 // handleGoalRecovery processes a recovery trigger using a same-iteration
@@ -1203,9 +1212,9 @@ func publishTextOnlyBeforeRecovery(ctx context.Context, ts *turnState, exec *tur
 //  5. If RecoveryArchiveGoal → archive + return Abort (turn ends).
 //
 // On retry, BoundedRetry invokes the wrapped func again, which:
-//  - Rebuilds callMessages with the pendingRecoveryMessage injected
-//  - Re-runs callLLMCore
-//  - Re-evaluates recovery
+//   - Rebuilds callMessages with the pendingRecoveryMessage injected
+//   - Re-runs callLLMCore
+//   - Re-evaluates recovery
 //
 // Exhausted → archive goal + return ControlBreak.
 func (p *Pipeline) handleGoalRecovery(
@@ -1334,8 +1343,8 @@ func (p *Pipeline) handleGoalRecovery(
 
 		// Evaluate recovery triggers on the (possibly fresh) response.
 		evalCtx := RecoveryContext{
-			Phase:                 string(ts.currentGoalPhase()),
-			Iteration:             iteration,
+			Phase:     string(ts.currentGoalPhase()),
+			Iteration: iteration,
 			// Phase 12.54: TextEmpty = Content=="" only (reasoning is never
 			// treated as speech).
 			TextEmpty:             exec.response.Content == "",
@@ -1521,10 +1530,10 @@ func (p *Pipeline) RecallLLM(
 	setupFunc func(),
 ) (*providers.LLMResponse, error) {
 	const maxTransientRetries = 2 // smaller than outer's 2 to avoid 4-layer
-	                              // compounding; outer already retried once
-	                              // before BoundedRetry paths fire
-	const backoffSecs = 1         // shorter than outer's 2s — BoundedRetry
-	                              // outer loop has its own pacing
+	// compounding; outer already retried once
+	// before BoundedRetry paths fire
+	const backoffSecs = 1 // shorter than outer's 2s — BoundedRetry
+	// outer loop has its own pacing
 
 	start := time.Now()
 
