@@ -40,10 +40,12 @@ func TestGoalCompleteReportHint_ContentMentionsLastChance(t *testing.T) {
 	if got == nil {
 		t.Fatalf("expected non-nil PromptPart")
 	}
-	// Owner decision (2026-07-24 08:50 ICT, anh Maple): hint should clearly
-	// state "LAST CHANCE" so LLM knows this is the final opportunity.
-	if !strings.Contains(got.Content, "LAST CHANCE") {
-		t.Errorf("hint missing 'LAST CHANCE' marker; got: %q", got.Content)
+	// Phase 12.68 Option B (anh Maple, 2026-08-10): the "last chance"
+	// directive is now worded as "this iteration is the ONLY one whose text
+	// reaches the user" — stronger, since earlier-iteration text (incl. the
+	// complete_goal explanation) is never delivered.
+	if !strings.Contains(got.Content, "ONLY one whose text reaches the user") {
+		t.Errorf("hint missing 'ONLY one whose text reaches the user' marker; got: %q", got.Content)
 	}
 	if !strings.Contains(got.Content, "Tools are now locked") {
 		t.Errorf("hint missing 'Tools are now locked' marker; got: %q", got.Content)
@@ -77,7 +79,7 @@ func TestGoalCompleteReportHint_StructuredFiveSections_Phase12_20_1(t *testing.T
 		name    string
 		keyword string
 	}{
-		{"task-recap", "TASK RECAP"},
+		{"full-answer", "FULL ANSWER"},
 		{"done", "DONE SO FAR"},
 		{"remaining", "REMAINING"},
 		{"approach", "APPROACH"},
@@ -111,10 +113,10 @@ func TestGoalCompleteReportHint_WirePath_ReachesPromptParts(t *testing.T) {
 	for _, p := range parts {
 		if p.Source.ID == PromptSourceGoalCompleteReportHint {
 			found = true
-			if !strings.Contains(p.Content, "LAST CHANCE") {
-				t.Errorf("wired hint missing 'LAST CHANCE' marker; got:\n%s", p.Content)
+			if !strings.Contains(p.Content, "ONLY one whose text reaches the user") {
+				t.Errorf("wired hint missing 'ONLY one whose text reaches the user' marker; got:\n%s", p.Content)
 			}
-			if !strings.Contains(p.Content, "TASK RECAP") {
+			if !strings.Contains(p.Content, "FULL ANSWER") {
 				t.Errorf("wired hint missing 5-section template; got:\n%s", p.Content)
 			}
 			break
@@ -175,3 +177,27 @@ func TestGoalCompleteReportHint_PostFinalHeader_WirePath(t *testing.T) {
 		t.Fatalf("expected report hint at post_final; got parts: %v", ids)
 	}
 }
+// Phase 12.68 — Option B (anh Maple, 2026-08-10): the post-final hint must
+// tell the LLM that earlier-iteration text (incl. the complete_goal
+// explanation) was NOT delivered to the user, and that this iteration is the
+// only one whose text reaches the user — so the LLM reproduces the FULL
+// answer instead of a short wrap-up (main-turn-13: 2515-char explanation
+// swallowed at iter 2, 302-char wrap-up at iter 3).
+func TestGoalCompleteReportHint_NotDeliveredBlock_Phase12_68(t *testing.T) {
+	got := goalCompleteReportHintContributor(PromptBuildRequest{PostCompleteGoalReport: true})
+	if got == nil {
+		t.Fatalf("expected non-nil PromptPart")
+	}
+	for _, marker := range []string{
+		"was NOT delivered to the user",
+		"ONLY one whose text reaches the user",
+		"FULL ANSWER",
+	} {
+		if !strings.Contains(got.Content, marker) {
+			t.Errorf("hint missing %q marker (Phase 12.68 Option B); got: %q", marker, got.Content)
+		}
+	}
+}
+
+// Wire test companion: hint must NOT reach parts when the post-report
+// flag is off (no bleed into normal Final-phase prompts).
