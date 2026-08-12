@@ -299,7 +299,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 		}
 	}
 	trackedMsgID, hasTrackedMsg := c.currentToolFeedbackMessage(trackedChatID)
-	if !isToolFeedback && !channels.OutboundMessageIsToolFeedbackExplanation(msg) {
+	if !isToolFeedback {
 		if msgIDs, handled := c.finalizeToolFeedbackMessageForChat(ctx, trackedChatID, msg); handled {
 			return msgIDs, nil
 		}
@@ -405,7 +405,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 
 	if isToolFeedback && len(messageIDs) > 0 {
 		c.RecordToolFeedbackMessage(trackedChatID, messageIDs[0], toolFeedbackContent)
-	} else if !isToolFeedback && !channels.OutboundMessageIsToolFeedbackExplanation(msg) && hasTrackedMsg {
+	} else if !isToolFeedback && hasTrackedMsg {
 		c.dismissTrackedToolFeedbackMessage(ctx, trackedChatID, trackedMsgID)
 	}
 
@@ -647,6 +647,7 @@ func (c *TelegramChannel) finalizeTrackedToolFeedbackMessage(
 	chatID string,
 	content string,
 	editFn func(context.Context, string, string, string) error,
+	recreateCard bool,
 ) ([]string, bool) {
 	msgID, baseContent, ok := c.takeToolFeedbackMessage(chatID)
 	if !ok || editFn == nil {
@@ -656,7 +657,48 @@ func (c *TelegramChannel) finalizeTrackedToolFeedbackMessage(
 		c.RecordToolFeedbackMessage(chatID, msgID, baseContent)
 		return nil, false
 	}
+	// Tool-feedback-explanation messages replace the old card in-place AND
+	// immediately recreate a fresh card so the previous content stays visible
+	// alongside the explanation. The new card becomes the tracked one for any
+	// subsequent edits/finalizes. Other finalizers (e.g. plain final reply)
+	// only edit and clear — no recreation. If the recreate send fails, keep
+	// the freshly-edited card as the tracked message — never dismiss it.
+	if recreateCard {
+		if newID, err := c.sendRecreatedToolFeedbackCard(ctx, chatID, baseContent); err == nil && newID != "" {
+			c.RecordToolFeedbackMessage(chatID, newID, baseContent)
+			return []string{msgID, newID}, true
+		}
+	}
 	return []string{msgID}, true
+}
+
+// sendRecreatedToolFeedbackCard sends a brand-new tool-feedback message with
+// the initial animated frame wrapping baseContent. Returns the new message ID
+// (string) or an error.
+func (c *TelegramChannel) sendRecreatedToolFeedbackCard(
+	ctx context.Context,
+	chatID string,
+	baseContent string,
+) (string, error) {
+	cid, threadID, err := parseTelegramChatID(chatID)
+	if err != nil {
+		return "", err
+	}
+	mode := c.formatMode()
+	animated := channels.InitialAnimatedToolFeedbackContent(baseContent)
+	var content string
+	if mode.isRich() {
+		content = animated
+	} else {
+		content = parseContent(animated)
+	}
+	return c.sendChunk(ctx, sendChunkParams{
+		chatID:     cid,
+		threadID:   threadID,
+		content:    content,
+		mdFallback: animated,
+		mode:       mode,
+	})
 }
 
 func (c *TelegramChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.OutboundMessage) ([]string, bool) {
@@ -671,7 +713,13 @@ func (c *TelegramChannel) finalizeToolFeedbackMessageForChat(
 	chatID string,
 	msg bus.OutboundMessage,
 ) ([]string, bool) {
-	return c.finalizeTrackedToolFeedbackMessage(ctx, chatID, msg.Content, c.EditMessage)
+	return c.finalizeTrackedToolFeedbackMessage(
+		ctx,
+		chatID,
+		msg.Content,
+		c.EditMessage,
+		channels.OutboundMessageIsToolFeedbackExplanation(msg),
+	)
 }
 
 // SendPlaceholder implements channels.PlaceholderCapable.

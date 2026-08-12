@@ -507,7 +507,7 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 					trackedChatID := trackedToolFeedbackMessageChatID(ch, chatID, &msg.Context)
 					if tracker, ok := ch.(toolFeedbackMessageTracker); ok && isToolFeedback {
 						tracker.RecordToolFeedbackMessage(trackedChatID, entry.id, trackedContent)
-					} else if !isToolFeedback && !OutboundMessageIsToolFeedbackExplanation(msg) {
+					} else if !isToolFeedback {
 						dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
 					}
 					return []string{entry.id}, true
