@@ -11,6 +11,7 @@ func TestFormatToolFeedbackMessage(t *testing.T) {
 		"I will read README.md first to confirm the current project structure.",
 		"{\n  \"path\": \"README.md\"\n}",
 		"",
+		"",
 	)
 	want := "\U0001f527 `read_file`\n\nI will read README.md first to confirm the current project structure.\n```json\n{\n  \"path\": \"README.md\"\n}\n```"
 	if got != want {
@@ -19,7 +20,7 @@ func TestFormatToolFeedbackMessage(t *testing.T) {
 }
 
 func TestFormatToolFeedbackMessage_EmptyExplanationShowsArgs(t *testing.T) {
-	got := FormatToolFeedbackMessage("read_file", "", "{\n  \"path\": \"README.md\"\n}", "")
+	got := FormatToolFeedbackMessage("read_file", "", "{\n  \"path\": \"README.md\"\n}", "", "")
 	want := "\U0001f527 `read_file`\n\n```json\n{\n  \"path\": \"README.md\"\n}\n```"
 	if got != want {
 		t.Fatalf("FormatToolFeedbackMessage() = %q, want %q", got, want)
@@ -27,7 +28,7 @@ func TestFormatToolFeedbackMessage_EmptyExplanationShowsArgs(t *testing.T) {
 }
 
 func TestFormatToolFeedbackMessage_EmptyToolNameOmitsToolLine(t *testing.T) {
-	got := FormatToolFeedbackMessage("", "Continue drafting the final response.", "", "")
+	got := FormatToolFeedbackMessage("", "Continue drafting the final response.", "", "", "")
 	want := "Continue drafting the final response."
 	if got != want {
 		t.Fatalf("FormatToolFeedbackMessage() = %q, want %q", got, want)
@@ -35,7 +36,7 @@ func TestFormatToolFeedbackMessage_EmptyToolNameOmitsToolLine(t *testing.T) {
 }
 
 func TestFormatToolFeedbackMessage_EmptyExplanationAndArgsKeepsOnlyToolLine(t *testing.T) {
-	got := FormatToolFeedbackMessage("read_file", "", "", "")
+	got := FormatToolFeedbackMessage("read_file", "", "", "", "")
 	want := "\U0001f527 `read_file`"
 	if got != want {
 		t.Fatalf("FormatToolFeedbackMessage() = %q, want %q", got, want)
@@ -48,6 +49,7 @@ func TestFormatToolFeedbackMessage_IterContextAfterToolLine(t *testing.T) {
 		"Searching for the current news.",
 		"",
 		"📊 #3/250 · Goal-Checkpoint",
+		"",
 	)
 	// Rich mode (Telegram Rich Messages) collapses a single \n inside a
 	// paragraph block, so the header lines must be separated by \n\n.
@@ -58,7 +60,7 @@ func TestFormatToolFeedbackMessage_IterContextAfterToolLine(t *testing.T) {
 }
 
 func TestFormatToolFeedbackMessage_IterContextOnlyWithToolLine(t *testing.T) {
-	got := FormatToolFeedbackMessage("web_search", "", "", "📊 #3/250 · Goal-Checkpoint")
+	got := FormatToolFeedbackMessage("web_search", "", "", "📊 #3/250 · Goal-Checkpoint", "")
 	want := "\U0001f527 `web_search`\n\n📊 #3/250 · Goal-Checkpoint"
 	if got != want {
 		t.Fatalf("FormatToolFeedbackMessage() = %q, want %q", got, want)
@@ -66,7 +68,7 @@ func TestFormatToolFeedbackMessage_IterContextOnlyWithToolLine(t *testing.T) {
 }
 
 func TestFormatToolFeedbackMessage_IterContextWithoutToolName(t *testing.T) {
-	got := FormatToolFeedbackMessage("", "", "", "📊 #3/250 · Goal-Checkpoint")
+	got := FormatToolFeedbackMessage("", "", "", "📊 #3/250 · Goal-Checkpoint", "")
 	want := "📊 #3/250 · Goal-Checkpoint"
 	if got != want {
 		t.Fatalf("FormatToolFeedbackMessage() = %q, want %q", got, want)
@@ -188,7 +190,7 @@ func jsonValEq(a, b any) bool {
 }
 
 func TestFormatToolFeedbackMessage_IterContextWithoutToolNameWithBody(t *testing.T) {
-	got := FormatToolFeedbackMessage("", "Searching for the current news.", "", "📊 #3/250 · Goal-Checkpoint")
+	got := FormatToolFeedbackMessage("", "Searching for the current news.", "", "📊 #3/250 · Goal-Checkpoint", "")
 	want := "📊 #3/250 · Goal-Checkpoint\n\nSearching for the current news."
 	if got != want {
 		t.Fatalf("FormatToolFeedbackMessage() = %q, want %q", got, want)
