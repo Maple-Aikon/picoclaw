@@ -706,7 +706,6 @@ func TestFinalizeTrackedToolFeedbackMessage_StopsTrackingBeforeEdit(t *testing.T
 			assert.Equal(t, "final reply", content)
 			return nil
 		},
-		false,
 	)
 
 	assert.True(t, handled)
@@ -1783,14 +1782,12 @@ func testMediaGroupMessage(mediaGroupID string) telego.Message {
 		MediaGroupID: mediaGroupID,
 	}
 }
-func TestSend_ToolFeedbackExplanationReplacesAndRecreatesCard(t *testing.T) {
+func TestSend_ToolFeedbackExplanationReplacesTrackedCard(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
 			switch {
 			case strings.Contains(url, "editMessageText"):
 				return successResponseWithMessageID(t, 1), nil
-			case strings.Contains(url, "sendMessage"):
-				return successResponseWithMessageID(t, 2), nil
 			default:
 				t.Fatalf("unexpected API call: %s", url)
 				return nil, nil
@@ -1798,11 +1795,11 @@ func TestSend_ToolFeedbackExplanationReplacesAndRecreatesCard(t *testing.T) {
 		},
 	}
 	ch := newTestChannel(t, caller)
-	ch.RecordToolFeedbackMessage("12345", "1", "X `read_file`")
+	ch.RecordToolFeedbackMessage("12345", "1", "`read_file`")
 
 	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
-		Content: "X (#1/200) Goal-Set\n\nI will read README.md first.",
+		Content: "I will read README.md first.",
 		Context: bus.InboundContext{
 			Channel: "telegram",
 			ChatID:  "12345",
@@ -1813,19 +1810,17 @@ func TestSend_ToolFeedbackExplanationReplacesAndRecreatesCard(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	require.Len(t, caller.calls, 2, "expected editMessageText + sendMessage for recreated card")
+	require.Len(t, caller.calls, 1, "expected editMessageText only (no recreation)")
 	assert.Contains(t, caller.calls[0].URL, "editMessageText")
-	assert.Contains(t, caller.calls[1].URL, "sendMessage")
-	assert.NotContains(t, caller.calls[1].URL, "deleteMessage")
 
-	// Recreated card carries the original card content (animated initial
-	// frame wraps it on the first line).
-	bodyBytes := caller.calls[1].Data.BodyRaw
+	bodyBytes := caller.calls[0].Data.BodyRaw
 	require.NotNil(t, bodyBytes)
-	assert.Contains(t, string(bodyBytes), "read_file", "recreated card should carry the original card content")
+	assert.Contains(t, string(bodyBytes), "I will read README.md first.",
+		"edit should replace the tracked card with the explanation text")
 
-	// Tracker now points to the recreated card so subsequent updates/edit land there.
-	trackedID, ok := ch.currentToolFeedbackMessage("12345")
-	require.True(t, ok, "tracker should hold the recreated card")
-	assert.Equal(t, "2", trackedID)
+	// Tracker is cleared -- the tracked card was edited in-place into an
+	// explanation message; subsequent updates will land on the next fresh
+	// tool-feedback card.
+	_, ok := ch.currentToolFeedbackMessage("12345")
+	assert.False(t, ok, "tracker should be empty after explanation replaces the card")
 }
