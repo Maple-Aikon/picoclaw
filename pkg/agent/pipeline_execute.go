@@ -172,7 +172,7 @@ func (p *Pipeline) gatePreCheckDeny(
 			ts,
 			utils.FormatToolFeedbackMessage(
 				toolName,
-				toolFeedbackExplanationForToolCall(exec.response, tc, *messages),
+				toolFeedbackCardExplanationForRender(al.cfg, exec.response, tc, *messages),
 				toolFeedbackArgsPreviewWithOptions(tc.Arguments, al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(), al.cfg.Agents.Defaults.ToolFeedback.PrettyPrint, al.cfg.Agents.Defaults.ToolFeedback.DisableEscapeHTML),
 				toolFeedbackIterContext(ts),
 				"",
@@ -342,7 +342,8 @@ toolLoop:
 					}
 					if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "pico" {
 						toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
-						toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
+						toolFeedbackExplanation := toolFeedbackCardExplanationForRender(
+							al.cfg,
 							exec.response,
 							tc,
 							messages,
@@ -692,7 +693,8 @@ toolLoop:
 		}
 		if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "pico" {
 			toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
-			toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
+			toolFeedbackExplanation := toolFeedbackCardExplanationForRender(
+				al.cfg,
 				exec.response,
 				tc,
 				messages,

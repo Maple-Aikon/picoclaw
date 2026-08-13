@@ -1,6 +1,11 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/providers"
+)
 
 func TestInferMediaType(t *testing.T) {
 	tests := []struct {
@@ -118,6 +123,71 @@ func TestToolFeedbackIterContext(t *testing.T) {
 			got := toolFeedbackIterContext(tt.ts)
 			if got != tt.want {
 				t.Fatalf("toolFeedbackIterContext() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+func TestToolFeedbackCardExplanationForRender(t *testing.T) {
+	// Build a ToolCall whose ExtraContent.ToolFeedbackExplanation is set,
+	// so when the helper does NOT suppress, it should return that text.
+	tc := providers.ToolCall{
+		ExtraContent: &providers.ExtraContent{
+			ToolFeedbackExplanation: "Reading the project layout first.",
+		},
+	}
+	messages := []providers.Message{}
+
+	mkCfg := func(enabled, explanationMessages, separateMessages bool) *config.Config {
+		return &config.Config{
+			Agents: config.AgentsConfig{
+				Defaults: config.AgentDefaults{
+					ToolFeedback: config.ToolFeedbackConfig{
+						Enabled:             enabled,
+						ExplanationMessages: explanationMessages,
+						SeparateMessages:    separateMessages,
+					},
+				},
+			},
+		}
+	}
+
+	cases := []struct {
+		name string
+		cfg  *config.Config
+		want string
+	}{
+		{
+			name: "tool_feedback disabled -> explanation embedded",
+			cfg:  mkCfg(false, true, false),
+			want: "Reading the project layout first.",
+		},
+		{
+			name: "explanation_messages=false, separate_messages=false -> embedded",
+			cfg:  mkCfg(true, false, false),
+			want: "Reading the project layout first.",
+		},
+		{
+			name: "explanation_messages=true, separate_messages=true -> embedded (each message carries its own)",
+			cfg:  mkCfg(true, true, true),
+			want: "Reading the project layout first.",
+		},
+		{
+			name: "explanation_messages=true, separate_messages=false -> suppressed (Phase 12.70)",
+			cfg:  mkCfg(true, true, false),
+			want: "",
+		},
+		{
+			name: "nil config -> embedded (no suppression when we cannot decide)",
+			cfg:  nil,
+			want: "Reading the project layout first.",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toolFeedbackCardExplanationForRender(tt.cfg, nil, tc, messages)
+			if got != tt.want {
+				t.Fatalf("toolFeedbackCardExplanationForRender() = %q, want %q", got, tt.want)
 			}
 		})
 	}

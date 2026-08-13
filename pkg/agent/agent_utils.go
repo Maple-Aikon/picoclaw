@@ -183,6 +183,26 @@ func toolFeedbackExplanationFromToolCalls(toolCalls []providers.ToolCall) string
 	return ""
 }
 
+
+// toolFeedbackCardExplanationForRender returns the explanation text to embed
+// inside the tool_feedback card body. When a standalone explanation message
+// will already publish on a separate track (explanation_messages=true AND
+// separate_messages=false), it returns "" so the card body does not
+// duplicate the same text the user will see one line up. Otherwise it
+// returns the normal explanation derived from the LLM response / messages
+// (Phase 12.70).
+func toolFeedbackCardExplanationForRender(
+	cfg *config.Config,
+	response *providers.LLMResponse,
+	toolCall providers.ToolCall,
+	messages []providers.Message,
+) string {
+	if explanationMessageWillPublish(cfg) {
+		return ""
+	}
+	return toolFeedbackExplanationForToolCall(response, toolCall, messages)
+}
+
 func toolFeedbackExplanationForToolCall(
 	response *providers.LLMResponse,
 	toolCall providers.ToolCall,
@@ -245,6 +265,16 @@ func shouldPublishToolFeedbackExplanation(cfg *config.Config, ts *turnState) boo
 	if ts == nil || ts.channel == "" || ts.channel == "pico" || ts.opts.SuppressToolFeedback {
 		return false
 	}
+	return explanationMessageWillPublish(cfg)
+}
+
+// explanationMessageWillPublish returns the config-only half of
+// shouldPublishToolFeedbackExplanation. Used by call sites that need to
+// decide whether to embed the explanation inside the tool_feedback card
+// body — when this is true, the standalone explanation message will fire
+// on a separate track and the card body must suppress the duplicated
+// explanation text (Phase 12.70).
+func explanationMessageWillPublish(cfg *config.Config) bool {
 	if cfg == nil || !cfg.Agents.Defaults.IsToolFeedbackEnabled() {
 		return false
 	}
