@@ -325,6 +325,21 @@ toolLoop:
 						},
 					)
 
+					// Phase 12.58.3 (order swapped): durable explanation message is
+					// published FIRST (#1.1) so the LLM's narrative intent lands
+					// in the chat before the tool_feedback card (#1.2). This
+					// avoids the animation "blink twice" cosmetic on a fresh
+					// turn where no tracked card exists yet — the explanation
+					// sends as a regular message (no edit-in-place candidate),
+					// then the tool_feedback card sends fresh with animation,
+					// so the user sees exactly one animation cycle per tool call.
+					if shouldPublishToolFeedbackExplanation(al.cfg, ts) {
+						publishToolFeedbackExplanationOnce(
+							turnCtx, al, ts,
+							toolFeedbackExplanationContent(exec.response),
+							publishedExplanations,
+						)
+					}
 					if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "pico" {
 						toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
 						toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
@@ -346,15 +361,6 @@ toolLoop:
 							outboundTurnMessageOptions{kind: messageKindToolFeedback},
 						))
 						fbCancel()
-					}
-					// Phase 12.58.3: durable explanation message when the LLM
-					// sent content text alongside this tool call.
-					if shouldPublishToolFeedbackExplanation(al.cfg, ts) {
-						publishToolFeedbackExplanationOnce(
-							turnCtx, al, ts,
-							toolFeedbackExplanationContent(exec.response),
-							publishedExplanations,
-						)
 					}
 
 					toolDuration := time.Duration(0)
@@ -673,6 +679,17 @@ toolLoop:
 			},
 		)
 
+		// Phase 12.58.3 (order swapped): durable explanation message published
+		// FIRST (#1.1) before the tool_feedback card (#1.2). Mirrors the
+		// sync path — see comment there for rationale (avoids animation
+		// "blink twice" on a fresh turn).
+		if shouldPublishToolFeedbackExplanation(al.cfg, ts) {
+			publishToolFeedbackExplanationOnce(
+				turnCtx, al, ts,
+				toolFeedbackExplanationContent(exec.response),
+				publishedExplanations,
+			)
+		}
 		if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "pico" {
 			toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
 			toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
@@ -694,15 +711,6 @@ toolLoop:
 				outboundTurnMessageOptions{kind: messageKindToolFeedback},
 			))
 			fbCancel()
-		}
-		// Phase 12.58.3: durable explanation message when the LLM sent
-		// content text alongside this (async) tool call.
-		if shouldPublishToolFeedbackExplanation(al.cfg, ts) {
-			publishToolFeedbackExplanationOnce(
-				turnCtx, al, ts,
-				toolFeedbackExplanationContent(exec.response),
-				publishedExplanations,
-			)
 		}
 
 		toolCallID := tc.ID
