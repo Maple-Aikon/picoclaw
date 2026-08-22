@@ -613,15 +613,19 @@ func TestProcessMessage_IncludesCurrentSenderInDynamicContext(t *testing.T) {
 		t.Fatal("provider did not receive any messages")
 	}
 
-	systemPrompt := provider.lastMessages[0].Content
-	wantSender := "## Current Sender\nCurrent sender: Alice (ID: discord:123)"
-	if !strings.Contains(systemPrompt, wantSender) {
-		t.Fatalf("system prompt missing sender context %q:\n%s", wantSender, systemPrompt)
-	}
-
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" || lastMessage.Content != "hello" {
-		t.Fatalf("last provider message = %+v, want unchanged user message", lastMessage)
+	if lastMessage.Role != "user" {
+		t.Fatalf("last provider message = %+v, want user role", lastMessage)
+	}
+	// Layout B (Q1=B điều chỉnh 2026-08-22): dynamic context (incl. Current Sender)
+	// now lives in user[0]. Assert it there, and confirm the original user text
+	// survives as the suffix.
+	wantSender := "## Current Sender\nCurrent sender: Alice (ID: discord:123)"
+	if !strings.Contains(lastMessage.Content, wantSender) {
+		t.Fatalf("user[0] missing sender context %q:\n%s", wantSender, lastMessage.Content)
+	}
+	if !strings.HasSuffix(lastMessage.Content, "hello") {
+		t.Fatalf("user[0] = %q, want suffix %q (original user text)", lastMessage.Content, "hello")
 	}
 }
 
@@ -1172,8 +1176,12 @@ func TestProcessMessage_UseCommandLoadsRequestedSkill(t *testing.T) {
 	}
 
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" || lastMessage.Content != "explain how to list files" {
-		t.Fatalf("last provider message = %+v, want rewritten user message", lastMessage)
+	if lastMessage.Role != "user" {
+		t.Fatalf("last provider message role = %s, want user", lastMessage.Role)
+	}
+	// Layout B: dynamic context is prepended to user[0], original text stays as suffix.
+	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.HasSuffix(lastMessage.Content, "explain how to list files") {
+		t.Fatalf("last provider message = %+v, want user message with dynamic_context prefix and %q suffix", lastMessage, "explain how to list files")
 	}
 }
 
@@ -1243,8 +1251,12 @@ func TestProcessMessage_BtwCommandRunsWithoutPersistingHistory(t *testing.T) {
 	}
 
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" || lastMessage.Content != "explain side effects" {
-		t.Fatalf("last provider message = %+v, want stripped /btw question", lastMessage)
+	if lastMessage.Role != "user" {
+		t.Fatalf("last provider message role = %s, want user", lastMessage.Role)
+	}
+	// Layout B: dynamic context prepended to user[0], stripped /btw text is the suffix.
+	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.HasSuffix(lastMessage.Content, "explain side effects") {
+		t.Fatalf("last provider message = %+v, want dynamic_context prefix and %q suffix", lastMessage, "explain side effects")
 	}
 
 	history := al.GetRegistry().GetDefaultAgent().Sessions.GetHistory(sessionKey)
@@ -1292,16 +1304,24 @@ func TestProcessMessage_BtwCommandIncludesRequestContextAndMedia(t *testing.T) {
 	}
 
 	systemPrompt := provider.lastMessages[0].Content
-	if !strings.Contains(systemPrompt, "## Current Session\nChannel: discord\nChat ID: group-1") {
-		t.Fatalf("system prompt missing current session context:\n%s", systemPrompt)
-	}
-	if !strings.Contains(systemPrompt, "## Current Sender\nCurrent sender: Alice (ID: discord:123)") {
-		t.Fatalf("system prompt missing current sender context:\n%s", systemPrompt)
+	// Layout B contract #1: dynamic content must NOT appear in any system block.
+	if strings.Contains(systemPrompt, "## Current Session") || strings.Contains(systemPrompt, "## Current Sender") {
+		t.Fatalf("system prompt must not contain dynamic session/sender context:\n%s", systemPrompt)
 	}
 
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" || lastMessage.Content != "describe this image" {
-		t.Fatalf("last provider message = %+v, want stripped /btw question", lastMessage)
+	if lastMessage.Role != "user" {
+		t.Fatalf("last provider message role = %s, want user", lastMessage.Role)
+	}
+	// Layout B contract #2: session/sender context live in the dynamic_context block of user[0].
+	if !strings.Contains(lastMessage.Content, "## Current Session\nChannel: discord\nChat ID: group-1") {
+		t.Fatalf("user message missing current session context:\n%s", lastMessage.Content)
+	}
+	if !strings.Contains(lastMessage.Content, "## Current Sender\nCurrent sender: Alice (ID: discord:123)") {
+		t.Fatalf("user message missing current sender context:\n%s", lastMessage.Content)
+	}
+	if !strings.HasSuffix(lastMessage.Content, "describe this image") {
+		t.Fatalf("last provider message = %+v, want user suffix %q after dynamic_context block", lastMessage, "describe this image")
 	}
 	if !reflect.DeepEqual(lastMessage.Media, []string{"media://image-1"}) {
 		t.Fatalf("last provider media = %#v, want media ref", lastMessage.Media)
@@ -1366,8 +1386,12 @@ func TestProcessMessage_BtwCommandUsesIsolatedProvider(t *testing.T) {
 
 	// Verify the question was stripped of /btw prefix
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" || lastMessage.Content != "explain isolation" {
-		t.Fatalf("last provider message = %+v, want stripped /btw question", lastMessage)
+	if lastMessage.Role != "user" {
+		t.Fatalf("last provider message role = %s, want user", lastMessage.Role)
+	}
+	// Layout B: dynamic context prepended to user[0], stripped /btw text is the suffix.
+	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.HasSuffix(lastMessage.Content, "explain isolation") {
+		t.Fatalf("last provider message = %+v, want dynamic_context prefix and %q suffix", lastMessage, "explain isolation")
 	}
 
 	// Verify main session history was NOT modified
@@ -1599,8 +1623,12 @@ func TestProcessMessage_UseCommandArmsSkillForNextMessage(t *testing.T) {
 		t.Fatalf("system prompt missing pending skill content:\n%s", systemPrompt)
 	}
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" || lastMessage.Content != "explain how to list files" {
-		t.Fatalf("last provider message = %+v, want unchanged follow-up user message", lastMessage)
+	if lastMessage.Role != "user" {
+		t.Fatalf("last provider message role = %s, want user", lastMessage.Role)
+	}
+	// Layout B: original user text is preserved as suffix after the dynamic_context block.
+	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.HasSuffix(lastMessage.Content, "explain how to list files") {
+		t.Fatalf("last provider message = %+v, want unchanged follow-up user message as suffix after dynamic_context", lastMessage)
 	}
 }
 

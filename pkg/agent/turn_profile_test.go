@@ -194,8 +194,10 @@ func TestTurnProfile_HistoryOffSuppressesHistoryAndPersistence(t *testing.T) {
 	if len(provider.messages) != 2 {
 		t.Fatalf("provider messages len = %d, want system + current user", len(provider.messages))
 	}
-	if provider.messages[1].Content != "new user" {
-		t.Fatalf("current message = %q, want new user", provider.messages[1].Content)
+	// Layout B: dynamic context (time/runtime) prepends user[0], so the raw user
+	// text is the suffix — assert with Contains instead of exact equality.
+	if !strings.Contains(provider.messages[1].Content, "new user") {
+		t.Fatalf("current message = %q, want it to contain new user", provider.messages[1].Content)
 	}
 	if strings.Contains(provider.messages[0].Content, "old summary") {
 		t.Fatalf("system prompt includes suppressed summary:\n%s", provider.messages[0].Content)
@@ -235,8 +237,11 @@ func TestTurnProfile_ProcessMessageUsesEnabledTurnProfile(t *testing.T) {
 	if len(provider.messages) != 2 {
 		t.Fatalf("provider messages len = %d, want system + current user", len(provider.messages))
 	}
-	if provider.messages[1].Content != "hello from pico" {
-		t.Fatalf("current message = %q, want hello from pico", provider.messages[1].Content)
+	// Layout B: dynamic context (time/runtime/session/sender) prepends user[0],
+	// so the raw user text is the suffix — assert with Contains instead of
+	// exact equality.
+	if !strings.Contains(provider.messages[1].Content, "hello from pico") {
+		t.Fatalf("current message = %q, want it to contain hello from pico", provider.messages[1].Content)
 	}
 }
 

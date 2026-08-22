@@ -169,6 +169,20 @@ type PromptBuildRequest struct {
 	// Checkpoint. Hint contributors MUST handle empty gracefully.
 	GoalSnapshot string
 
+	// DynamicContext is the short per-request context string built by
+	// ContextBuilder.buildDynamicContext — typically contains time.Now()
+	// formatted, runtime info, session/sender identity. ITS CONTENT CHANGES
+	// EVERY TURN, so it MUST NOT be rendered into any system ContentBlock
+	// (would invalidate MiniMax-M3 passive cache hits; see plan
+	// anthropic-cache-utilization-v1-passive-cache-dynamic-block-split-observability-20260822).
+	// BuildMessagesFromPrompt prepends it to user[0] (the actual user
+	// message) inside a `<dynamic_context>...</dynamic_context>` wrapper so
+	// the LLM still receives the context but the system prefix stays
+	// 100% identity-stable across calls (cache-friendly).
+	// Empty by default; callers wire it via the ContextBuilder
+	// buildDynamicContext helper. Plan A: split into user[0] (Layout B).
+	DynamicContext string
+
 	// IterationCap is the current per-turn iteration cap (extended via
 	// goal_progress during the turn). Populated by
 	// promptBuildRequestForTurn so the OPEN hint can show "Iteration cap: N".

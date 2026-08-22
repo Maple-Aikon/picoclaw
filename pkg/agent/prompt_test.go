@@ -103,8 +103,16 @@ func TestBuildMessagesFromPrompt_IncludesSystemPromptOverlay(t *testing.T) {
 	if !strings.Contains(messages[0].Content, "Use child-only system instructions.") {
 		t.Fatalf("system prompt missing overlay: %q", messages[0].Content)
 	}
-	if messages[1].Role != "user" || messages[1].Content != "do child task" {
-		t.Fatalf("messages[1] = %#v, want user task", messages[1])
+	if messages[1].Role != "user" {
+		t.Fatalf("messages[1].Role = %q, want user", messages[1].Role)
+	}
+	// Layout B (Q1=B điều chỉnh 2026-08-22): dynamic context is prepended to
+	// user[0] inside `<dynamic_context>` — the user task must survive as suffix.
+	if !strings.HasSuffix(messages[1].Content, "do child task") {
+		t.Fatalf("messages[1].Content = %q, want suffix %q (dynamic block prepended)", messages[1].Content, "do child task")
+	}
+	if !strings.Contains(messages[1].Content, "<dynamic_context>") {
+		t.Fatalf("messages[1].Content = %q, want <dynamic_context> block in user[0]", messages[1].Content)
 	}
 }
 
@@ -121,8 +129,8 @@ func TestBuildMessagesFromPrompt_AttachesInternalPromptMetadata(t *testing.T) {
 	}
 
 	system := messages[0]
-	if len(system.SystemParts) < 3 {
-		t.Fatalf("system parts len = %d, want at least 3", len(system.SystemParts))
+	if len(system.SystemParts) < 2 {
+		t.Fatalf("system parts len = %d, want at least 2 (static + summary)", len(system.SystemParts))
 	}
 	if system.SystemParts[0].PromptLayer != string(PromptLayerKernel) ||
 		system.SystemParts[0].PromptSlot != string(PromptSlotIdentity) ||
@@ -145,8 +153,11 @@ func TestBuildMessagesFromPrompt_AttachesInternalPromptMetadata(t *testing.T) {
 			}
 		}
 	}
-	if !hasRuntime {
-		t.Fatal("system parts missing runtime prompt metadata")
+	// Layout B invariant (Q1=B điều chỉnh): runtime prompt metadata must NOT be
+	// part of system anymore — the dynamic block lives in user[0]. Its presence
+	// here would break MiniMax-M3 passive cache identity (T0 D2 FAIL 2026-08-22).
+	if hasRuntime {
+		t.Fatal("system parts MUST NOT contain runtime prompt metadata (Layout B — dynamic moved to user[0])")
 	}
 	if !hasSummary {
 		t.Fatal("system parts missing summary prompt metadata")

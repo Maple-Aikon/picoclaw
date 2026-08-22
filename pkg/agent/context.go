@@ -1321,8 +1321,14 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 			Stable:  false,
 			Cache:   PromptCacheNone,
 		}
-		stringParts = append(stringParts, dynamicCtx)
-		contentBlocks = append(contentBlocks, promptContentBlock(runtimePart, nil))
+		// Plan A Layout B (Q1=B điều chỉnh): the dynamic block content varies per
+		// call (real time.Now() inside buildDynamicContext) and would invalidate
+		// MiniMax-M3 passive cache hits (verified T0 Scenario D2 2026-08-22:
+		// cache_read 128→128→0 when content changes per call). Skip system append.
+		// Stash the text into req.DynamicContext so BuildMessagesFromPrompt can
+		// prepend it to user[0] instead — system prefix stays identity-stable.
+		req.DynamicContext = dynamicCtx
+		_ = runtimePart // retained for registry visibility; not appended to system
 
 		if req.Summary != "" {
 			summaryPart := PromptPart{
@@ -1401,14 +1407,20 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 	// Add conversation history
 	messages = append(messages, history...)
 
-	// Add current user message. Media-only turns must still be preserved so
-	// multimodal providers receive the uploaded image even when the user sends
-	// no accompanying text.
-	if strings.TrimSpace(req.CurrentMessage) != "" || len(req.Media) > 0 {
-		messages = append(messages, userPromptMessage(req.CurrentMessage, req.Media))
+	// Plan A Layout B (Q1=B điều chỉnh): prepend the dynamic context to user[0]
+	// inside a stable wrapper so the LLM still receives per-request info (time,
+	// runtime, session) but the system prefix stays 100% identity-stable per
+	// call sequence (MiniMax-M3 passive cache hit rate > 0%).
+	// skipWrapDynamic = req.DynamicContext == "" (preserve exact original semantics).
+	userContent := wrapDynamicContext(req.DynamicContext, req.CurrentMessage)
+	if strings.TrimSpace(userContent) != "" || len(req.Media) > 0 {
+		messages = append(messages, userPromptMessage(userContent, req.Media))
 	}
 	if len(messages) == 0 {
-		messages = append(messages, userPromptMessage("", nil))
+		// Stub user[0] — preserves original "empty messages → blank user"
+		// behavior. When DynamicContext is non-empty we still emit the stub
+		// with just the dynamic block (no original user text to wrap).
+		messages = append(messages, userPromptMessage(wrapDynamicContext(req.DynamicContext, ""), nil))
 	}
 
 	return messages
@@ -1711,4 +1723,27 @@ func (cb *ContextBuilder) GetSkillsInfo() map[string]any {
 		"available": len(allSkills),
 		"names":     skillNames,
 	}
+}
+
+// wrapDynamicContext returns the user-message string with req.DynamicContext
+// prepended inside a `<dynamic_context>...</dynamic_context>` wrapper so the
+// LLM can parse it deterministically. When dyn is empty, returns userMessage
+// unchanged (no extra wrapper, no double newlines).
+//
+// Plan A Layout B (Q1=B điều chỉnh 2026-08-22): keeps the MiniMax-M3 system
+// prefix identity-stable so passive cache hits recover. See plan
+// anthropic-cache-utilization-v1-passive-cache-dynamic-block-split-observability-20260822.
+func wrapDynamicContext(dyn, userMessage string) string {
+	if dyn == "" {
+		return userMessage
+	}
+	var sb strings.Builder
+	sb.WriteString("<dynamic_context>\n")
+	sb.WriteString(dyn)
+	if !strings.HasSuffix(dyn, "\n") {
+		sb.WriteString("\n")
+	}
+	sb.WriteString("</dynamic_context>\n\n")
+	sb.WriteString(userMessage)
+	return sb.String()
 }

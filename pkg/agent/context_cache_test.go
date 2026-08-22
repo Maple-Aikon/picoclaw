@@ -100,13 +100,20 @@ func TestSingleSystemMessage(t *testing.T) {
 				t.Errorf("last message should be user, got %s", msgs[len(msgs)-1].Role)
 			}
 
-			// System message must contain identity (static) and time (dynamic)
+			// System message must contain identity (static). Dynamic context
+			// (time/runtime/session) must NOT appear in system (Layout B — keeps the
+			// system prefix identity-stable for MiniMax passive cache); it is
+			// prepended to user[0] inside <dynamic_context> instead.
 			sys := msgs[0].Content
 			if !strings.Contains(sys, "picoclaw") {
 				t.Error("system message missing identity")
 			}
-			if !strings.Contains(sys, "Current Time") {
-				t.Error("system message missing dynamic time context")
+			if strings.Contains(sys, "Current Time") {
+				t.Error("system message must not contain dynamic time context (Layout B)")
+			}
+			last := msgs[len(msgs)-1]
+			if !strings.Contains(extractStringContent(last), "Current Time") {
+				t.Error("user[0] missing dynamic time context (Layout B)")
 			}
 
 			// Summary handling
@@ -169,20 +176,24 @@ func TestBuildMessages_CurrentSenderDynamicContext(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			msgs := cb.BuildMessages(nil, "", "hello", nil, "discord", "chat1", tt.senderID, tt.senderDisplayName)
-			sys := msgs[0].Content
+
+			// Layout B (Q1=B điều chỉnh 2026-08-22): dynamic context — including
+			// the Current Sender section — now lives in user[0], NOT in the system
+			// message. Assert against the last user message instead.
+			userContent := lastUserMessageContent(msgs)
 
 			if tt.wantSection {
-				if !strings.Contains(sys, "## Current Sender") {
-					t.Fatalf("system prompt missing Current Sender section:\n%s", sys)
+				if !strings.Contains(userContent, "## Current Sender") {
+					t.Fatalf("user[0] missing Current Sender section:\n%s", userContent)
 				}
-				if !strings.Contains(sys, tt.wantLine) {
-					t.Fatalf("system prompt missing sender line %q:\n%s", tt.wantLine, sys)
+				if !strings.Contains(userContent, tt.wantLine) {
+					t.Fatalf("user[0] missing sender line %q:\n%s", tt.wantLine, userContent)
 				}
 				return
 			}
 
-			if strings.Contains(sys, "## Current Sender") {
-				t.Fatalf("system prompt should omit Current Sender section:\n%s", sys)
+			if strings.Contains(userContent, "## Current Sender") {
+				t.Fatalf("user[0] should omit Current Sender section:\n%s", userContent)
 			}
 		})
 	}
@@ -928,8 +939,12 @@ func TestBuildMessages_IncludesMediaOnlyCurrentMessage(t *testing.T) {
 	if userMsg.Role != "user" {
 		t.Fatalf("userMsg.Role = %q, want %q", userMsg.Role, "user")
 	}
-	if userMsg.Content != "" {
-		t.Fatalf("userMsg.Content = %q, want empty string", userMsg.Content)
+	// Layout B (Q1=B điều chỉnh 2026-08-22): user[0] always carries the dynamic
+	// context block when the default system prompt is active — even for
+	// media-only turns with empty currentMessage. The media payload survives
+	// unchanged alongside it.
+	if !strings.Contains(userMsg.Content, "<dynamic_context>") {
+		t.Fatalf("userMsg.Content = %q, want <dynamic_context> block (Layout B)", userMsg.Content)
 	}
 	if len(userMsg.Media) != 1 || userMsg.Media[0] != "data:image/png;base64,abc123" {
 		t.Fatalf("userMsg.Media = %#v, want image payload", userMsg.Media)
