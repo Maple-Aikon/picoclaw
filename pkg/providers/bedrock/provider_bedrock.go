@@ -411,13 +411,11 @@ func parseStreamResponse(
 				// Usage metadata
 				if e.Value.Usage != nil {
 					usage = &UsageInfo{
-						PromptTokens:     int(aws.ToInt32(e.Value.Usage.InputTokens)),
-						CompletionTokens: int(aws.ToInt32(e.Value.Usage.OutputTokens)),
-						TotalTokens: int(
-							aws.ToInt32(e.Value.Usage.InputTokens),
-						) + int(
-							aws.ToInt32(e.Value.Usage.OutputTokens),
-						),
+						PromptTokens:         int(aws.ToInt32(e.Value.Usage.InputTokens)),
+						CompletionTokens:     int(aws.ToInt32(e.Value.Usage.OutputTokens)),
+						TotalTokens:          int(aws.ToInt32(e.Value.Usage.InputTokens)) + int(aws.ToInt32(e.Value.Usage.OutputTokens)),
+						CacheReadInputTokens: int(aws.ToInt32(e.Value.Usage.CacheReadInputTokens)),
+						CacheWriteInputTokens: int(aws.ToInt32(e.Value.Usage.CacheWriteInputTokens)),
 					}
 				}
 			}
@@ -791,9 +789,11 @@ func parseResponse(output *bedrockruntime.ConverseOutput) (*LLMResponse, error) 
 	var usage *UsageInfo
 	if output.Usage != nil {
 		usage = &UsageInfo{
-			PromptTokens:     int(aws.ToInt32(output.Usage.InputTokens)),
-			CompletionTokens: int(aws.ToInt32(output.Usage.OutputTokens)),
-			TotalTokens:      int(aws.ToInt32(output.Usage.InputTokens)) + int(aws.ToInt32(output.Usage.OutputTokens)),
+			PromptTokens:         int(aws.ToInt32(output.Usage.InputTokens)),
+			CompletionTokens:     int(aws.ToInt32(output.Usage.OutputTokens)),
+			TotalTokens:          int(aws.ToInt32(output.Usage.InputTokens)) + int(aws.ToInt32(output.Usage.OutputTokens)),
+			CacheReadInputTokens: int(aws.ToInt32(output.Usage.CacheReadInputTokens)),
+			CacheWriteInputTokens: int(aws.ToInt32(output.Usage.CacheWriteInputTokens)),
 		}
 	}
 

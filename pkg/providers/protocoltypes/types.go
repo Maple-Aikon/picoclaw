@@ -50,9 +50,19 @@ type ReasoningDetail struct {
 }
 
 type UsageInfo struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens         int `json:"prompt_tokens"`
+	CompletionTokens     int `json:"completion_tokens"`
+	TotalTokens          int `json:"total_tokens"`
+	// CacheReadInputTokens is the number of input tokens read from the
+	// provider's prompt cache (e.g. AWS Bedrock CacheReadInputTokens,
+	// Anthropic cache_read_input_tokens). Zero for providers that do
+	// not surface cache hit telemetry.
+	CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
+	// CacheWriteInputTokens is the number of input tokens written to the
+	// provider's prompt cache on this call (e.g. AWS Bedrock
+	// CacheWriteInputTokens, Anthropic cache_creation_input_tokens).
+	// Zero for providers that do not surface cache creation telemetry.
+	CacheWriteInputTokens int `json:"cache_write_input_tokens,omitempty"`
 }
 
 // CacheControl marks a content block for LLM-side prefix caching.
