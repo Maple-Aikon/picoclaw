@@ -379,6 +379,20 @@ test: generate
 	@$(GO) test $(GOFLAGS) $$($(GO) list $(GOFLAGS) ./... | grep -v github.com/sipeed/picoclaw/web/)
 	@cd web && make test
 
+## test-bedrock: Test AWS Bedrock provider (requires -tags bedrock for AWS SDK types)
+##
+## The bedrock provider package uses //go:build bedrock so its files are
+## excluded from default builds (default tag set is goolm,stdjson). Running
+## `make test` therefore skips the bedrock parse tests entirely. This target
+## exercises the bedrock parse/streaming logic and any future cache-field
+## regressions in CI / locally.
+##
+## Override tags via GO_BUILD_TAGS_BEDROCK (default: bedrock).
+test-bedrock: generate
+	@$(GO) test -tags "$(GO_BUILD_TAGS),$(GO_BUILD_TAGS_BEDROCK)" -v ./pkg/providers/bedrock/...
+
+GO_BUILD_TAGS_BEDROCK?=bedrock
+
 ## integration-test: Run Docker-backed integration test suites
 integration-test:
 	@bash ./scripts/run-integration-tests.sh

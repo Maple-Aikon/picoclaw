@@ -65,6 +65,12 @@ jobs:
       - name: Run go test
         run: go test -tags goolm,stdjson ./...
 
+      - name: Run bedrock provider tests
+        # Bedrock provider uses //go:build bedrock so the default test step
+        # above excludes it (no AWS SDK types compile without the tag).
+        # `make test-bedrock` is the canonical entry point.
+        run: make test-bedrock
+
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
