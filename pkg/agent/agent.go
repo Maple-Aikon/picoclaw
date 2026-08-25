@@ -222,6 +222,28 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				return nil
 			}
 
+			// Diagnostic: first-action log for inbound message at the bus
+			// consumer boundary. Incident 2026-08-25 06:03 ICT: gateway
+			// PID 26851 received Telegram "Hi" (msg 44955) and sent
+			// placeholder "Thinking..." (msg 44956) but never produced a
+			// "Processing message from" log — agent loop never picked up
+			// the message. This log fires BEFORE resolveSteeringTarget so
+			// we can distinguish: (a) consumer not reached at all (bus
+			// layer stuck) vs (b) consumer reached but resolve silently
+			// dropped the msg. Safe to ship: pure log, no behavior change.
+			logPreview := utils.Truncate(msg.Content, 80)
+			logger.InfoCF(
+				"agent",
+				fmt.Sprintf("agent_bus_recv channel=%s sender=%s session=%q content=%q", msg.Channel, msg.SenderID, msg.SessionKey, logPreview),
+				map[string]any{
+					"channel":     msg.Channel,
+					"chat_id":     msg.ChatID,
+					"sender_id":   msg.SenderID,
+					"message_id":  msg.MessageID,
+					"session_key": msg.SessionKey,
+				},
+			)
+
 			// Resolve the session key for this message
 			sessionKey, agentID, ok := al.resolveSteeringTarget(msg)
 			if !ok {
