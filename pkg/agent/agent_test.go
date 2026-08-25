@@ -2910,8 +2910,8 @@ func TestToolFeedbackExplanationForToolCall_PrefersToolSpecificExtraContent(t *t
 		},
 	}
 
-	got1 := toolFeedbackExplanationForToolCall(response, response.ToolCalls[0], nil)
-	got2 := toolFeedbackExplanationForToolCall(response, response.ToolCalls[1], nil)
+	got1 := toolFeedbackExplanationForToolCall(nil, response, response.ToolCalls[0], nil)
+	got2 := toolFeedbackExplanationForToolCall(nil, response, response.ToolCalls[1], nil)
 	if got1 != "Read README.md first." {
 		t.Fatalf("toolFeedbackExplanationForToolCall() first = %q, want tool-specific explanation", got1)
 	}
@@ -2940,7 +2940,7 @@ func TestToolFeedbackExplanationForToolCall_DoesNotReuseAnotherToolCallExplanati
 		{Role: "user", Content: "inspect the config and update the example"},
 	}
 
-	got := toolFeedbackExplanationForToolCall(response, response.ToolCalls[0], messages)
+	got := toolFeedbackExplanationForToolCall(nil, response, response.ToolCalls[0], messages)
 	want := utils.ToolFeedbackContinuationHint + ": inspect the config and update the example"
 	if got != want {
 		t.Fatalf("toolFeedbackExplanationForToolCall() = %q, want %q", got, want)
@@ -2978,7 +2978,7 @@ func TestToolFeedbackExplanationForToolCall_DoesNotTruncateLongExplanation(t *te
 		}},
 	}
 
-	got := toolFeedbackExplanationForToolCall(response, response.ToolCalls[0], nil)
+	got := toolFeedbackExplanationForToolCall(nil, response, response.ToolCalls[0], nil)
 	if got != explanation {
 		t.Fatalf("toolFeedbackExplanationForToolCall() = %q, want full explanation", got)
 	}

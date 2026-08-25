@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"strings"
+
 	"github.com/sipeed/picoclaw/pkg/agent/goal"
+	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 // loadGoalSnapshotForHint returns the rendered goal header (objective +
@@ -39,4 +42,43 @@ func loadGoalSnapshotForHint(workspace, sessionKey string) string {
 		return ""
 	}
 	return g.RenderHeader()
+}
+
+// loadActiveGoalObjectiveForFeedback returns the active goal's Objective text
+// for the given session, or empty string when no active goal exists. The text
+// is rune-truncated to 200 chars (via utils.Truncate) so it fits the
+// tool-feedback card body without overflowing inline render.
+//
+// Phase 12.71 (proposed): when the LLM emits a tool call without explanation
+// and the latest user message is empty (or the tool call is the user's first
+// follow-up), the tool-feedback card would otherwise show a stale
+// "Continuing the current task.: <last user message>" fallback or be empty.
+// Reading the active goal's Objective gives the user immediate context of
+// what task the agent is working on for every tool call.
+//
+// Fail-closed semantics (matches loadGoalSnapshotForHint policy):
+//   - empty workspace / sessionKey → ""
+//   - missing goal file             → ""
+//   - completed/archived/aborted goal → "" (terminal-state, no work pending)
+//   - read error                    → ""
+//   - active goal with empty Objective (defensive — Validate rejects this,
+//     but do not silently fabricate text if the on-disk file is corrupt) → ""
+//   - active goal with objective    → utils.Truncate(trimmed, 200)
+func loadActiveGoalObjectiveForFeedback(workspace, sessionKey string) string {
+	if workspace == "" || sessionKey == "" {
+		return ""
+	}
+	store := goal.NewStore(workspace)
+	g, err := store.Read(sessionKey)
+	if err != nil || g == nil {
+		return ""
+	}
+	if g.Status != goal.StatusActive {
+		return ""
+	}
+	objective := strings.TrimSpace(g.Description.Objective)
+	if objective == "" {
+		return ""
+	}
+	return utils.Truncate(objective, 200)
 }

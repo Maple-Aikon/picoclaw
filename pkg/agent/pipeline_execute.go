@@ -172,7 +172,7 @@ func (p *Pipeline) gatePreCheckDeny(
 			ts,
 			utils.FormatToolFeedbackMessage(
 				toolName,
-				toolFeedbackCardExplanationForRender(al.cfg, exec.response, tc, *messages),
+				toolFeedbackCardExplanationForRender(al.cfg, ts, exec.response, tc, *messages),
 				toolFeedbackArgsPreviewWithOptions(tc.Arguments, al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(), al.cfg.Agents.Defaults.ToolFeedback.PrettyPrint, al.cfg.Agents.Defaults.ToolFeedback.DisableEscapeHTML),
 				toolFeedbackIterContext(ts),
 				"",
@@ -344,6 +344,7 @@ toolLoop:
 						toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
 						toolFeedbackExplanation := toolFeedbackCardExplanationForRender(
 							al.cfg,
+							ts,
 							exec.response,
 							tc,
 							messages,
@@ -695,6 +696,7 @@ toolLoop:
 			toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
 			toolFeedbackExplanation := toolFeedbackCardExplanationForRender(
 				al.cfg,
+				ts,
 				exec.response,
 				tc,
 				messages,

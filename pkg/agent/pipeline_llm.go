@@ -875,6 +875,7 @@ func (p *Pipeline) proceedPastLLM(
 	for _, tc := range exec.normalizedToolCalls {
 		argumentsJSON, _ := json.Marshal(tc.Arguments)
 		toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
+			ts,
 			exec.response,
 			tc,
 			exec.messages,

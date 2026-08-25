@@ -189,10 +189,12 @@ func toolFeedbackExplanationFromToolCalls(toolCalls []providers.ToolCall) string
 // will already publish on a separate track (explanation_messages=true AND
 // separate_messages=false), it returns "" so the card body does not
 // duplicate the same text the user will see one line up. Otherwise it
-// returns the normal explanation derived from the LLM response / messages
-// (Phase 12.70).
+// returns the normal explanation derived from the LLM response / messages,
+// with a final fallback to the active goal's Objective when every source is
+// empty (Phase 12.71).
 func toolFeedbackCardExplanationForRender(
 	cfg *config.Config,
+	ts *turnState,
 	response *providers.LLMResponse,
 	toolCall providers.ToolCall,
 	messages []providers.Message,
@@ -200,10 +202,11 @@ func toolFeedbackCardExplanationForRender(
 	if explanationMessageWillPublish(cfg) {
 		return ""
 	}
-	return toolFeedbackExplanationForToolCall(response, toolCall, messages)
+	return toolFeedbackExplanationForToolCall(ts, response, toolCall, messages)
 }
 
 func toolFeedbackExplanationForToolCall(
+	ts *turnState,
 	response *providers.LLMResponse,
 	toolCall providers.ToolCall,
 	messages []providers.Message,
@@ -214,14 +217,43 @@ func toolFeedbackExplanationForToolCall(
 		}
 	}
 	if response == nil {
-		return toolFeedbackExplanationFromMessages(messages)
+		return toolFeedbackExplanationWithGoalFallback(ts, messages)
 	}
 
 	explanation := strings.TrimSpace(response.Content)
 	if explanation == "" {
-		explanation = toolFeedbackExplanationFromMessages(messages)
+		explanation = toolFeedbackExplanationWithGoalFallback(ts, messages)
 	}
 	return explanation
+}
+
+// toolFeedbackExplanationWithGoalFallback tries the standard
+// "latest user content" fallback first. If that returns empty (the user
+// message is empty or no user message exists), it falls back to the active
+// goal's Objective text so the tool-feedback card carries meaningful
+// context for the user instead of an empty body.
+//
+// Phase 12.71: this is the third tier of the explanation chain — after
+// (1) tc.ExtraContent.ToolFeedbackExplanation and (2) response.Content,
+// when neither yields a non-empty trimmed string, the active goal's
+// Objective is the natural next source: it answers "what task is the agent
+// currently working on?" which is exactly what a tool-feedback card should
+// surface to the user.
+func toolFeedbackExplanationWithGoalFallback(
+	ts *turnState,
+	messages []providers.Message,
+) string {
+	if explanation := toolFeedbackExplanationFromMessages(messages); explanation != "" {
+		return explanation
+	}
+	if ts == nil {
+		return ""
+	}
+	objective := loadActiveGoalObjectiveForFeedback(ts.workspace, ts.sessionKey)
+	if objective == "" {
+		return ""
+	}
+	return "Working on: " + objective
 }
 
 func toolFeedbackExplanationFromMessages(messages []providers.Message) string {
