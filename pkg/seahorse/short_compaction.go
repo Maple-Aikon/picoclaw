@@ -1,11 +1,8 @@
 package seahorse
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"sort"
 	"time"
 
@@ -302,8 +299,9 @@ func (e *CompactionEngine) compactLeaf(
 		return nil, err
 	}
 
-	// Remember in Signet (async)
-	go rememberInSignet(sessionKey, content)
+	// Remember in Graphiti (async, fire-and-forget). See graphiti.go for
+	// the queue layout — direct SQLite WAL, no daemon dependency.
+	go rememberInGraphiti(sessionKey, content, "leaf")
 
 	// Link to source messages
 	msgIDs := make([]int64, len(messages))
@@ -410,8 +408,9 @@ func (e *CompactionEngine) compactCondensed(ctx context.Context, sessionKey stri
 		return nil, err
 	}
 
-	// Remember in Signet (async)
-	go rememberInSignet(sessionKey, content)
+	// Remember in Graphiti (async, fire-and-forget). See graphiti.go for
+	// the queue layout — direct SQLite WAL, no daemon dependency.
+	go rememberInGraphiti(sessionKey, content, "condensed")
 
 	// Find the ordinal range for the candidate summaries in context
 	items, err := e.store.GetContextItems(ctx, convID)
@@ -951,35 +950,4 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
-}
-
-func rememberInSignet(sessionKey, content string) {
-	payload, err := json.Marshal(map[string]string{
-		"harness":    "picoclaw",
-		"sessionKey": sessionKey,
-		"summary":    content,
-	})
-	if err != nil {
-		logger.ErrorCF("seahorse", "signet remember marshal failed", map[string]any{"error": err.Error()})
-		return
-	}
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequest("POST", "http://127.0.0.1:3850/api/hooks/compaction-complete", bytes.NewBuffer(payload))
-	if err != nil {
-		logger.ErrorCF("seahorse", "signet remember request init failed", map[string]any{"error": err.Error()})
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		logger.ErrorCF("seahorse", "signet remember failed", map[string]any{"error": err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		logger.ErrorCF("seahorse", "signet remember bad status", map[string]any{"status": resp.StatusCode})
-	}
 }
