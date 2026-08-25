@@ -250,7 +250,26 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go agentLoop.Run(ctx)
+	// Diagnostic + safety: agent loop runs in its own goroutine but its
+	// return value MUST propagate to gateway lifecycle. Previously
+	// (`go agentLoop.Run(ctx)` with no channel) ignored the return —
+	// if hook init fails (incident 2026-08-25: before_after_llm_memory.js
+	// hook.hello timeout), gateway stayed alive with Telegram polling
+	// but agent loop never entered its main receive loop → 100% silent
+	// inbound. Run() now signals completion + error via runErrCh so the
+	// gateway exits cleanly instead of pretending everything is fine.
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- agentLoop.Run(ctx)
+	}()
+	defer func() {
+		// Drain runErrCh to prevent goroutine leak if gateway exits
+		// via SIGINT/SIGTERM before agentLoop.Run returns.
+		select {
+		case <-runErrCh:
+		default:
+		}
+	}()
 
 	var configReloadChan <-chan *config.Config
 	stopWatch := func() {}
@@ -268,6 +287,22 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 		case <-sigChan:
 			logger.Info("Shutting down...")
 			shutdownGateway(runningServices, agentLoop, provider, msgBus, true)
+			return nil
+		case runErr := <-runErrCh:
+			// Agent loop exited with error (e.g., hook init failure).
+			// Telegram polling stays alive on its own goroutine but
+			// inbound processing is dead — shut everything down cleanly
+			// so pmc restarts us and the user gets a fresh process instead
+			// of a zombie gateway. Previously the return value was ignored.
+			if runErr != nil {
+				logger.Errorf("Agent loop exited with error, shutting down gateway: %v", runErr)
+			} else {
+				logger.Info("Agent loop exited cleanly, shutting down gateway")
+			}
+			shutdownGateway(runningServices, agentLoop, provider, msgBus, true)
+			if runErr != nil {
+				return runErr
+			}
 			return nil
 		case newCfg := <-configReloadChan:
 			if !runningServices.reloading.CompareAndSwap(false, true) {
