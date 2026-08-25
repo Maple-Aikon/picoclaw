@@ -207,12 +207,23 @@ const (
 func (al *AgentLoop) Run(ctx context.Context) error {
 	al.running.Store(true)
 
+	// Diagnostic: confirm Run() function entry. Incident 2026-08-25:
+	// if neither "run_entry" nor any subsequent loop log fires, the
+	// hang is in gateway.go before goroutine starts or in caller
+	// chain. Pure log.
+	logger.InfoCF("agent", "run_entry agent_loop_starting", nil)
+
 	if err := al.ensureHooksInitialized(ctx); err != nil {
 		return err
 	}
 	if err := al.ensureMCPInitialized(ctx); err != nil {
 		return err
 	}
+
+	// Diagnostic: confirm Run() main loop started (both inits completed
+	// without blocking). Pair with run_entry + run_loop_stats to confirm
+	// exact progress.
+	logger.InfoCF("agent", "run_loop_started selecting_on_inbound", nil)
 
 	idleTicker := time.NewTicker(100 * time.Millisecond)
 	defer idleTicker.Stop()
@@ -278,9 +289,34 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				// Non-routable message (e.g., system) — process immediately.
 				// Note: system messages are processed in the main goroutine,
 				// so they block the receive loop but guarantee session serialization.
+				//
+				// Diagnostic: log when message is non-routable (vs routable
+				// going to worker). Helps distinguish "channel consumer up,
+				// routing failed silently" from "channel consumer hung".
+				logger.InfoCF("agent",
+					fmt.Sprintf("agent_bus_route_non_routable channel=%s sender=%s session=%q",
+						msg.Channel, msg.SenderID, msg.SessionKey),
+					map[string]any{
+						"channel":     msg.Channel,
+						"session_key": msg.SessionKey,
+					},
+				)
 				al.processMessageSync(ctx, msg)
 				continue
 			}
+
+			// Diagnostic: log routing outcome before semaphore claim so we
+			// know which session the worker will own. Pair with
+			// agent_worker_goroutine_spawned to track where a turn may stall.
+			logger.InfoCF("agent",
+				fmt.Sprintf("agent_bus_route_resolved session=%s agent=%s channel=%s",
+					sessionKey, agentID, msg.Channel),
+				map[string]any{
+					"session_key": sessionKey,
+					"agent_id":    agentID,
+					"channel":     msg.Channel,
+				},
+			)
 
 			// Atomically claim the session key with a unique placeholder sentinel
 			// to prevent a TOCTOU race where multiple messages for the same session
@@ -319,12 +355,46 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			// Session claimed — spawn a worker goroutine that acquires a semaphore
 			// slot. The goroutine is spawned immediately so the main loop keeps
 			// draining the inbound channel. The goroutine blocks on the semaphore.
+			//
+			// Diagnostic: log immediately before goroutine spawn so we can
+			// distinguish "channel consumer reached worker dispatch" from
+			// "channel consumer hung before spawn".
+			logger.InfoCF("agent",
+				fmt.Sprintf("agent_worker_goroutine_spawning session=%s agent=%s channel=%s",
+					sessionKey, agentID, msg.Channel),
+				map[string]any{
+					"session_key": sessionKey,
+					"agent_id":    agentID,
+					"channel":     msg.Channel,
+				},
+			)
 			go func(m bus.InboundMessage, ph *turnState) {
 				var releaseSession bool
 				// Acquire semaphore slot (blocks if at capacity)
+				//
+				// Diagnostic: log immediately after goroutine entry +
+				// before semaphore claim to track worker entry. If the
+				// semaphore blocks indefinitely (workerSem at capacity),
+				// "agent_worker_semaphore_acquired" never fires.
+				logger.InfoCF("agent",
+					fmt.Sprintf("agent_worker_goroutine_started session=%s channel=%s waiting_for_semaphore=true",
+						sessionKey, m.Channel),
+					map[string]any{
+						"session_key": sessionKey,
+						"channel":     m.Channel,
+					},
+				)
 				select {
 				case al.workerSem <- struct{}{}:
 					// Got slot, start worker
+					logger.InfoCF("agent",
+						fmt.Sprintf("agent_worker_semaphore_acquired session=%s channel=%s",
+							sessionKey, m.Channel),
+						map[string]any{
+							"session_key": sessionKey,
+							"channel":     m.Channel,
+						},
+					)
 				case <-ctx.Done():
 					// Context canceled while waiting for a slot — clean up the
 					// placeholder to prevent session-level deadlock.

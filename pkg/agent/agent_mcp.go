@@ -76,6 +76,20 @@ func (r *mcpRuntime) getManager() *mcp.Manager {
 // ensureMCPInitialized loads MCP servers/tools once so both Run() and direct
 // agent mode share the same initialization path.
 func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
+	// Diagnostic: bracket log for MCP init. Incident 2026-08-25: gateway
+	// alive but zero "MCP tools registered successfully" + zero
+	// agent_bus_recv → MCP init may be blocking Run() before the main
+	// loop even starts. Distinguishes "MCP init stuck" from "Run() loop
+	// running but channel empty". Pure log, no behavior change.
+	logger.InfoCF("agent", "ensure_mcp_init entry", map[string]any{
+		"mcp_enabled": al.cfg.Tools.IsToolEnabled("mcp"),
+	})
+	defer func() {
+		logger.InfoCF("agent", "ensure_mcp_init exit", map[string]any{
+			"manager_set": al.mcp.hasManager(),
+		})
+	}()
+
 	if !al.cfg.Tools.IsToolEnabled("mcp") {
 		return nil
 	}
@@ -115,7 +129,17 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 			workspacePath = defaultAgent.Workspace
 		}
 
+		// Diagnostic: bracket log for the MCP config load (TCP dial + init).
+		// If LoadFromMCPConfig hangs on a stuck dial, this fires once and
+		// "ensure_mcp_init exit" never does. Pair with the entry above to
+		// confirm scope of any hang. Pure log, no behavior change.
+		logger.InfoCF("agent", "ensure_mcp_loadfromconfig entry", map[string]any{
+			"workspace": workspacePath,
+		})
 		if err := mcpManager.LoadFromMCPConfig(ctx, mcpCfg, workspacePath); err != nil {
+			logger.InfoCF("agent", "ensure_mcp_loadfromconfig error", map[string]any{
+				"error": err.Error(),
+			})
 			al.mcp.setInitErr(fmt.Errorf("failed to load MCP servers: %w", err))
 			logger.WarnCF("agent", "Failed to load MCP servers, MCP tools will not be available",
 				map[string]any{
@@ -129,6 +153,7 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 			}
 			return
 		}
+		logger.InfoCF("agent", "ensure_mcp_loadfromconfig exit", nil)
 
 		// Register MCP tools for all agents
 		servers := mcpManager.GetServers()

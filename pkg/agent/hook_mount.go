@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 type hookRuntime struct {
@@ -116,6 +118,16 @@ func (al *AgentLoop) ensureHooksInitialized(ctx context.Context) error {
 		return nil
 	}
 
+	// Diagnostic: bracket log for hook init. Incident 2026-08-25: helps
+	// determine whether hook init (process hooks spawning external
+	// scripts) is blocking Run() before MCP init even runs. Pure log.
+	logger.InfoCF("agent", "ensure_hooks_init entry", map[string]any{
+		"hooks_enabled": al.cfg.Hooks.Enabled,
+	})
+	defer func() {
+		logger.InfoCF("agent", "ensure_hooks_init exit", nil)
+	}()
+
 	al.hookRuntime.initOnce.Do(func() {
 		al.hookRuntime.setInitErr(al.loadConfiguredHooks(ctx))
 	})
@@ -139,9 +151,29 @@ func (al *AgentLoop) loadConfiguredHooks(ctx context.Context) (err error) {
 		al.hookRuntime.setMounted(mounted)
 	}()
 
+	// Diagnostic: enumerate hooks about to be loaded (incident 2026-08-25).
+	// ensure_hooks_init entry/exit doesn't fire — need per-step granularity
+	// to find which builtin or process hook is blocking. Pure log.
 	builtinNames := enabledBuiltinHookNames(al.cfg.Hooks.Builtins)
+	processNames := enabledProcessHookNames(al.cfg.Hooks.Processes)
+	logger.InfoCF("agent", "load_hooks_entry", map[string]any{
+		"builtin_count":  len(builtinNames),
+		"process_count":  len(processNames),
+		"builtin_names":  strings.Join(builtinNames, ","),
+		"process_names":  strings.Join(processNames, ","),
+	})
+	defer func() {
+		logger.InfoCF("agent", "load_hooks_exit", map[string]any{
+			"mounted_count": len(mounted),
+			"err":           fmt.Sprintf("%v", err),
+		})
+	}()
+
 	for _, name := range builtinNames {
 		spec := al.cfg.Hooks.Builtins[name]
+		logger.InfoCF("agent", "load_hooks_builtin_start", map[string]any{
+			"name": name,
+		})
 		factory, ok := lookupBuiltinHook(name)
 		if !ok {
 			return fmt.Errorf("builtin hook %q is not registered", name)
@@ -160,11 +192,16 @@ func (al *AgentLoop) loadConfiguredHooks(ctx context.Context) (err error) {
 			return fmt.Errorf("mount builtin hook %q: %w", name, err)
 		}
 		mounted = append(mounted, name)
+		logger.InfoCF("agent", "load_hooks_builtin_done", map[string]any{
+			"name": name,
+		})
 	}
 
-	processNames := enabledProcessHookNames(al.cfg.Hooks.Processes)
 	for _, name := range processNames {
 		spec := al.cfg.Hooks.Processes[name]
+		logger.InfoCF("agent", "load_hooks_process_start", map[string]any{
+			"name": name,
+		})
 		opts, buildErr := processHookOptionsFromConfig(spec)
 		if buildErr != nil {
 			return fmt.Errorf("configure process hook %q: %w", name, buildErr)
@@ -184,6 +221,9 @@ func (al *AgentLoop) loadConfiguredHooks(ctx context.Context) (err error) {
 			return fmt.Errorf("mount process hook %q: %w", name, err)
 		}
 		mounted = append(mounted, name)
+		logger.InfoCF("agent", "load_hooks_process_done", map[string]any{
+			"name": name,
+		})
 	}
 
 	return nil
