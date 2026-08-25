@@ -69,6 +69,14 @@ type AgentLoop struct {
 	activeTurnStates sync.Map
 	subTurnCounter   atomic.Int64
 
+	// Diagnostic counters (incident 2026-08-25): track which case in the
+	// Run loop select is hit. If busRecvHits=0 while idleTicks=high, main
+	// loop never enters the InboundChan case (channel truly empty or main
+	// loop blocked elsewhere).
+	idleTicks    atomic.Uint64
+	busRecvHits  atomic.Uint64
+	ctxDoneHits  atomic.Uint64
+
 	turnSeq atomic.Uint64
 
 	// activeReqMu/activeReqCond/activeReqCount replace sync.WaitGroup to
@@ -209,15 +217,35 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 	idleTicker := time.NewTicker(100 * time.Millisecond)
 	defer idleTicker.Stop()
 
+	// Diagnostic stats ticker — fires every 30s to dump the case-hit
+	// counters so we can verify which branch of the Run loop select is
+	// being entered. Incident 2026-08-25: needed to distinguish "main loop
+	// blocked elsewhere" from "channel truly empty".
+	statsTicker := time.NewTicker(30 * time.Second)
+	defer statsTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
+			al.ctxDoneHits.Add(1)
 			return nil
+		case <-statsTicker.C:
+			logger.InfoCF("agent",
+				fmt.Sprintf("run_loop_stats idle_ticks=%d bus_recv_hits=%d ctx_done_hits=%d",
+					al.idleTicks.Load(), al.busRecvHits.Load(), al.ctxDoneHits.Load()),
+				map[string]any{
+					"idle_ticks":    al.idleTicks.Load(),
+					"bus_recv_hits": al.busRecvHits.Load(),
+					"ctx_done_hits": al.ctxDoneHits.Load(),
+				},
+			)
 		case <-idleTicker.C:
+			al.idleTicks.Add(1)
 			if !al.running.Load() {
 				return nil
 			}
 		case msg, ok := <-al.bus.InboundChan():
+			al.busRecvHits.Add(1)
 			if !ok {
 				return nil
 			}

@@ -106,9 +106,29 @@ func (al *AgentLoop) prepareInboundMessageForAgent(
 	ctx context.Context,
 	msg bus.InboundMessage,
 ) bus.InboundMessage {
+	// Diagnostic: entry log. Incident 2026-08-25: agent_bus_recv (consumer
+	// side) never fires, but no publish errors. If this entry log fires
+	// while agent_bus_recv still doesn't, the gap is somewhere between
+	// processMessage entry and InboundChan consumption — likely a code path
+	// that bypasses processMessage. If neither fires, main loop never
+	// reads InboundChan (channel truly empty or main loop blocked earlier).
+	logPreview := utils.Truncate(msg.Content, 80)
+	logger.InfoCF("agent",
+		fmt.Sprintf("prepare_inbound entry channel=%s sender=%s session=%q content=%q", msg.Channel, msg.SenderID, msg.SessionKey, logPreview),
+		map[string]any{
+			"channel":     msg.Channel,
+			"chat_id":     msg.ChatID,
+			"sender_id":   msg.SenderID,
+			"message_id":  msg.MessageID,
+			"session_key": msg.SessionKey,
+			"content_len": len(msg.Content),
+			"had_audio":   false,
+		},
+	)
+
 	msg = bus.NormalizeInboundMessage(msg)
 
-	var hadAudio bool
+	hadAudio := false
 	msg, hadAudio = al.transcribeAudioInMessage(ctx, msg)
 
 	// For audio messages the placeholder was deferred by the channel.
@@ -116,6 +136,21 @@ func (al *AgentLoop) prepareInboundMessageForAgent(
 	if hadAudio && al.channelManager != nil {
 		al.channelManager.SendPlaceholder(ctx, msg.Channel, msg.ChatID)
 	}
+
+	// Diagnostic: exit log. Pairs with entry — if entry fires but exit
+	// doesn't, the function is blocked somewhere in transcribeAudio or
+	// SendPlaceholder. If both fire, prepareInboundMessage is healthy
+	// and the gap is downstream in processMessage / runTurn / route.
+	logger.InfoCF("agent",
+		fmt.Sprintf("prepare_inbound exit channel=%s session=%q had_audio=%t", msg.Channel, msg.SessionKey, hadAudio),
+		map[string]any{
+			"channel":     msg.Channel,
+			"chat_id":     msg.ChatID,
+			"session_key": msg.SessionKey,
+			"had_audio":   hadAudio,
+			"content_len": len(msg.Content),
+		},
+	)
 
 	return msg
 }

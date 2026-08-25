@@ -205,6 +205,22 @@ func publish[T any](
 
 	select {
 	case ch <- msg:
+		// Diagnostic: log post-write to confirm message actually entered the
+		// buffer. Distinguishes "publish function ran" from "message in
+		// channel". Incident 2026-08-25: agent_bus_recv consumer log never
+		// fires despite no publish errors — this log proves whether the
+		// message reached the channel or vanished earlier in the publish
+		// path. Only fires for the inbound stream to bound log volume.
+		if policy.stream == "inbound" {
+			logger.InfoCF("bus",
+				fmt.Sprintf("bus_publish_ok stream=%s ch_cap=%d ch_len=%d", policy.stream, cap(ch), len(ch)),
+				map[string]any{
+					"stream":          policy.stream,
+					"channel_capacity": cap(ch),
+					"channel_depth":    len(ch),
+				},
+			)
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
