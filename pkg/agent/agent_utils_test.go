@@ -234,7 +234,7 @@ func TestToolFeedbackCardExplanationForRender_GoalObjectiveFallback(t *testing.T
 		}
 	})
 
-	t.Run("active goal + useful user message -> user message wins (no goal fallback)", func(t *testing.T) {
+	t.Run("active goal + useful user message -> goal wins over user message", func(t *testing.T) {
 		ws := t.TempDir()
 		sessionKey := "sk_v1_fallback_user_wins"
 		seedActiveGoalForFeedback(t, ws, sessionKey, "Upgrade runtime")
@@ -248,8 +248,29 @@ func TestToolFeedbackCardExplanationForRender_GoalObjectiveFallback(t *testing.T
 			{Role: "user", Content: "check disk space first"},
 		}
 		got := toolFeedbackCardExplanationForRender(cfg, ts, nil, tc, messages)
-		// existing fallback "Continuing the current task.: <user content>" should
-		// win — only when both are empty do we fall back to the goal.
+		// Phase 12.71b: active goal wins over stale user message — the goal
+		// describes what the LLM is working on, the user message from a prior
+		// turn is just "what was said" and creates noisy context.
+		want := "Working on: Upgrade runtime"
+		if got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("no active goal + useful user message -> user message wins (ad-hoc task)", func(t *testing.T) {
+		ws := t.TempDir()
+		ts := &turnState{
+			workspace:   ws,
+			sessionKey:  "sk_v1_no_goal_user_msg",
+			agent:       &AgentInstance{Workspace: ws},
+		}
+		tc := providers.ToolCall{Name: "exec", Arguments: map[string]any{}}
+		messages := []providers.Message{
+			{Role: "user", Content: "check disk space first"},
+		}
+		got := toolFeedbackCardExplanationForRender(cfg, ts, nil, tc, messages)
+		// No active goal → user message fallback still fires so ad-hoc tasks
+		// (no set_goal, no objective) keep showing meaningful context.
 		want := "Continuing the current task.: check disk space first"
 		if got != want {
 			t.Fatalf("got %q, want %q", got, want)
