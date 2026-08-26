@@ -1100,7 +1100,10 @@ toolLoop:
 	}
 
 	// No pending steering: finalize or break depending on allResponsesHandled
-	if exec.allResponsesHandled {
+	// Phase 12.71: When a goal is active (!ts.hasGoal() == false), do NOT break the loop early even if
+	// allResponsesHandled=true (e.g. send_file or send_tts executed). The agent loop must continue so the LLM
+	// can perform subsequent goal steps or call complete_goal.
+	if exec.allResponsesHandled && !ts.hasGoal() {
 		summaryMsg := providers.Message{
 			Role:        "assistant",
 			Content:     handledToolResponseSummary,
