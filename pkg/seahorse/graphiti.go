@@ -52,24 +52,64 @@ const graphitiPragmas = "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_p
 // is nil and subsequent calls fail-fast (logged) — this prevents cascading
 // retry storms that would amplify a transient issue into a load problem.
 var (
-	graphitiQueue *sql.DB
-	graphitiOnce  sync.Once
-	graphitiMu    sync.RWMutex
-	graphitiPath  string // resolved absolute path for logging
+	graphitiQueue       *sql.DB
+	graphitiOnce        sync.Once
+	graphitiMu          sync.RWMutex
+	graphitiPath        string // resolved absolute path for logging
+	configuredQueuePath string
+	configuredGroupID   string
 )
 
-// resolveGraphitiDBPath picks the queue DB location. The default uses the
-// workspace-relative path of the production Graphiti MCP install, overridable
-// via GRAPHITI_QUEUE_DB. This matches the constant in Python queue.py so a
-// Go process and a Python process can share the same file safely.
-//
-// Returns "" if disabled (GRAPHITI_ENABLED=0). The empty sentinel lets the
-// caller short-circuit without touching the filesystem.
-func resolveGraphitiDBPath() string {
+// SetGraphitiConfig configures custom queue DB path and group ID.
+// If queuePath is changed, any existing DB connection is closed so the new
+// path takes effect on the next enqueue call.
+func SetGraphitiConfig(queuePath, groupID string) {
+	graphitiMu.Lock()
+	defer graphitiMu.Unlock()
+	if queuePath != "" && queuePath != configuredQueuePath {
+		if graphitiQueue != nil {
+			_ = graphitiQueue.Close()
+			graphitiQueue = nil
+			graphitiPath = ""
+		}
+		configuredQueuePath = queuePath
+	}
+	if groupID != "" {
+		configuredGroupID = groupID
+	}
+}
+
+// GetGraphitiConfig returns the currently configured queue path and group ID.
+func GetGraphitiConfig() (string, string) {
+	graphitiMu.RLock()
+	defer graphitiMu.RUnlock()
+	return configuredQueuePath, configuredGroupID
+}
+
+// resolveGraphitiGroupID returns the configured group_id, overridable by
+// GRAPHITI_GROUP_ID env var, falling back to graphitiGroupID constant.
+func resolveGraphitiGroupID() string {
+	graphitiMu.RLock()
+	gid := configuredGroupID
+	graphitiMu.RUnlock()
+	if gid != "" {
+		return gid
+	}
+	if v := os.Getenv("GRAPHITI_GROUP_ID"); v != "" {
+		return v
+	}
+	return graphitiGroupID
+}
+
+// resolveGraphitiDBPathLocked picks the queue DB location while graphitiMu is already locked.
+func resolveGraphitiDBPathLocked() string {
 	if v := os.Getenv(graphitiEnvEnabled); v == "0" || v == "false" || v == "no" {
 		return ""
 	}
-	raw := os.Getenv(graphitiEnvDBPath)
+	raw := configuredQueuePath
+	if raw == "" {
+		raw = os.Getenv(graphitiEnvDBPath)
+	}
 	if raw == "" {
 		raw = graphitiDefaultDBPath
 	}
@@ -80,6 +120,19 @@ func resolveGraphitiDBPath() string {
 		}
 	}
 	return raw
+}
+
+// resolveGraphitiDBPath picks the queue DB location. The default uses the
+// workspace-relative path of the production Graphiti MCP install, overridable
+// via configuredQueuePath or GRAPHITI_QUEUE_DB. This matches the constant in
+// Python queue.py so a Go process and a Python process can share the same file safely.
+//
+// Returns "" if disabled (GRAPHITI_ENABLED=0). The empty sentinel lets the
+// caller short-circuit without touching the filesystem.
+func resolveGraphitiDBPath() string {
+	graphitiMu.RLock()
+	defer graphitiMu.RUnlock()
+	return resolveGraphitiDBPathLocked()
 }
 
 // openGraphitiQueue initializes the singleton DB handle. Returns the handle
@@ -104,7 +157,7 @@ func openGraphitiQueue() (*sql.DB, string) {
 		return graphitiQueue, graphitiPath
 	}
 
-	path := resolveGraphitiDBPath()
+	path := resolveGraphitiDBPathLocked()
 	if path == "" {
 		// Disabled via env. Don't even attempt to open.
 		return nil, ""
@@ -200,13 +253,15 @@ func enqueueGraphitiEpisode(sessionKey, content, summaryKind string) (string, er
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rid := uuid.New().String()
 
+	groupID := resolveGraphitiGroupID()
+
 	// Payload schema mirrors the Python EpisodeQueue.enqueue contract:
 	// a single dict with the keys the Graphiti MCP server expects.
 	payload := map[string]any{
 		"content":            content,
 		"name":               fmt.Sprintf("Seahorse %s (%s @ %s)", summaryKind, sessionKey, now),
 		"source_description": fmt.Sprintf("%s:%s", graphitiSourcePrefix, sessionKey),
-		"group_id":           graphitiGroupID,
+		"group_id":           groupID,
 	}
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
@@ -278,5 +333,9 @@ func CloseGraphitiQueue() error {
 // by convention only.
 func resetGraphitiQueueForTest() {
 	_ = CloseGraphitiQueue()
+	graphitiMu.Lock()
+	configuredQueuePath = ""
+	configuredGroupID = ""
+	graphitiMu.Unlock()
 	graphitiOnce = sync.Once{}
 }

@@ -48,6 +48,9 @@ type Config struct {
 	Heartbeat HeartbeatConfig `json:"heartbeat"           yaml:"-"`
 	Devices   DevicesConfig   `json:"devices"             yaml:"-"`
 	Voice     VoiceConfig     `json:"voice"               yaml:"-"`
+	// Graphiti / Janus-Graph long-term memory queue configuration
+	GraphitiQueuePath string `json:"graphiti_queue_path,omitempty" yaml:"graphiti_queue_path,omitempty"`
+	GraphitiGroupID   string `json:"graphiti_group_id,omitempty"   yaml:"graphiti_group_id,omitempty"`
 	// BuildInfo contains build-time version information
 	BuildInfo BuildInfo `json:"build_info,omitempty" yaml:"-"`
 
@@ -454,6 +457,8 @@ type AgentDefaults struct {
 	TurnProfile               TurnProfileConfig  `json:"turn_profile,omitempty"`
 	MaxLLMRetries             int                `json:"max_llm_retries,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_MAX_LLM_RETRIES"`
 	LLMRetryBackoffSecs       int                `json:"llm_retry_backoff_secs,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_LLM_RETRY_BACKOFF_SECS"`
+	GraphitiQueuePath         string             `json:"graphiti_queue_path,omitempty"   env:"PICOCLAW_AGENTS_DEFAULTS_GRAPHITI_QUEUE_PATH"`
+	GraphitiGroupID           string             `json:"graphiti_group_id,omitempty"     env:"PICOCLAW_AGENTS_DEFAULTS_GRAPHITI_GROUP_ID"`
 }
 
 const DefaultMaxMediaSize = 20 * 1024 * 1024 // 20 MB

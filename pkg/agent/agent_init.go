@@ -18,6 +18,7 @@ import (
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/seahorse"
 	"github.com/sipeed/picoclaw/pkg/skills"
 	"github.com/sipeed/picoclaw/pkg/state"
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -56,6 +57,21 @@ func NewAgentLoop(
 		logger.WarnCF("agent", "Failed to initialize evolution bridge", map[string]any{
 			"error": err.Error(),
 		})
+	}
+
+	// Configure Graphiti queue DB path and group ID from config
+	if cfg != nil {
+		queuePath := cfg.GraphitiQueuePath
+		if queuePath == "" {
+			queuePath = cfg.Agents.Defaults.GraphitiQueuePath
+		}
+		groupID := cfg.GraphitiGroupID
+		if groupID == "" {
+			groupID = cfg.Agents.Defaults.GraphitiGroupID
+		}
+		if queuePath != "" || groupID != "" {
+			seahorse.SetGraphitiConfig(queuePath, groupID)
+		}
 	}
 
 	// Determine worker pool size from config (default: 1 = sequential)

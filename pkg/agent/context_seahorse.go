@@ -42,6 +42,21 @@ func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager
 		return nil, fmt.Errorf("seahorse: AgentLoop is required")
 	}
 
+	// Configure Graphiti queue DB path and group ID if specified in config
+	if al.cfg != nil {
+		queuePath := al.cfg.GraphitiQueuePath
+		if queuePath == "" {
+			queuePath = al.cfg.Agents.Defaults.GraphitiQueuePath
+		}
+		groupID := al.cfg.GraphitiGroupID
+		if groupID == "" {
+			groupID = al.cfg.Agents.Defaults.GraphitiGroupID
+		}
+		if queuePath != "" || groupID != "" {
+			seahorse.SetGraphitiConfig(queuePath, groupID)
+		}
+	}
+
 	// Resolve workspace for DB path
 	// DB stores session data, so it goes in sessions/ directory
 	agent := al.registry.GetDefaultAgent()

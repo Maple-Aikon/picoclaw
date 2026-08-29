@@ -460,3 +460,48 @@ func TestCloseGraphitiQueue_Idempotent(t *testing.T) {
 		t.Errorf("second close should be no-op, got: %v", err)
 	}
 }
+
+func TestSetGraphitiConfig(t *testing.T) {
+	dir := t.TempDir()
+	customDB := filepath.Join(dir, "custom_episodes.db")
+	customGroup := "custom_group_test"
+
+	SetGraphitiConfig(customDB, customGroup)
+	t.Cleanup(func() {
+		resetGraphitiQueueForTest()
+	})
+
+	qPath, gID := GetGraphitiConfig()
+	if qPath != customDB {
+		t.Errorf("expected queuePath %q, got %q", customDB, qPath)
+	}
+	if gID != customGroup {
+		t.Errorf("expected groupID %q, got %q", customGroup, gID)
+	}
+
+	// Verify resolveGraphitiDBPath and resolveGraphitiGroupID use configured values
+	if got := resolveGraphitiDBPath(); got != customDB {
+		t.Errorf("resolveGraphitiDBPath: got %q, want %q", got, customDB)
+	}
+	if got := resolveGraphitiGroupID(); got != customGroup {
+		t.Errorf("resolveGraphitiGroupID: got %q, want %q", got, customGroup)
+	}
+
+	// Enqueue and check row
+	rid, err := enqueueGraphitiEpisode("custom-session", "custom summary", "leaf")
+	if err != nil {
+		t.Fatalf("enqueue with custom config: %v", err)
+	}
+	db := openReadOnlyDB(t, customDB)
+	var payloadJSON string
+	if err := db.QueryRow("SELECT payload_json FROM episodes WHERE id = ?", rid).Scan(&payloadJSON); err != nil {
+		t.Fatalf("query custom db: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload["group_id"] != customGroup {
+		t.Errorf("expected payload group_id %q, got %v", customGroup, payload["group_id"])
+	}
+}
