@@ -31,6 +31,7 @@ type ToolRegistry struct {
 	mediaStore      media.MediaStore
 	allowlist       map[string]struct{}
 	phase           string // active goal phase for per-phase allowlist semantics (Phase 12.5); "" = no phase info
+	projectionFrozen bool  // when true, ToProviderDefs projects all tools to keep prompt cache prefix 100% frozen
 	cfg             *config.ToolsConfig // optional; nil → fallback DefaultToolTimeoutSeconds
 	timeoutStats    *ToolTimeoutStats   // Q3 metric; nil-safe via lazy init
 	knowledgeStore  *ToolKnowledgeStore // optional persistent "lessons learned" per tool; nil = feature off
@@ -87,6 +88,21 @@ func NewToolRegistry() *ToolRegistry {
 		timeoutStats:     newToolTimeoutStats(),
 		seenFirstSuccess: make(map[string]struct{}),
 	}
+}
+
+// SetProjectionFrozen controls whether ToProviderDefs() emits all registered tools
+// regardless of active goal phase (for KV cache prefix stability).
+func (r *ToolRegistry) SetProjectionFrozen(frozen bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.projectionFrozen = frozen
+}
+
+// ProjectionFrozen returns whether frozen tool schema projection is active.
+func (r *ToolRegistry) ProjectionFrozen() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.projectionFrozen
 }
 
 // SetToolsConfig attaches the loaded ToolsConfig so that resolveToolTimeout can
@@ -850,13 +866,10 @@ func (r *ToolRegistry) ToProviderDefs() []providers.ToolDefinition {
 	definitions := make([]providers.ToolDefinition, 0, len(sorted))
 	for _, name := range sorted {
 		// Phase 11 fix: honour the runtime allowlist when projecting tool
-		// definitions to the provider. Previously SetAllowlist only filtered
-		// future Register() calls; this method skipped the check, so the
-		// 4-phase goal allowlist (GoalPhaseSet/Open/Checkpoint/Final) was
-		// a writer-without-reader bug — LLM saw full tool list at every iter,
-		// defeating the `set_goal`-only forced-funnel at iter 1. See plan
-		// ~/.picoclaw/workspace/memory/plan/picoclaw-phase12.2-fix-to-provider-defs-allowlist-filter.md
-		if !r.toolAllowedLocked(name) {
+		// definitions to the provider. In frozen projection mode (for KV prompt caching),
+		// we bypass this filter and project all core/active tools while relying on runtime
+		// gating (isLifecycleToolAllowed/Get) to block execution.
+		if !r.projectionFrozen && !r.toolAllowedLocked(name) {
 			continue
 		}
 

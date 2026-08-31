@@ -1036,3 +1036,57 @@ func TestCompactLeafAccumulatesUpToLeafChunkTokens(t *testing.T) {
 			summary.SourceMessageTokenCount, LeafChunkTokens)
 	}
 }
+
+// TestCompaction_InvariantBreakpoint4AnchorRecalibration (Plan §2.1 Task 1.4b)
+// verifies that after compaction replaces raw messages with a leaf/condensed summary,
+// the resulting context items maintain ordinal sequence and valid structure for
+// Breakpoint 4 anchor recalibration without corrupting history ordering.
+func TestCompaction_InvariantBreakpoint4AnchorRecalibration(t *testing.T) {
+	ce, s, convID := newTestCompactionEngine(t)
+	ctx := context.Background()
+
+	// Create 45 messages (more than FreshTailCount=32 + LeafMinFanout=8)
+	for i := 0; i < 45; i++ {
+		m, _ := s.AddMessage(ctx, convID, "user", fmt.Sprintf("turn %d message", i), 100)
+		s.AppendContextMessage(ctx, convID, m.ID)
+	}
+
+	beforeItems, err := s.GetContextItems(ctx, convID)
+	if err != nil {
+		t.Fatalf("GetContextItems before: %v", err)
+	}
+	if len(beforeItems) != 45 {
+		t.Fatalf("expected 45 items before compaction, got %d", len(beforeItems))
+	}
+
+	// Compact leaf
+	res, err := ce.Compact(ctx, "test-session", convID, CompactInput{})
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if res == nil || len(res.SummariesCreated) == 0 {
+		t.Fatalf("expected leaf summary to be created")
+	}
+
+	afterItems, err := s.GetContextItems(ctx, convID)
+	if err != nil {
+		t.Fatalf("GetContextItems after: %v", err)
+	}
+
+	// Compaction must replace the oldest batch of messages with 1 summary
+	if len(afterItems) >= len(beforeItems) {
+		t.Errorf("expected item count reduction after compaction: before=%d, after=%d", len(beforeItems), len(afterItems))
+	}
+
+	// First item must be the summary
+	if afterItems[0].SummaryID != res.SummariesCreated[0] {
+		t.Errorf("expected first context item to be the newly created summary %s, got %s", res.SummariesCreated[0], afterItems[0].SummaryID)
+	}
+
+	// Ordinals must remain strictly monotonically increasing
+	for i := 1; i < len(afterItems); i++ {
+		if afterItems[i].Ordinal <= afterItems[i-1].Ordinal {
+		t.Errorf("ordinal inversion detected at index %d: %d <= %d", i, afterItems[i].Ordinal, afterItems[i-1].Ordinal)
+		}
+	}
+}

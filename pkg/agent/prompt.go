@@ -65,7 +65,8 @@ const (
 	PromptSourceToolResult     PromptSourceID = "turn:tool_result"
 	PromptSourceInterrupt      PromptSourceID = "turn:interrupt"
 	PromptSourceRecovery        PromptSourceID = "turn:recovery"
-	PromptSourceGoalPhaseSetHint       PromptSourceID = "capability:goal_phase_set_hint"
+	PromptSourceGoalLifecycleProtocol   PromptSourceID = "capability:goal_lifecycle_protocol"
+	PromptSourceGoalPhaseSetHint        PromptSourceID = "capability:goal_phase_set_hint"
 	PromptSourceGoalPhaseOpenHint      PromptSourceID = "capability:goal_phase_open_hint" // Phase 12.32
 	PromptSourceGoalPhaseCheckpointHint PromptSourceID = "capability:goal_phase_checkpoint_hint"
 	PromptSourceGoalPhaseFinalHint      PromptSourceID = "capability:goal_phase_final_hint"
@@ -319,6 +320,13 @@ func builtinPromptSources() []PromptSourceDescriptor {
 			Description:     "Child agent profile instructions",
 			Allowed:         []PromptPlacement{{Layer: PromptLayerInstruction, Slot: PromptSlotWorkspace}},
 			StableByDefault: false,
+		},
+		{
+			ID:              PromptSourceGoalLifecycleProtocol,
+			Owner:           "agent",
+			Description:     "Static 4-phase goal lifecycle protocol",
+			Allowed:         []PromptPlacement{{Layer: PromptLayerCapability, Slot: PromptSlotTooling}},
+			StableByDefault: true,
 		},
 		{
 			ID:              PromptSourceGoalPhaseSetHint,

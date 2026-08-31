@@ -212,8 +212,8 @@ func (s *Store) AddMessageWithReasoning(
 	}, nil
 }
 
-// partsToReadableContent derives a readable text summary from message parts.
-// This ensures FTS5 indexing and summary formatting can access tool call information.
+// partsToReadableContent derives a readable text summary from message parts using
+// neutral narrative formatting that avoids prompting/priming the LLM with raw tool syntax.
 func partsToReadableContent(parts []MessagePart) string {
 	var b strings.Builder
 	for i, p := range parts {
@@ -224,11 +224,15 @@ func partsToReadableContent(parts []MessagePart) string {
 		case "text":
 			b.WriteString(p.Text)
 		case "tool_use":
-			fmt.Fprintf(&b, "[tool_use: %s, args: %s]", p.Name, p.Arguments)
+			if p.Arguments != "" && p.Arguments != "{}" {
+				fmt.Fprintf(&b, "⚙️ Action: called tool %q with arguments: %s", p.Name, p.Arguments)
+			} else {
+				fmt.Fprintf(&b, "⚙️ Action: called tool %q", p.Name)
+			}
 		case "tool_result":
-			fmt.Fprintf(&b, "[tool_result for %s: %s]", p.ToolCallID, p.Text)
+			fmt.Fprintf(&b, "↳ Result: %s", p.Text)
 		case "media":
-			fmt.Fprintf(&b, "[media: %s (%s)]", p.MediaURI, p.MimeType)
+			fmt.Fprintf(&b, "📎 Media: %s (%s)", p.MediaURI, p.MimeType)
 		default:
 			if p.Text != "" {
 				b.WriteString(p.Text)

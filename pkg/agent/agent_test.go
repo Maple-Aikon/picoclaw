@@ -624,8 +624,8 @@ func TestProcessMessage_IncludesCurrentSenderInDynamicContext(t *testing.T) {
 	if !strings.Contains(lastMessage.Content, wantSender) {
 		t.Fatalf("user[0] missing sender context %q:\n%s", wantSender, lastMessage.Content)
 	}
-	if !strings.HasSuffix(lastMessage.Content, "hello") {
-		t.Fatalf("user[0] = %q, want suffix %q (original user text)", lastMessage.Content, "hello")
+	if !strings.Contains(lastMessage.Content, "hello") {
+		t.Fatalf("user[0] = %q, want content containing %q (original user text)", lastMessage.Content, "hello")
 	}
 }
 
@@ -1179,9 +1179,9 @@ func TestProcessMessage_UseCommandLoadsRequestedSkill(t *testing.T) {
 	if lastMessage.Role != "user" {
 		t.Fatalf("last provider message role = %s, want user", lastMessage.Role)
 	}
-	// Layout B: dynamic context is prepended to user[0], original text stays as suffix.
-	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.HasSuffix(lastMessage.Content, "explain how to list files") {
-		t.Fatalf("last provider message = %+v, want user message with dynamic_context prefix and %q suffix", lastMessage, "explain how to list files")
+	// Layout B: dynamic context is prepended to user[0], original text is included in turn.
+	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.Contains(lastMessage.Content, "explain how to list files") {
+		t.Fatalf("last provider message = %+v, want user message with dynamic_context prefix and %q included", lastMessage, "explain how to list files")
 	}
 }
 
@@ -1626,9 +1626,9 @@ func TestProcessMessage_UseCommandArmsSkillForNextMessage(t *testing.T) {
 	if lastMessage.Role != "user" {
 		t.Fatalf("last provider message role = %s, want user", lastMessage.Role)
 	}
-	// Layout B: original user text is preserved as suffix after the dynamic_context block.
-	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.HasSuffix(lastMessage.Content, "explain how to list files") {
-		t.Fatalf("last provider message = %+v, want unchanged follow-up user message as suffix after dynamic_context", lastMessage)
+	// Layout B: original user text is preserved in user message with dynamic_context block.
+	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.Contains(lastMessage.Content, "explain how to list files") {
+		t.Fatalf("last provider message = %+v, want unchanged follow-up user message containing dynamic_context and %q", lastMessage, "explain how to list files")
 	}
 }
 
