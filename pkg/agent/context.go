@@ -458,86 +458,17 @@ Each part separated by the marker will be sent as an independent message.`,
 		})
 	}
 
-	// Phase 12.3 — GoalPhaseSet hint contributor. Fires ONLY when the per-turn
-	// goal lifecycle is in SET phase (iter 1, no active goal). Tells the LLM
-	// that all tools except set_goal are temporarily locked and explains the
-	// two valid forward paths: (a) call set_goal to unlock tools, or
-	// (b) reply directly without any tool call. See plan file
-	// ~/.picoclaw/workspace/memory/plan/picoclaw-phase12.3-execution-gate-allowlist-prompt-20260723.md §3.2.
-	//
-	// Phase 12.16.1: passes Iteration so goalPhaseSetHintContributor can
-	// refer to the actual iter instead of hardcoding "(iter 1)". The (iter N)
-	// text is now used to confirm to the LLM that even though the cache may
-	// return a stale prompt, the LLM should trust the iter number from the
-	// hint, not the prompt header.
-	if hintPart := goalPhaseSetHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase, Iteration: opts.Iteration}); hintPart != nil {
-		add(*hintPart)
-	}
-
-	// Phase 12.32 — GoalPhaseOpen hint. Fires ONLY at OPEN phase
-	// (iter 2..MaxIter-1). Educates the LLM about lifecycle tool
-	// restrictions (set_goal LOCKED, goal_progress CHECKPOINT-only,
-	// complete_goal available) so it doesn't waste iterations calling
-	// blocked tools. Reactive counterpart in recovery_goal.go appends a
-	// shorter hint when a lifecycle tool call IS rejected at OPEN phase.
-	// Placement: between Set (above) and Checkpoint (below) to match
-	// goal lifecycle order Set → Open → Checkpoint → Final.
-	if hintPart := goalPhaseOpenHintContributor(PromptBuildRequest{
-		GoalPhase:        opts.GoalPhase,
-		Iteration:        opts.Iteration,
-		IterationCap:     opts.IterationCap,
-		MaxIterationsCap: opts.MaxIterationsCap,
-	}); hintPart != nil {
-		add(*hintPart)
-	}
-
-	// Phase 12.21 — GoalPhaseCheckpoint hint. Fires ONLY when the per-turn
-	// loop has hit the iteration cap AND iter < max_iterations_cap (i.e.
-	// GoalPhaseCheckpoint, not GoalPhaseFinal). Tool allowlist is reduced
-	// to [goal_progress, complete_goal] only — the hint explains the
-	// forward paths and arg-shape required for both tools so the LLM
-	// avoids retrying with malformed args when the cap hits.
-	// Phase 12.34: thread GoalSnapshot through so the LLM sees goal
-	// context (objective + success criteria) before the decision tree.
-	// Phase 12.39: thread IterationCap + MaxIterationsCap so formatIterCompass
-	// can render the dynamic header (event-marker style). Without these,
-	// helper returns "" and the hint falls back to the legacy static template.
-	if hintPart := goalPhaseCheckpointHintContributor(PromptBuildRequest{
-		GoalPhase:        opts.GoalPhase,
-		Iteration:        opts.Iteration,
-		GoalSnapshot:     opts.GoalSnapshot,
-		IterationCap:     opts.IterationCap,
-		MaxIterationsCap: opts.MaxIterationsCap,
-	}); hintPart != nil {
-		add(*hintPart)
-	}
-
-	// Phase 12.43 (Q4-A) — goal_progress Blockers guidance. Fires only at
-	// GoalPhaseCheckpoint. Wires `goalProgressBlockersHintContributor` to
-	// inject the consequence-based Blockers writing instruction (Q4-A
-	// rephrased per DOUBT-3).
-	if hintPart := goalProgressBlockersHintContributor(PromptBuildRequest{
-		GoalPhase: opts.GoalPhase,
-	}); hintPart != nil {
-		add(*hintPart)
-	}
-
-	// Phase 12.21 — GoalPhaseFinal hint. Fires ONLY when the per-turn
-	// loop has reached the absolute max_iterations_cap terminal phase.
-	// Tool allowlist = [complete_goal] only. The hint tells the LLM
-	// the only remaining tool is complete_goal with mandatory summary.
-	// Phase 12.39: thread IterationCap + MaxIterationsCap + GoalFinalized
-	// through to formatIterCompass for the dynamic header (with branching
-	// per goalFinalized).
-	if hintPart := goalPhaseFinalHintContributor(PromptBuildRequest{
-		GoalPhase:        opts.GoalPhase,
-		Iteration:        opts.Iteration,
-		IterationCap:     opts.IterationCap,
-		MaxIterationsCap: opts.MaxIterationsCap,
-		GoalFinalized:    opts.GoalFinalized,
-	}); hintPart != nil {
-		add(*hintPart)
-	}
+	// Invariant Goal Lifecycle Protocol (Static System Ontology)
+	add(PromptPart{
+		ID:      "capability.goal_lifecycle_protocol",
+		Layer:   PromptLayerCapability,
+		Slot:    PromptSlotTooling,
+		Source:  PromptSource{ID: PromptSourceGoalLifecycleProtocol, Name: "capability.goal_lifecycle_protocol"},
+		Title:   "goal lifecycle protocol",
+		Content: "## Goal Lifecycle Protocol\nEvery task executes within a 4-phase finite state machine:\n1. SET: Goal framing. ONLY `set_goal` (or direct text) is available. All domain tools are locked.\n2. OPEN: Active execution. Full domain toolset is available.\n3. CHECKPOINT: Progress review. Domain tools are locked. Call `goal_progress` to extend or `complete_goal` to finalize.\n4. FINAL: Wrap-up. ONLY `complete_goal` is available to submit the final report.\nAlways check your turn-tail GOAL_PHASE_BANNER XML block at the bottom of the prompt to see your active phase and remaining iteration compass.",
+		Stable:  true,
+		Cache:   PromptCacheEphemeral,
+	})
 
 	// Phase 12.7 — Post-complete_goal final-report hint. Fires when the
 	// post-complete_goal final-report iter is active (one extra iter after
@@ -547,6 +478,37 @@ Each part separated by the marker will be sent as an independent message.`,
 	// ~/.picoclaw/workspace/memory/plan/picoclaw-phase12.7-post-complete-goal-final-report-iter-20260724.md §3.2.
 	if hintPart := goalCompleteReportHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase, PostCompleteGoalReport: opts.PostCompleteGoalReport}); hintPart != nil {
 		add(*hintPart)
+	}
+
+	// Per-phase lifecycle hints (Phase 12.3 / 12.32 / 12.39). Each
+	// contributor returns nil for any phase other than its own, so the
+	// same hint code can also be called from buildSystemPromptParts
+	// without bleeding. The phase-specific text contains the iter (for
+	// SET) or per-phase tool allowlist semantics (OPEN/CHECKPOINT/FINAL)
+	// that the LLM MUST see on every prompt build — moving it to the
+	// user[0] turn-tail would break legacy wire paths that read the hint
+	// from the system prompt directly. Cache invalidation across
+	// (phase, iter, cap) dims already handles per-iter prompt mutation
+	// without invalidating the OPEN-phase cache key when unnecessary
+	// (Phase 12.16.1 / 12.38 §4).
+	for _, buildHint := range []func(PromptBuildRequest) *PromptPart{
+		goalPhaseSetHintContributor,
+		goalPhaseOpenHintContributor,
+		goalPhaseCheckpointHintContributor,
+		goalPhaseFinalHintContributor,
+	} {
+		hintPart := buildHint(PromptBuildRequest{
+			GoalPhase:              opts.GoalPhase,
+			Iteration:              opts.Iteration,
+			PostCompleteGoalReport: opts.PostCompleteGoalReport,
+			IterationCap:           opts.IterationCap,
+			MaxIterationsCap:       opts.MaxIterationsCap,
+			GoalFinalized:          opts.GoalFinalized,
+			GoalSnapshot:           opts.GoalSnapshot,
+		})
+		if hintPart != nil {
+			add(*hintPart)
+		}
 	}
 
 	stack.Seal()
@@ -1413,6 +1375,13 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 	// call sequence (MiniMax-M3 passive cache hit rate > 0%).
 	// skipWrapDynamic = req.DynamicContext == "" (preserve exact original semantics).
 	userContent := wrapDynamicContext(req.DynamicContext, req.CurrentMessage)
+	if banner := formatDynamicGoalPhaseBanner(req); banner != "" {
+		if strings.TrimSpace(userContent) != "" {
+			userContent = userContent + "\n\n" + banner
+		} else {
+			userContent = banner
+		}
+	}
 	if strings.TrimSpace(userContent) != "" || len(req.Media) > 0 {
 		messages = append(messages, userPromptMessage(userContent, req.Media))
 	}
@@ -1420,7 +1389,7 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 		// Stub user[0] — preserves original "empty messages → blank user"
 		// behavior. When DynamicContext is non-empty we still emit the stub
 		// with just the dynamic block (no original user text to wrap).
-		messages = append(messages, userPromptMessage(wrapDynamicContext(req.DynamicContext, ""), nil))
+		messages = append(messages, userPromptMessage(userContent, nil))
 	}
 
 	return messages
@@ -1745,5 +1714,53 @@ func wrapDynamicContext(dyn, userMessage string) string {
 	}
 	sb.WriteString("</dynamic_context>\n\n")
 	sb.WriteString(userMessage)
+	return sb.String()
+}
+
+
+// formatDynamicGoalPhaseBanner constructs the per-turn dynamic GOAL_PHASE_BANNER XML block
+// injected into the tail of the active user message.
+func formatDynamicGoalPhaseBanner(req PromptBuildRequest) string {
+	if req.SuppressDefaultSystemPrompt {
+		return ""
+	}
+	phase := GoalPhase(strings.ToLower(strings.TrimSpace(req.GoalPhase)))
+	if phase == "" {
+		return ""
+	}
+	iter := req.Iteration
+	if iter <= 0 {
+		iter = 1
+	}
+	maxIter := req.MaxIterationsCap
+	if maxIter <= 0 {
+		maxIter = 250
+	}
+
+	var sb strings.Builder
+	switch phase {
+	case GoalPhaseSet:
+		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"SET\" iter=\"%d\" max=\"%d\">\n", iter, maxIter))
+		sb.WriteString("[HARD GUARD] Goal phase: SET. You MUST call `set_goal` to declare your objective before using any domain tools. All execution tools are locked.\n")
+		sb.WriteString("</goal_phase>")
+	case GoalPhaseOpen:
+		nextCheckpoint := req.IterationCap
+		if nextCheckpoint <= 0 {
+			nextCheckpoint = 25
+		}
+		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"OPEN\" iter=\"%d\" max=\"%d\" next_checkpoint=\"%d\">\n", iter, maxIter, nextCheckpoint))
+		sb.WriteString(fmt.Sprintf("Goal phase: OPEN (iter %d / total %d turn iters). Next CHECKPOINT phase will be at iter %d.\n", iter, maxIter, nextCheckpoint))
+		sb.WriteString("</goal_phase>")
+	case GoalPhaseCheckpoint:
+		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"CHECKPOINT\" iter=\"%d\" max=\"%d\">\n", iter, maxIter))
+		sb.WriteString("[HARD STOP] Goal phase: CHECKPOINT. Iteration cap reached. Domain tools are locked. Call `goal_progress` with remaining steps to extend, or `complete_goal` to finalize.\n")
+		sb.WriteString("</goal_phase>")
+	case GoalPhaseFinal:
+		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"FINAL\" iter=\"%d\" max=\"%d\">\n", iter, maxIter))
+		sb.WriteString("[HARD STOP] Goal phase: FINAL. This is the terminal iteration. Call `complete_goal` to submit your final report.\n")
+		sb.WriteString("</goal_phase>")
+	default:
+		return ""
+	}
 	return sb.String()
 }
