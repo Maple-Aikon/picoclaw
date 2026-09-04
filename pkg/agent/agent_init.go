@@ -431,5 +431,14 @@ func registerSharedTools(
 		agent.Tools.Register(goal.NewCompleteGoalTool(agent.Workspace))
 
 		warnOnUnknownAgentToolDeclarations(agentID, agent.Workspace, agent.Definition, agent.Tools)
+
+		// cache-utilization-v2 Phase 12.72 Fix #1: freeze the projection so
+		// ToProviderDefs() emits the FULL registry on every turn. The
+		// MiniMax-M3 prompt-cache model is prefix-identity: every missing
+		// tool changes the cached prefix and invalidates the cache slot.
+		// The runtime allowlist still enforces execution correctness via
+		// per-call IsAllowed() — projection-freeze is purely a
+		// prompt-cache optimization. See plan §15 T1.2.
+		agent.Tools.SetProjectionFrozen(true)
 	}
 }
