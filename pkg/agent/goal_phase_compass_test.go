@@ -33,41 +33,51 @@ func mustNotContain(t *testing.T, haystack, needle, rationale string) {
 	}
 }
 
-// T1 — OPEN at iter 2, cap 5/15 → renders "Next CHECKPOINT at iter 5".
+// Phase 12.72 Fix #2 — T4.1 by-block rewrite. formatIterCompass no
+// longer renders the OPEN header (it migrated to user[0] via
+// formatDynamicGoalPhaseBanner). OPEN case now returns "" — the helper
+// is dead-code for OPEN, but kept as a sentinel so future refactors that
+// re-introduce an OPEN call site will see a clear "" return and fail
+// the by-block test instead of silently rendering into system. See
+// plan §15 T1.7 + §4 Step 4 T4.1.
+//
+// T1 — OPEN at iter 2, cap 5/15: helper now returns "" (dead-code path).
 func TestFormatIterCompass_Open_Iter2_NextCheckpointAtCap5(t *testing.T) {
 	got := formatIterCompass(PromptBuildRequest{
 		Iteration:        2,
 		IterationCap:     5,
 		MaxIterationsCap: 15,
 	}, GoalPhaseOpen, false)
-	mustContain(t, got, "Goal phase: open (iter 2 / total 15 turn iters).", "OPEN base header")
-	mustContain(t, got, "Next CHECKPOINT phase will be at iter 5.", "OPEN next-checkpoint marker")
+	if got != "" {
+		t.Errorf("Phase 12.72 Fix #2: formatIterCompass(OPEN) must return \"\" (compass migrated to user[0]); got %q", got)
+	}
 }
 
-// T2 — OPEN at iter 6, cap 10/15 (after goal_progress extend 5→10) → "Next CHECKPOINT at iter 10".
+// T2 — OPEN at iter 6, cap 10/15 (after goal_progress extend 5→10): helper now returns "".
 func TestFormatIterCompass_Open_Iter6_AfterExtend_NextCheckpointAt10(t *testing.T) {
 	got := formatIterCompass(PromptBuildRequest{
 		Iteration:        6,
 		IterationCap:     10,
 		MaxIterationsCap: 15,
 	}, GoalPhaseOpen, false)
-	mustContain(t, got, "Goal phase: open (iter 6 / total 15 turn iters).", "OPEN base header")
-	mustContain(t, got, "Next CHECKPOINT phase will be at iter 10.", "OPEN next-checkpoint marker after extend")
+	if got != "" {
+		t.Errorf("Phase 12.72 Fix #2: formatIterCompass(OPEN) must return \"\"; got %q", got)
+	}
 }
 
-// T3 — OPEN at iter 11, cap 15/15 (iterCap == maxCap) → "FINAL phase will be at iter 15".
+// T3 — OPEN at iter 11, cap 15/15 (iterCap == maxCap): helper now returns "".
 func TestFormatIterCompass_Open_Iter11_AtMaxCap_FinalMarker(t *testing.T) {
 	got := formatIterCompass(PromptBuildRequest{
 		Iteration:        11,
 		IterationCap:     15,
 		MaxIterationsCap: 15,
 	}, GoalPhaseOpen, false)
-	mustContain(t, got, "Goal phase: open (iter 11 / total 15 turn iters).", "OPEN base header")
-	mustContain(t, got, "FINAL phase will be at iter 15.", "FINAL marker when at max cap")
-	mustNotContain(t, got, "Next CHECKPOINT", "no CHECKPOINT marker when at max cap")
+	if got != "" {
+		t.Errorf("Phase 12.72 Fix #2: formatIterCompass(OPEN) must return \"\"; got %q", got)
+	}
 }
 
-// T4 — backward compat: MaxIterationsCap=0 → helper returns "".
+// T4 — backward compat: MaxIterationsCap=0 → helper returns "" (unchanged).
 func TestFormatIterCompass_Open_MaxCapZero_ReturnsEmpty(t *testing.T) {
 	got := formatIterCompass(PromptBuildRequest{
 		Iteration:        4,
@@ -79,38 +89,42 @@ func TestFormatIterCompass_Open_MaxCapZero_ReturnsEmpty(t *testing.T) {
 	}
 }
 
-// T11 — OPEN at iter 4, cap 5/15 (last iter before CHECKPOINT) → "Next CHECKPOINT at iter 5".
+// T11 — OPEN at iter 4, cap 5/15 (last iter before CHECKPOINT): helper now returns "".
 func TestFormatIterCompass_Open_Iter4_LastBeforeCheckpoint(t *testing.T) {
 	got := formatIterCompass(PromptBuildRequest{
 		Iteration:        4,
 		IterationCap:     5,
 		MaxIterationsCap: 15,
 	}, GoalPhaseOpen, false)
-	mustContain(t, got, "Next CHECKPOINT phase will be at iter 5.", "last iter before CHECKPOINT shows correct iterCap")
+	if got != "" {
+		t.Errorf("Phase 12.72 Fix #2: formatIterCompass(OPEN) must return \"\"; got %q", got)
+	}
 }
 
 // T12 — Defensive invariant (Sonar F1): OPEN with malformed state iter=6, iterCap=5, maxCap=15
-// (iter >= iterCap violates the OPEN invariant) → fall through to "FINAL phase will be at iter 15"
-// instead of misleading "Next CHECKPOINT at iter 5" pointing to a passed iter.
+// is now moot post-12.72 (helper returns "" for OPEN unconditionally), but kept as a
+// regression-proof that the OPEN case doesn't accidentally re-render FINAL fallback.
 func TestFormatIterCompass_Open_MalformedIterGteIterCap_FallsThroughToFinal(t *testing.T) {
 	got := formatIterCompass(PromptBuildRequest{
 		Iteration:        6,
 		IterationCap:     5,
 		MaxIterationsCap: 15,
 	}, GoalPhaseOpen, false)
-	mustNotContain(t, got, "Next CHECKPOINT", "malformed state must NOT render CHECKPOINT marker for passed iter")
-	mustContain(t, got, "FINAL phase will be at iter 15.", "fall through to FINAL marker when iter >= iterCap")
+	if got != "" {
+		t.Errorf("Phase 12.72 Fix #2: formatIterCompass(OPEN) must return \"\"; got %q", got)
+	}
 }
 
-// T14 — OPEN with iterCap=0, maxCap=15 → "FINAL phase will be at iter 15" (no CHECKPOINT info).
+// T14 — OPEN with iterCap=0, maxCap=15: helper now returns "".
 func TestFormatIterCompass_Open_IterCapZero_FinalMarker(t *testing.T) {
 	got := formatIterCompass(PromptBuildRequest{
 		Iteration:        3,
 		IterationCap:     0,
 		MaxIterationsCap: 15,
 	}, GoalPhaseOpen, false)
-	mustNotContain(t, got, "Next CHECKPOINT", "no CHECKPOINT marker when iterCap=0")
-	mustContain(t, got, "FINAL phase will be at iter 15.", "fall through to FINAL marker when iterCap missing")
+	if got != "" {
+		t.Errorf("Phase 12.72 Fix #2: formatIterCompass(OPEN) must return \"\"; got %q", got)
+	}
 }
 
 // T5 — CHECKPOINT at iter 5, maxCap=15 → "Only goal_progress/complete_goal available".

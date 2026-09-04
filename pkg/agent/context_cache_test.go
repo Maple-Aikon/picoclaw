@@ -1033,15 +1033,23 @@ func TestCache_EstimateSystemTokensDoesNotCorruptCache(t *testing.T) {
 }
 
 // TestCacheInvalidationOnIterationCapChange (Phase 12.38 §4 F52/F58.2,
-// updated Phase 12.39): the cache key must include iterationCap and
-// maxIterationsCap. Without these dimensions, an OPEN cache slot built at
-// cap=5 would be reused at cap=10 after a goal_progress extension at
-// CHECKPOINT — the LLM would see stale "Next CHECKPOINT at iter 5" text
-// instead of the actual cap=10.
+// updated Phase 12.39, rewritten Phase 12.72 Fix #2): the cache key must
+// include iterationCap and maxIterationsCap. Without these dimensions, an
+// OPEN cache slot built at cap=5 would be reused at cap=10 after a
+// goal_progress extension at CHECKPOINT — the LLM would see stale
+// "Next CHECKPOINT at iter 5" text instead of the actual cap=10.
 //
 // Phase 12.39 changed the rendered text from "Iteration cap: N" to
-// "Next CHECKPOINT phase will be at iter N" (event-marker style). The
-// cache invalidation contract is the same — only the rendered text changed.
+// "Next CHECKPOINT phase will be at iter N" (event-marker style).
+//
+// Phase 12.72 Fix #2: dynamic OPEN compass header migrated from system
+// prompt (this hint contributor) to user[0] (formatDynamicGoalPhaseBanner).
+// The OPEN system prompt is now CONSTANT across iter + cap (no dynamic
+// header text), so this test no longer asserts system prompt text
+// content. It pins the cache-key contract: cap dims MUST still invalidate
+// the OPEN cache slot even though iter dropped out of the key. If a
+// future change drops cap from the key too, this test catches it (the
+// cap-miss assertion fails).
 func TestCacheInvalidationOnIterationCapChange(t *testing.T) {
 	tmpDir := setupWorkspace(t, map[string]string{
 		"AGENT.md": "# Agent\nContent",
@@ -1058,25 +1066,42 @@ func TestCacheInvalidationOnIterationCapChange(t *testing.T) {
 	if p1 != p1Cached {
 		t.Errorf("expected cache HIT on identical dims, got different prompts")
 	}
-	// Cap extended: iter 6 with cap=10 → cache MISS → rebuild with new content
+	// Cap extended: iter 6 with cap=10 → cache MISS path is exercised
+	// (cb.cachedSystemPromptIterationCap=5 != iterationCap=10).
+	// Phase 12.72 Fix #2: OPEN system prompt is now CONSTANT across iter
+	// (dynamic header migrated to user[0] via formatDynamicGoalPhaseBanner),
+	// so the rebuilt p2 has byte-identical content to p1 — the cap change
+	// invalidates the cache and rebuilds, but the rebuild yields the same
+	// constant system prompt. So p1 == p2 is EXPECTED post-12.72.
+	//
+	// Lock the new contract: cache baseline invalidates on cap change
+	// (cb.cachedSystemPromptIterationCap gets bumped), but the rendered
+	// system prompt is constant for OPEN.
 	p2 := cb.BuildSystemPromptWithCacheFullKey("open", false, 6, "", 10, 15)
-	if p1 == p2 {
-		t.Errorf("expected cache MISS on cap change (5→10), got identical prompts (stale cap-leak)")
+	if cb.cachedSystemPromptIterationCap != 10 {
+		t.Errorf("Phase 12.72 Fix #2: cap change must invalidate cache baseline (cb.cachedSystemPromptIterationCap=10); got %d", cb.cachedSystemPromptIterationCap)
 	}
-	if !strings.Contains(p2, "Next CHECKPOINT phase will be at iter 10") {
-		t.Errorf("rebuilt prompt must show new cap=10, got:\n%s", p2)
+	// Phase 12.72 Fix #2: OPEN system prompt is constant; the
+	// "Next CHECKPOINT at iter N" / "FINAL phase will be at iter M" text
+	// now lives in user[0], NOT in this system prompt. Both p1 and p2
+	// MUST NOT contain those literal system-side markers.
+	if strings.Contains(p2, "Next CHECKPOINT phase will be at iter 10") {
+		t.Errorf("Phase 12.72 Fix #2: OPEN system prompt must NOT contain dynamic CHECKPOINT marker (moved to user[0]); got:\n%s", p2)
 	}
 	if strings.Contains(p1, "Next CHECKPOINT phase will be at iter 10") {
-		t.Errorf("original cache slot must NOT contain stale cap=10, got:\n%s", p1)
+		t.Errorf("Phase 12.72 Fix #2: OPEN system prompt must NOT contain dynamic CHECKPOINT marker (moved to user[0]); got:\n%s", p1)
 	}
 }
 
 // TestCacheInvalidationOnMaxIterationsCapChange (Phase 12.38 §4, updated
-// Phase 12.39): when cap hits ceiling, the rendered text changes from
-// "Next CHECKPOINT at iter X" to "FINAL phase will be at iter M". If
-// maxCap changes so cap is no longer at ceiling (e.g. cap=15, maxCap=20),
-// the marker reverts and the cache must invalidate so the LLM sees the
-// corrected text.
+// Phase 12.39, rewritten Phase 12.72 Fix #2): when cap hits ceiling, the
+// rendered OPEN system text was previously "Next CHECKPOINT at iter X" vs
+// "FINAL phase will be at iter M". Post-12.72 the OPEN system prompt is
+// CONSTANT (dynamic header migrated to user[0]). The cache-key contract
+// remains: maxCap changes must invalidate the OPEN cache slot so the
+// next iteration rebuilds against the new maxCap (e.g. user extends cap
+// 15→20 → next iter the goal_progress recovery might recalc, and we
+// don't want stale maxCap cached).
 func TestCacheInvalidationOnMaxIterationsCapChange(t *testing.T) {
 	tmpDir := setupWorkspace(t, map[string]string{
 		"AGENT.md": "# Agent\nContent",
@@ -1086,18 +1111,22 @@ func TestCacheInvalidationOnMaxIterationsCapChange(t *testing.T) {
 
 	cb := NewContextBuilder(tmpDir)
 
-	// cap=15, maxCap=15 → at ceiling → "FINAL phase will be at iter 15" present
+	// cap=15, maxCap=15 → at ceiling
 	p1 := cb.BuildSystemPromptWithCacheFullKey("open", false, 5, "", 15, 15)
-	// cap=15, maxCap=20 → not at ceiling → "Next CHECKPOINT" present
+	// cap=15, maxCap=20 → not at ceiling
 	p2 := cb.BuildSystemPromptWithCacheFullKey("open", false, 5, "", 15, 20)
-	if p1 == p2 {
-		t.Errorf("expected cache MISS when cap-ceiling state changes (at ceiling → not at ceiling)")
+	// Phase 12.72 Fix #2: cap change must invalidate cache baseline.
+	if cb.cachedSystemPromptMaxIterationsCap != 20 {
+		t.Errorf("Phase 12.72 Fix #2: maxCap change must invalidate cache baseline (cb.cachedSystemPromptMaxIterationsCap=20); got %d", cb.cachedSystemPromptMaxIterationsCap)
 	}
-	if !strings.Contains(p1, "FINAL phase will be at iter 15") {
-		t.Errorf("p1 must show FINAL marker (at ceiling), got:\n%s", p1)
+	// Phase 12.72 Fix #2: OPEN system prompt must not carry the
+	// "FINAL phase will be at iter 15" / "Next CHECKPOINT phase will be
+	// at iter 15" markers — those live in user[0] now. Lock the contract.
+	if strings.Contains(p1, "FINAL phase will be at iter 15") {
+		t.Errorf("Phase 12.72 Fix #2: OPEN system prompt must NOT contain dynamic FINAL marker (moved to user[0]); got:\n%s", p1)
 	}
-	if !strings.Contains(p2, "Next CHECKPOINT phase will be at iter 15") {
-		t.Errorf("p2 must show CHECKPOINT marker (not at ceiling), got:\n%s", p2)
+	if strings.Contains(p2, "Next CHECKPOINT phase will be at iter 15") {
+		t.Errorf("Phase 12.72 Fix #2: OPEN system prompt must NOT contain dynamic CHECKPOINT marker (moved to user[0]); got:\n%s", p2)
 	}
 }
 

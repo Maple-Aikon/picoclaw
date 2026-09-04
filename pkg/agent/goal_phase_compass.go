@@ -11,11 +11,15 @@ import "fmt"
 // to avoid double-source-of-truth. req.GoalPhase is used elsewhere (allowlist
 // resolver) but for header text rendering, the caller is the source of truth.
 //
-// Defensive invariant (Sonar F1 folded): for OPEN phase, ONLY render
-// "Next CHECKPOINT at iter X" when the invariant `iter < iterCap` holds.
-// If `iter >= iterCap` (malformed state from a code path bug), fall back
-// to "FINAL phase will be at iter M" — never render "Next CHECKPOINT"
-// pointing to a passed iter (would confuse LLM).
+// Phase 12.72 Fix #2 — OPEN case removed (dead code per plan §15 T1.7 + §4
+// Q5=A): the OPEN compass header ("Goal phase: OPEN (iter N / total M turn
+// iters)" + "Next CHECKPOINT at iter X") migrated to user[0] via
+// formatDynamicGoalPhaseBanner. The OPEN system hint body is constant
+// post-12.72, and dropping the OPEN case here keeps the helper honest
+// (any future caller that accidentally re-introduces OPEN via this helper
+// will get "" and fail the by-block test). The base header construction
+// is also retired for OPEN callers since they no longer reach this helper.
+// CHECKPOINT + FINAL + default (GoalPhaseSet) branches retained.
 //
 // Final phase branching (Sonar F02 folded): when phase=GoalPhaseFinal,
 // distinguish cause via goalFinalized:
@@ -23,20 +27,21 @@ import "fmt"
 //   - goalFinalized=false + iter>=maxCap (đụng ceiling) → "This is the last iter"
 //
 // Phase 12.39 SHIPPED 2026-08-02.
+// Phase 12.72 Fix #2 SHIPPED 2026-09-04 — OPEN case removed.
 func formatIterCompass(req PromptBuildRequest, phase GoalPhase, goalFinalized bool) string {
 	if req.MaxIterationsCap <= 0 {
 		return "" // backward compat fallback
 	}
+	// Phase 12.72 Fix #2: OPEN compass migrated to user[0]. The system hint
+	// for OPEN is constant (no dynamic header), so this helper has nothing
+	// to render for OPEN. Return "" explicitly so the by-block tests catch
+	// any future regression that tries to re-introduce OPEN here.
+	if phase == GoalPhaseOpen {
+		return ""
+	}
 	base := fmt.Sprintf("Goal phase: %s (iter %d / total %d turn iters).",
 		phase, req.Iteration, req.MaxIterationsCap)
 	switch phase {
-	case GoalPhaseOpen:
-		// Defensive: malformed state where iter >= iterCap. Fall through to
-		// FINAL message instead of misleading "Next CHECKPOINT at iter X".
-		if req.IterationCap > 0 && req.Iteration < req.IterationCap && req.IterationCap < req.MaxIterationsCap {
-			return base + fmt.Sprintf(" Next CHECKPOINT phase will be at iter %d.", req.IterationCap)
-		}
-		return base + fmt.Sprintf(" FINAL phase will be at iter %d.", req.MaxIterationsCap)
 	case GoalPhaseCheckpoint:
 		return base + " Only goal_progress/complete_goal available."
 	case GoalPhaseFinal:

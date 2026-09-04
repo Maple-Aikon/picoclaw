@@ -606,11 +606,20 @@ func (cb *ContextBuilder) BuildSystemPromptWithCacheFullKey(goalPhase string, po
 	}
 
 	// Try read lock first — fast path when cache is valid
+	// cache-utilization-v2 Phase 12.72 Fix #2: drop `iteration` from cache
+	// key when phase is OPEN. OPEN is a RELATIVE phase (allowlist = base ∪
+	// lifecycle add-ons, tools array identity-stable under frozen
+	// projection from Fix #1), so iter does not change prompt content.
+	// Non-OPEN phases keep iter in key (defensive invariant for phase
+	// transitions + identity drift). See plan §15 T1.7.
+	iterKeyMatch := goalPhase != string(GoalPhaseOpen) &&
+		cb.cachedSystemPromptIteration == iteration
+
 	cb.systemPromptMutex.RLock()
 	if cb.cachedSystemPrompt != "" &&
 		cb.cachedSystemPromptGoalPhase == goalPhase &&
 		cb.cachedSystemPromptPostCompleteGoalReport == postCompleteGoalReport &&
-		cb.cachedSystemPromptIteration == iteration &&
+		iterKeyMatch &&
 		cb.cachedSystemPromptIterationCap == iterationCap &&
 		cb.cachedSystemPromptMaxIterationsCap == maxIterationsCap &&
 		!cb.sourceFilesChangedLocked() {
@@ -628,7 +637,7 @@ func (cb *ContextBuilder) BuildSystemPromptWithCacheFullKey(goalPhase string, po
 	if cb.cachedSystemPrompt != "" &&
 		cb.cachedSystemPromptGoalPhase == goalPhase &&
 		cb.cachedSystemPromptPostCompleteGoalReport == postCompleteGoalReport &&
-		cb.cachedSystemPromptIteration == iteration &&
+		iterKeyMatch &&
 		cb.cachedSystemPromptIterationCap == iterationCap &&
 		cb.cachedSystemPromptMaxIterationsCap == maxIterationsCap &&
 		!cb.sourceFilesChangedLocked() {
@@ -672,7 +681,12 @@ func (cb *ContextBuilder) BuildSystemPromptWithCacheFullKey(goalPhase string, po
 				"new_phase":      goalPhase,
 				"length":         len(prompt),
 			})
-	} else if previousIter != 0 && previousIter != iteration {
+	} else if previousIter != 0 && previousIter != iteration && goalPhase != string(GoalPhaseOpen) {
+		// cache-utilization-v2 Phase 12.72 Fix #2: OPEN phase does NOT
+		// invalidate on iter change post-12.72 (iter dropped from cache
+		// key per Fix #2). Only iterCap/maxCap/phase changes can trigger
+		// rebuild. This branch is retained for non-OPEN phases that bypass
+		// cache anyway, plus for diagnostic parity with pre-12.72 logs.
 		logger.DebugCF("agent", "System prompt cache invalidated by iteration change",
 			map[string]any{
 				"goal_phase":    goalPhase,

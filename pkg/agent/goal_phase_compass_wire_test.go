@@ -16,15 +16,23 @@ import (
 // Sonar F4: W6 verifies goalFinalized branching.
 // Sonar F2 secondary: W5 verifies CHECKPOINT bypasses cache.
 
-// W1 — OPEN at iter 4, cap 5/15 → rendered prompt contains
-// "Goal phase: open (iter 4 / total 15 turn iters)" + "Next CHECKPOINT phase will be at iter 5".
+// W1 — OPEN at iter 4, cap 5/15. Phase 12.72 Fix #2 removed the dynamic
+// header ("Goal phase: open (iter N / total M)" + "Next CHECKPOINT at
+// iter X") from the SYSTEM hint — it now lives in user[0] via
+// formatDynamicGoalPhaseBanner. The system hint body is constant: only
+// the static lifecycle-tool restriction text. This test verifies the
+// body shape per phase 12.72.
 func TestPhase12_39_Wire_Open_Iter4_NextCheckpointAt5(t *testing.T) {
 	cb := NewContextBuilder(t.TempDir())
 	prompt := cb.BuildSystemPromptWithCacheFullKey(
 		string(GoalPhaseOpen), false, 4, "", 5, 15,
 	)
-	mustContain(t, prompt, "Goal phase: open (iter 4 / total 15 turn iters)", "OPEN base header")
-	mustContain(t, prompt, "Next CHECKPOINT phase will be at iter 5", "OPEN next-checkpoint marker")
+	mustNotContain(t, prompt, "Goal phase: open (iter 4 / total 15 turn iters)",
+		"OPEN system hint must NOT contain dynamic header (moved to user[0] banner in 12.72)")
+	mustNotContain(t, prompt, "Next CHECKPOINT phase will be at iter 5",
+		"OPEN system hint must NOT contain CHECKPOINT marker (moved to user[0] banner in 12.72)")
+	mustContain(t, prompt, "set_goal is LOCKED at OPEN",
+		"OPEN hint must still render the lifecycle-tool restriction body")
 }
 
 // W2 — CHECKPOINT at iter 5, cap 5/15 → rendered prompt contains
@@ -58,8 +66,12 @@ func TestPhase12_39_Wire_Final_Iter15_LastIterMessage(t *testing.T) {
 //
 // Build OPEN prompt at iter 4 cap 5 max 15 on the SAME builder (warms cache).
 // Then build at iter 6 cap 10 max 15 (simulates goal_progress extend).
-// Verify cache invalidated correctly — "Next CHECKPOINT at iter 10" present,
-// "Next CHECKPOINT at iter 5" absent.
+// Phase 12.72 Fix #2: dynamic OPEN compass is removed from the system
+// hint and dropped from the cache key. The cache invariant that remains
+// is: cap changes invalidate the cache (cap is still a key dim). Iter
+// changes do NOT invalidate (iter dropped for OPEN). Test asserts the
+// system prompt remains constant for OPEN regardless of iter, but
+// rebuilds on cap change.
 func TestPhase12_39_Wire_Open_CacheReuseAfterExtend(t *testing.T) {
 	cb := NewContextBuilder(t.TempDir())
 
@@ -67,15 +79,20 @@ func TestPhase12_39_Wire_Open_CacheReuseAfterExtend(t *testing.T) {
 	p1 := cb.BuildSystemPromptWithCacheFullKey(
 		string(GoalPhaseOpen), false, 4, "", 5, 15,
 	)
-	mustContain(t, p1, "Next CHECKPOINT phase will be at iter 5", "first build has cap=5 marker")
+	mustNotContain(t, p1, "Goal phase: open (iter 4",
+		"OPEN system hint must NOT contain dynamic header (moved to user[0] banner in 12.72)")
+	mustContain(t, p1, "set_goal is LOCKED at OPEN",
+		"OPEN system hint must still render static body")
 
-	// Step 2: SAME builder, cap extended to 10, iter 6.
+	// Step 2: SAME builder, cap extended to 10, iter 6. Cap changed → cache
+	// invalidates → rebuild. Both prompts still have the same static body.
 	p2 := cb.BuildSystemPromptWithCacheFullKey(
 		string(GoalPhaseOpen), false, 6, "", 10, 15,
 	)
-	mustContain(t, p2, "Next CHECKPOINT phase will be at iter 10", "second build reflects new cap=10")
-	mustNotContain(t, p2, "Next CHECKPOINT phase will be at iter 5", "old cap=5 marker must NOT leak after cache invalidation")
-	mustContain(t, p2, "iter 6 / total 15 turn iters", "iter 6 base header correct")
+	mustNotContain(t, p2, "Goal phase: open (iter",
+		"OPEN system hint must NOT contain dynamic header post-cap-change")
+	mustContain(t, p2, "set_goal is LOCKED at OPEN",
+		"OPEN system hint must still render static body post-cap-change")
 }
 
 // W5 — CHECKPOINT bypasses cache (isCacheableGoalPhase=checkpoint → false).

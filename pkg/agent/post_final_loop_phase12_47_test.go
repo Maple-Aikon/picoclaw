@@ -52,10 +52,22 @@ func TestPhase12_47_T8_CompleteGoalThenPostFinalIter(t *testing.T) {
 	}
 	// L1-2: LLM request trên iter 5 phải thấy 0 tools (tools_visible=0).
 	// Post-12.50 F3: tools_total field is now registry count (Tools.Count),
-	// NOT post-allowlist projected. ToProviderDefs returns 0 visible at
-	// POST-FINAL (correct behavior, allowlist = []).
-	if defs := agent.Tools.ToProviderDefs(); len(defs) != 0 {
-		t.Fatalf("LLM request iter 5 phải thấy 0 tools, got %d", len(defs))
+	// NOT post-allowlist projected.
+	//
+	// Phase 12.72 Fix #1: agent.Tools.ProjectionFrozen() == true (wired
+	// at end of registerSharedTools, agent_init.go:442). ToProviderDefs
+	// projects the FULL registry under frozen projection — runtime gating
+	// (toolAllowedLocked) is what enforces post_final isolation. So
+	// ToProviderDefs no longer returns 0 visible; it returns the full
+	// set, but POST-FINAL phase allowlist is [] → runtime gate blocks
+	// every tool. Lock the new wire contract:
+	if defs := agent.Tools.ToProviderDefs(); len(defs) == 0 {
+		t.Fatalf("Phase 12.72 Fix #1: frozen projection must project full registry (len > 0); got 0 — wire may not be active")
+	}
+	// Runtime gate must still block complete_goal at POST-FINAL despite
+	// full projection (this is what enforces isolation now).
+	if agent.Tools.IsAllowed("complete_goal") {
+		t.Errorf("Phase 12.72 Fix #1 contract: POST-FINAL runtime gate must block complete_goal; got IsAllowed=true (allowlist enforcement broken)")
 	}
 
 	// --- iter 5 body: LLM text-only final report (strip fire —

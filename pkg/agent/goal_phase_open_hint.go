@@ -28,24 +28,19 @@ import "fmt"
 // generic retry message (Open is a RELATIVE phase — only 2 of 83
 // visible tools are blocked, so always-appending would mislead).
 
-// goalPhaseOpenHintText — dynamic header via formatIterCompass (Phase 12.39)
-// + static body for lifecycle tool restriction semantics (Phase 12.32).
-//
-// Phase 12.39 replaced the Phase 12.38 v2 static "Iteration cap: M" + ceiling
-// warning with an event-marker header ("Next CHECKPOINT at iter X" / "FINAL
-// phase will be at iter M") per owner decision §1. The static body remains
-// for lifecycle tool restriction semantics (constant across OPEN iters).
-//
-// Helper signature: formatIterCompass(req, phase, goalFinalized). For OPEN,
-// we pass goalFinalized=false (OPEN never has goalFinalized=true by
-// definition — that's a FINAL-state condition).
+// goalPhaseOpenHintText — static body only (cache-utilization-v2 Phase 12.72
+// Fix #2). The dynamic "Goal phase: OPEN (iter N / total M turn iters) +
+// Next CHECKPOINT at iter X" header used to be prepended here from
+// formatIterCompass; post-12.72 that header migrates to user[0] via
+// formatDynamicGoalPhaseBanner (Layout B principle — dynamic content lives
+// in user[0], static content lives in system). Removing the header makes
+// the OPEN system block constant across iter, which combined with
+// dropping `iteration` from the cache key (context.go:608 area) gives the
+// OPEN-phase system prompt 100% cache identity. The OPEN hint body
+// remains for lifecycle tool restriction semantics (constant across OPEN
+// iters).
 func goalPhaseOpenHintText(req PromptBuildRequest) string {
-	header := formatIterCompass(req, GoalPhaseOpen, false)
-	if header == "" {
-		// Backward compat: no cap dims (MaxIterationsCap=0) → no header.
-		return fmt.Sprintf("%s\n", goalPhaseOpenHintBodyText)
-	}
-	return fmt.Sprintf("%s\n%s\n", header, goalPhaseOpenHintBodyText)
+	return fmt.Sprintf("%s\n", goalPhaseOpenHintBodyText)
 }
 
 // goalPhaseOpenHintBodyText — static body for the OPEN hint. Separated

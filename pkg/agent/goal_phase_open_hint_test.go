@@ -86,11 +86,14 @@ func TestGoalPhaseOpenHint_PlacementCapabilityTooling(t *testing.T) {
 	}
 }
 
-// Phase 12.39 — Dynamic header when cap dims are non-zero.
-// Verifies the OPEN hint now uses formatIterCompass (event-marker style):
-// "Goal phase: open (iter N / total M turn iters)" + "Next CHECKPOINT
-// at iter X" / "FINAL phase will be at iter M" (replaced Phase 12.38 v2's
-// static "Iteration cap: M" + ceiling warning).
+// Phase 12.72 Fix #2 — OPEN hint body has NO dynamic header anymore.
+// The dynamic header ("Goal phase: open (iter N / total M turn iters)" +
+// "Next CHECKPOINT at iter X" / "FINAL phase will be at iter M") used to
+// be prepended from formatIterCompass; post-12.72 that header migrates
+// to user[0] via formatDynamicGoalPhaseBanner (Layout B). The OPEN hint
+// body here is constant — only the static lifecycle-tool restriction
+// text. This test verifies the body does NOT contain the old dynamic
+// header AND retains the static body. See plan §15 T1.7.
 func TestGoalPhaseOpenHint_DynamicHeaderWithCap(t *testing.T) {
 	part := goalPhaseOpenHintContributor(PromptBuildRequest{
 		GoalPhase:         string(GoalPhaseOpen),
@@ -101,8 +104,12 @@ func TestGoalPhaseOpenHint_DynamicHeaderWithCap(t *testing.T) {
 	if part == nil {
 		t.Fatal("hint must fire at OPEN phase")
 	}
-	mustContain(t, part.Content, "Goal phase: open (iter 5 / total 15 turn iters)", "dynamic header must appear when cap dims are set")
-	mustContain(t, part.Content, "FINAL phase will be at iter 15", "FINAL marker must appear when iterCap == maxCap (no more CHECKPOINTs)")
+	mustNotContain(t, part.Content, "Goal phase: open (iter 5 / total 15 turn iters)",
+		"OPEN system hint must NOT include dynamic header (moved to user[0] banner in 12.72)")
+	mustNotContain(t, part.Content, "FINAL phase will be at iter 15",
+		"OPEN system hint must NOT include dynamic FINAL marker (moved to user[0] banner in 12.72)")
+	mustContain(t, part.Content, "set_goal is LOCKED at OPEN",
+		"OPEN hint must still include the lifecycle-tool restriction body")
 }
 
 // Phase 12.38 §4 T2 — Legacy zero-cap caller keeps static text (no

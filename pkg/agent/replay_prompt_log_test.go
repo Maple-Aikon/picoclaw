@@ -34,7 +34,7 @@ func TestReplayPromptLog_RendersBlock(t *testing.T) {
 		helperName: "handleGoalRecovery",
 		iteration:  5,
 		messages: []providers.Message{
-			{Role: "system", Content: "Goal phase: open (iter 5/15)\nCall complete_goal when done."},
+			{Role: "system", Content: "Call complete_goal when done."},
 			{Role: "user", Content: "Run horus protocol"},
 		},
 		resp: &providers.LLMResponse{
@@ -71,7 +71,7 @@ func TestReplayPromptLog_RendersBlock(t *testing.T) {
 	// Markers + content.
 	for _, want := range []string{
 		">>> [RECALL START] ID: turn-recall-test | Helper: handleGoalRecovery | Iteration: 5 | 22:00:00",
-		"[SYSTEM]: Goal phase: open (iter 5/15)⏎Call complete_goal when done.",
+		"[SYSTEM]: Call complete_goal when done.",
 		"[USER]: Run horus protocol",
 		"[ASSISTANT]: Recovered.",
 		"[TOOL_CALL]: complete_goal({\"summary\":\"done\"}) [ID: call-1]",
