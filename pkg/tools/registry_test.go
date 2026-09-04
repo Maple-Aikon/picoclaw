@@ -769,6 +769,67 @@ func TestToolRegistry_Clone_PreservesTTLValue(t *testing.T) {
 	}
 }
 
+// TestToolRegistry_Clone_CopiesProjectionFrozen — Phase 12.72 Fix #3.
+//
+// Contract: Clone() preserves the parent's projectionFrozen flag so
+// SubTurn / SubAgent clones do NOT silently lose the frozen-projection
+// optimization. Without this, every spawn / subturn would invalidate the
+// MiniMax-M3 prompt-cache (parent frozen, child unfrozen → child emits a
+// different tool set → cache miss).
+//
+// Regression case: original Clone() (R8 audit) zero-valued all three
+// per-instance identity fields (projectionFrozen, phase, knowledgeStore).
+// This test pins the field-copy contract post-12.72.
+func TestToolRegistry_Clone_CopiesProjectionFrozen(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(newMockTool("read_file", "reads files"))
+
+	// Set projectionFrozen=true on parent.
+	r.SetProjectionFrozen(true)
+
+	// Sanity: parent is frozen.
+	if !r.ProjectionFrozen() {
+		t.Fatal("parent SetProjectionFrozen(true) did not take effect")
+	}
+
+	// Clone — must inherit frozen state.
+	clone := r.Clone()
+	if clone == nil {
+		t.Fatal("Clone() returned nil")
+	}
+	if !clone.ProjectionFrozen() {
+		t.Errorf("clone.ProjectionFrozen()=false, want true (Phase 12.72 Fix #3 — SubTurn/SubAgent must inherit frozen state)")
+	}
+
+	// Toggling parent back to false must NOT affect clone (independent
+	// value copy, not shared reference).
+	r.SetProjectionFrozen(false)
+	if r.ProjectionFrozen() {
+		t.Fatal("parent SetProjectionFrozen(false) did not take effect")
+	}
+	if !clone.ProjectionFrozen() {
+		t.Errorf("clone.ProjectionFrozen() flipped with parent (must be independent): got false, want true")
+	}
+}
+
+// TestToolRegistry_Clone_DoesNotPropagateUnfrozenToFrozen — negative
+// regression-proof: a parent that has NEVER called SetProjectionFrozen
+// must produce a clone with ProjectionFrozen()==false. This guards
+// against a future change that makes NewToolRegistry auto-freeze (which
+// would defeat the per-init wire in agent_init.go).
+func TestToolRegistry_Clone_DoesNotPropagateUnfrozenToFrozen(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(newMockTool("read_file", "reads files"))
+
+	if r.ProjectionFrozen() {
+		t.Fatal("fresh NewToolRegistry must NOT be frozen by default")
+	}
+	clone := r.Clone()
+	if clone.ProjectionFrozen() {
+		t.Errorf("clone of unfrozen parent must NOT be frozen (got true)")
+	}
+}
+
 func TestToolRegistry_ConcurrentAccess(t *testing.T) {
 	r := NewToolRegistry()
 	var wg sync.WaitGroup

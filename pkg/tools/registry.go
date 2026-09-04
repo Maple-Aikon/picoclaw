@@ -953,8 +953,25 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	clone := &ToolRegistry{
-		tools:    make(map[string]*ToolEntry, len(r.tools)),
+		tools:      make(map[string]*ToolEntry, len(r.tools)),
 		mediaStore: r.mediaStore,
+		// cache-utilization-v2 Phase 12.72 Fix #3: copy 3 per-instance
+		// identity fields so SubTurn / SubAgent clones preserve them. Without
+		// these, the clone starts with zero values and silently breaks
+		// (a) prompt-cache prefix identity (projectionFrozen=false in child
+		// even when parent was frozen), (b) per-phase tool gates (phase=""
+		// means no post_final / lifecycle / policy gate), and (c) persistent
+		// lessons-learned store (knowledgeStore=nil → tool_knowledge
+		// dependency-down path).
+		// Other fields (cfg / timeoutStats / sigTrackers / seenFirstSuccess)
+		// are intentionally left nil: cfg is dead in production (no callers
+		// of SetToolsConfig besides tests), timeoutStats lazy-inits via
+		// TimeoutStats() getter, sigTrackers + seenFirstSuccess are
+		// per-session / per-turn and lazy-init in the clone. See plan
+		// §15 T1.10 + Phase 3 audit pattern (R8 F32 HIGH durable rule).
+		projectionFrozen: r.projectionFrozen,
+		phase:            r.phase,
+		knowledgeStore:   r.knowledgeStore,
 	}
 	if r.allowlist != nil {
 		clone.allowlist = make(map[string]struct{}, len(r.allowlist))
