@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 // osGetenvImpl + osSetenvImpl are small indirection shims used by the
@@ -68,7 +69,9 @@ func TestAgentDebug_HelpersHotPathNoOp(t *testing.T) {
 
 	AgentDebugPhaseStart("t", "sk", 1, GoalPhaseOpen, 5, false)
 	AgentDebugLLMCall("t", "sk", 1, GoalPhaseOpen, 5)
-	AgentDebugLLMResponse("t", "sk", 1, GoalPhaseOpen, []AgentDebugToolCall{{Name: "x", ArgsSummary: "{}"}})
+	// Tier 1.1: usage=nil is safe (degenerate provider response); the
+	// 4 cache/token fields are guarded by an internal nil-check.
+	AgentDebugLLMResponse("t", "sk", 1, GoalPhaseOpen, nil, []AgentDebugToolCall{{Name: "x", ArgsSummary: "{}"}})
 	AgentDebugToolExec("t", "sk", 1, GoalPhaseOpen, "x", map[string]any{"a": 1}, 0)
 	AgentDebugToolExecEnd("t", "sk", 1, GoalPhaseOpen, "x", false, 0, 1, 0)
 	AgentDebugRetryAttempt("t", "sk", 1, GoalPhaseOpen, 1, "Test")
@@ -185,5 +188,73 @@ func TestAgentDebugPhaseStartPreInit_DisabledNoOp(t *testing.T) {
 
 	if bytes.Contains(captured.Bytes(), []byte("phase_start_pre_init")) {
 		t.Errorf("expected NO log when debug disabled, got: %s", captured.Bytes())
+	}
+}
+
+// TestAgentDebugLLMResponse_EmitsCacheFields is the Tier 1.1 RED → GREEN
+// regression test. Verifies AgentDebugLLMResponse surfaces 4 token fields
+// when usage != nil, so the agent.llm.response event is grep-able for the
+// T7.3 cache hit-rate gate (cache_read / input_tokens ≥70%).
+func TestAgentDebugLLMResponse_EmitsCacheFields(t *testing.T) {
+	prev := IsAgentDebugEnabled()
+	defer SetAgentDebugEnabled(prev)
+	SetAgentDebugEnabled(true)
+
+	// Tier 1.1: DebugCF emits at DEBUG level — raise global level so
+	// the captured buffer actually sees the event.
+	prevLevel := logger.GetLevel()
+	logger.SetLevel(logger.DEBUG)
+	defer logger.SetLevel(prevLevel)
+
+	captured := redirectLoggerForTest(t)
+
+	usage := &providers.UsageInfo{
+		PromptTokens:         1000,
+		CompletionTokens:     100,
+		CacheReadInputTokens: 700,
+		CacheWriteInputTokens: 300,
+	}
+	AgentDebugLLMResponse(
+		"main-turn-test", "sk_v1_test",
+		2, GoalPhaseOpen, usage,
+		[]AgentDebugToolCall{{Name: "x", ArgsSummary: "{}"}},
+	)
+
+	out := captured.String()
+	// All 4 fields must appear in the log line so the agent.llm.response
+	// event in gateway.log is grep-able.
+	wantSubstr := []string{
+		`"cache_read":700`,
+		`"cache_creation":300`,
+		`"input_tokens":1000`,
+		`"output_tokens":100`,
+	}
+	for _, want := range wantSubstr {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected log to contain %q, got: %s", want, out)
+		}
+	}
+}
+
+// TestAgentDebugLLMResponse_NilUsageNoFields guards the defensive nil
+// check: when usage is nil (rare, but possible from a degenerate provider
+// response), the helper must NOT panic and must NOT emit zero-value token
+// fields (would mislead T7.3 measurement).
+func TestAgentDebugLLMResponse_NilUsageNoFields(t *testing.T) {
+	prev := IsAgentDebugEnabled()
+	defer SetAgentDebugEnabled(prev)
+	SetAgentDebugEnabled(true)
+
+	captured := redirectLoggerForTest(t)
+
+	AgentDebugLLMResponse(
+		"main-turn-nil", "sk_v1_nil",
+		1, GoalPhaseSet, nil,
+		nil,
+	)
+
+	out := captured.String()
+	if strings.Contains(out, `"input_tokens"`) {
+		t.Errorf("expected NO input_tokens field when usage nil, got: %s", out)
 	}
 }

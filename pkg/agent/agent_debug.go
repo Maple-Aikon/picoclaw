@@ -51,6 +51,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 const agentDebugComponent = "agent_debug"
@@ -235,7 +236,13 @@ func AgentDebugLLMCall(turnID, sessionKey string, iter int, phase GoalPhase, too
 //
 // toolSummaries is a slice of (name, argsSummary) pairs in the order
 // the LLM emitted them.
-func AgentDebugLLMResponse(turnID, sessionKey string, iter int, phase GoalPhase, toolSummaries []AgentDebugToolCall) {
+//
+// usage carries token telemetry from the provider. When non-nil, four
+// fields are emitted: input_tokens, output_tokens, cache_read,
+// cache_creation. The cache_* fields are required for the T7.3 cache
+// hit-rate gate (Tier 1.1) — production MiniMax-M3 always populates
+// them; nil usage defensively skips (rare provider-degenerate path).
+func AgentDebugLLMResponse(turnID, sessionKey string, iter int, phase GoalPhase, usage *providers.UsageInfo, toolSummaries []AgentDebugToolCall) {
 	if !agentDebugEnabled.Load() {
 		return
 	}
@@ -245,6 +252,14 @@ func AgentDebugLLMResponse(turnID, sessionKey string, iter int, phase GoalPhase,
 		"iter":        iter,
 		"phase":       string(phase),
 		"tool_calls":  len(toolSummaries),
+	}
+	// Tier 1.1: cache + token telemetry (T7.3 hit-rate gate).
+	// Defensive nil-guard: degenerate provider response (rare) → skip.
+	if usage != nil {
+		fields["input_tokens"] = usage.PromptTokens
+		fields["output_tokens"] = usage.CompletionTokens
+		fields["cache_read"] = usage.CacheReadInputTokens
+		fields["cache_creation"] = usage.CacheWriteInputTokens
 	}
 	if len(toolSummaries) > 0 {
 		names := make([]string, len(toolSummaries))

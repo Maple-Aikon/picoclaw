@@ -320,6 +320,77 @@ func TestParseResponseBody(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			// Tier 1.1 RED: response WITH cache fields → UsageInfo must
+			// surface CacheReadInputTokens + CacheWriteInputTokens.
+			name: "response with cache read and cache creation fields",
+			body: []byte(`{
+				"id": "msg-cache-1",
+				"type": "message",
+				"role": "assistant",
+				"content": [
+					{"type": "text", "text": "cached reply"}
+				],
+				"stop_reason": "end_turn",
+				"model": "MiniMax-M3",
+				"usage": {
+					"input_tokens": 1000,
+					"output_tokens": 100,
+					"cache_read_input_tokens": 600,
+					"cache_creation_input_tokens": 400
+				}
+			}`),
+			want: &LLMResponse{
+				Content:      "cached reply",
+				ToolCalls:    []ToolCall{},
+				FinishReason: "stop",
+				Usage: &UsageInfo{
+					PromptTokens:         1000,
+					CompletionTokens:     100,
+					TotalTokens:          1100,
+					CacheReadInputTokens: 600,
+					CacheWriteInputTokens: 400,
+				},
+				Reasoning:        "",
+				ReasoningDetails: nil,
+			},
+			wantErr: false,
+		},
+		{
+			// Tier 1.1 RED: response WITHOUT cache fields (e.g., first
+			// call before cache populates) → UsageInfo must default
+			// cache fields to 0 (zero-value int).
+			name: "response without cache fields defaults to zero",
+			body: []byte(`{
+				"id": "msg-cache-2",
+				"type": "message",
+				"role": "assistant",
+				"content": [
+					{"type": "text", "text": "first reply"}
+				],
+				"stop_reason": "end_turn",
+				"model": "MiniMax-M3",
+				"usage": {
+					"input_tokens": 500,
+					"output_tokens": 50
+				}
+			}`),
+			want: &LLMResponse{
+				Content:      "first reply",
+				ToolCalls:    []ToolCall{},
+				FinishReason: "stop",
+				Usage: &UsageInfo{
+					PromptTokens:         500,
+					CompletionTokens:     50,
+					TotalTokens:          550,
+					CacheReadInputTokens: 0,
+					CacheWriteInputTokens: 0,
+				},
+				Reasoning:        "",
+				ReasoningDetails: nil,
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -354,6 +425,15 @@ func TestParseResponseBody(t *testing.T) {
 				}
 				if got.Usage.TotalTokens != tt.want.Usage.TotalTokens {
 					t.Errorf("Usage.TotalTokens = %d, want %d", got.Usage.TotalTokens, tt.want.Usage.TotalTokens)
+				}
+				// Tier 1.1: cache fields (Tier 1.1 fix surfaces these).
+				if got.Usage.CacheReadInputTokens != tt.want.Usage.CacheReadInputTokens {
+					t.Errorf("Usage.CacheReadInputTokens = %d, want %d",
+						got.Usage.CacheReadInputTokens, tt.want.Usage.CacheReadInputTokens)
+				}
+				if got.Usage.CacheWriteInputTokens != tt.want.Usage.CacheWriteInputTokens {
+					t.Errorf("Usage.CacheWriteInputTokens = %d, want %d",
+						got.Usage.CacheWriteInputTokens, tt.want.Usage.CacheWriteInputTokens)
 				}
 			}
 			if len(got.ToolCalls) != len(tt.want.ToolCalls) {

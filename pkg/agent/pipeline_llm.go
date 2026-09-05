@@ -239,7 +239,12 @@ func (p *Pipeline) CallLLM(
 						})
 					}
 				}
-				AgentDebugLLMResponse(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), toolSummaries)
+				// Tier 1.1: pass Usage for cache + token telemetry (T7.3 gate).
+				var usage *providers.UsageInfo
+				if exec.response != nil {
+					usage = exec.response.Usage
+				}
+				AgentDebugLLMResponse(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), usage, toolSummaries)
 			}
 			break
 		}
@@ -1600,7 +1605,8 @@ func (p *Pipeline) RecallLLM(
 						ArgsSummary: summarizeArgs(tc.Arguments),
 					})
 				}
-				AgentDebugLLMResponse(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), toolSummaries)
+				// Tier 1.1: pass Usage (replay path — resp is *providers.LLMResponse).
+				AgentDebugLLMResponse(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), resp.Usage, toolSummaries)
 			}
 			logReplayPromptBlock(replayBlockInput{
 				turnID:     ts.turnID,
