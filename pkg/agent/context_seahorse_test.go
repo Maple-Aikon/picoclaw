@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1076,6 +1077,11 @@ func TestSeahorseSummarizeSkipsCondensedWhenBelowThreshold(t *testing.T) {
 				MaxToolIterations: 10,
 				ContextManager:    "seahorse",
 				ContextWindow:     contextWindow,
+				// Route the Graphiti queue to a per-test temp DB so this
+				// compaction test does NOT leak rows into the production
+				// queue at ~/.picoclaw/workspace/apps/graphiti-mcp/queue/episodes.db.
+				// See goal: fix-test-graphiti-queue-leak (2026-09-06).
+				GraphitiQueuePath: filepath.Join(t.TempDir(), "episodes.db"),
 			},
 		},
 	}
