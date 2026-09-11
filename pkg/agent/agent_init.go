@@ -59,18 +59,37 @@ func NewAgentLoop(
 		})
 	}
 
-	// Configure Graphiti queue DB path and group ID from config
+	// Configure Graphiti ingestion seam (HTTP daemon URL preferred, SQLite
+	// queue path as legacy fallback) and group ID from config.
+	//
+	// Migration v3 (seahorse-compaction-post-episodes-migration-v3):
+	//   - GraphitiDaemonURL is the canonical seam — Seahorse will POST
+	//     to {daemonURL}/episodes, and the daemon handles dedup,
+	//     advisory lock, retry/DLQ.
+	//   - GraphitiQueuePath is the legacy SQLite path; honored only
+	//     during the migration window for backward compatibility with
+	//     existing production YAML configs.
 	if cfg != nil {
-		queuePath := cfg.GraphitiQueuePath
-		if queuePath == "" {
-			queuePath = cfg.Agents.Defaults.GraphitiQueuePath
+		daemonURL := cfg.GraphitiDaemonURL
+		if daemonURL == "" {
+			daemonURL = cfg.Agents.Defaults.GraphitiDaemonURL
 		}
 		groupID := cfg.GraphitiGroupID
 		if groupID == "" {
 			groupID = cfg.Agents.Defaults.GraphitiGroupID
 		}
-		if queuePath != "" || groupID != "" {
-			seahorse.SetGraphitiConfig(queuePath, groupID)
+		// Fall back to legacy SQLite path if daemonURL is empty. This
+		// lets pre-migration configs continue to work until the
+		// production YAML is updated to set graphiti_daemon_url.
+		seamURL := daemonURL
+		if seamURL == "" {
+			seamURL = cfg.GraphitiQueuePath
+			if seamURL == "" {
+				seamURL = cfg.Agents.Defaults.GraphitiQueuePath
+			}
+		}
+		if seamURL != "" || groupID != "" {
+			seahorse.SetGraphitiConfig(seamURL, groupID)
 		}
 	}
 

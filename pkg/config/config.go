@@ -48,8 +48,26 @@ type Config struct {
 	Heartbeat HeartbeatConfig `json:"heartbeat"           yaml:"-"`
 	Devices   DevicesConfig   `json:"devices"             yaml:"-"`
 	Voice     VoiceConfig     `json:"voice"               yaml:"-"`
-	// Graphiti / Janus-Graph long-term memory queue configuration
+	// Graphiti / Janus-Graph long-term memory ingestion configuration
+	//
+	// Migration v3 (plan: seahorse-compaction-post-episodes-migration-v3):
+	//   - GraphitiQueuePath (SQLite WAL DB path) — LEGACY seam, kept for
+	//     backward compatibility with existing production YAML configs
+	//     and the seahorse SQLite test fixture (TestMain in
+	//     pkg/seahorse/test_main_test.go redirects via GRAPHITI_QUEUE_DB).
+	//   - GraphitiDaemonURL (HTTP base URL of janus-graph-daemon) —
+	//     CANONICAL seam going forward. When set, the seahorse ingestion
+	//     layer dispatches to POST {daemonURL}/episodes; the daemon is
+	//     the source of truth for dedup, advisory lock, and retry/DLQ.
+	//
+	// Resolution priority (in pkg/agent/agent_init.go + context_seahorse.go):
+	//   1. cfg.GraphitiDaemonURL (top-level) — preferred
+	//   2. cfg.Agents.Defaults.GraphitiDaemonURL — fallback
+	//   3. cfg.GraphitiQueuePath — legacy SQLite path (still honored
+	//      during the migration window for tests and pre-existing
+	//      configs that haven't been migrated)
 	GraphitiQueuePath string `json:"graphiti_queue_path,omitempty" yaml:"graphiti_queue_path,omitempty"`
+	GraphitiDaemonURL string `json:"graphiti_daemon_url,omitempty" yaml:"graphiti_daemon_url,omitempty"`
 	GraphitiGroupID   string `json:"graphiti_group_id,omitempty"   yaml:"graphiti_group_id,omitempty"`
 	// BuildInfo contains build-time version information
 	BuildInfo BuildInfo `json:"build_info,omitempty" yaml:"-"`
@@ -458,6 +476,7 @@ type AgentDefaults struct {
 	MaxLLMRetries             int                `json:"max_llm_retries,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_MAX_LLM_RETRIES"`
 	LLMRetryBackoffSecs       int                `json:"llm_retry_backoff_secs,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_LLM_RETRY_BACKOFF_SECS"`
 	GraphitiQueuePath         string             `json:"graphiti_queue_path,omitempty"   env:"PICOCLAW_AGENTS_DEFAULTS_GRAPHITI_QUEUE_PATH"`
+	GraphitiDaemonURL         string             `json:"graphiti_daemon_url,omitempty"   env:"PICOCLAW_AGENTS_DEFAULTS_GRAPHITI_DAEMON_URL"`
 	GraphitiGroupID           string             `json:"graphiti_group_id,omitempty"     env:"PICOCLAW_AGENTS_DEFAULTS_GRAPHITI_GROUP_ID"`
 }
 

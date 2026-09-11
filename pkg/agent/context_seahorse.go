@@ -42,18 +42,28 @@ func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager
 		return nil, fmt.Errorf("seahorse: AgentLoop is required")
 	}
 
-	// Configure Graphiti queue DB path and group ID if specified in config
+	// Configure Graphiti ingestion seam (HTTP daemon URL preferred, SQLite
+	// queue path as legacy fallback) if specified in config. Migration v3:
+	// GraphitiDaemonURL is the canonical seam (HTTP); GraphitiQueuePath
+	// is the legacy SQLite path, honored only during migration window.
 	if al.cfg != nil {
-		queuePath := al.cfg.GraphitiQueuePath
-		if queuePath == "" {
-			queuePath = al.cfg.Agents.Defaults.GraphitiQueuePath
+		daemonURL := al.cfg.GraphitiDaemonURL
+		if daemonURL == "" {
+			daemonURL = al.cfg.Agents.Defaults.GraphitiDaemonURL
 		}
 		groupID := al.cfg.GraphitiGroupID
 		if groupID == "" {
 			groupID = al.cfg.Agents.Defaults.GraphitiGroupID
 		}
-		if queuePath != "" || groupID != "" {
-			seahorse.SetGraphitiConfig(queuePath, groupID)
+		seamURL := daemonURL
+		if seamURL == "" {
+			seamURL = al.cfg.GraphitiQueuePath
+			if seamURL == "" {
+				seamURL = al.cfg.Agents.Defaults.GraphitiQueuePath
+			}
+		}
+		if seamURL != "" || groupID != "" {
+			seahorse.SetGraphitiConfig(seamURL, groupID)
 		}
 	}
 

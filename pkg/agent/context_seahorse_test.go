@@ -1081,6 +1081,10 @@ func TestSeahorseSummarizeSkipsCondensedWhenBelowThreshold(t *testing.T) {
 				// compaction test does NOT leak rows into the production
 				// queue at ~/.picoclaw/workspace/apps/graphiti-mcp/queue/episodes.db.
 				// See goal: fix-test-graphiti-queue-leak (2026-09-06).
+				// Route the Graphiti queue to a per-test temp DB so this
+				// compaction test does NOT leak rows into the production
+				// queue at ~/.picoclaw/workspace/apps/graphiti-mcp/queue/episodes.db.
+				// See goal: fix-test-graphiti-queue-leak (2026-09-06).
 				GraphitiQueuePath: filepath.Join(t.TempDir(), "episodes.db"),
 			},
 		},

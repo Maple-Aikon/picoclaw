@@ -77,3 +77,8 @@ docker/data
 
 # DeepCode CLI tool-result logs (auto-generated, not source).
 .deepcode/
+
+# Seahorse test scratch (Step 6+ ship-v2 — episodes.db written by unit tests).
+# Production runs read this from env GRAPHITI_QUEUE_DB (legacy) or POST
+# to janus-graph-daemon (canonical HTTP path).
+data/

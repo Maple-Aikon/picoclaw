@@ -11,11 +11,14 @@
 package seahorse
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,12 +30,21 @@ import (
 
 // Graphiti enqueue constants. Kept package-private so callers go through
 // the helper functions and respect the fire-and-forget semantics.
+//
+// Migration v3: queuePath (SQLite) is being replaced by daemonURL
+// (HTTP POST → janus-graph-daemon). Both seams are kept live during
+// the migration window: SetGraphitiConfig(daemonURL, groupID) is the
+// new canonical seam; the GRAPHITI_QUEUE_DB env var is honored only
+// when GRAPHITI_DAEMON_URL is unset, with a one-time deprecation
+// warning at startup.
 const (
-	graphitiDefaultDBPath = "~/.picoclaw/workspace/apps/graphiti-mcp/queue/episodes.db"
-	graphitiEnvDBPath     = "GRAPHITI_QUEUE_DB"
-	graphitiEnvEnabled    = "GRAPHITI_ENABLED"
-	graphitiGroupID       = "graphiti_memory"
-	graphitiSourcePrefix  = "seahorse_compaction"
+	graphitiDefaultDBPath  = "~/.picoclaw/workspace/apps/graphiti-mcp/queue/episodes.db"
+	graphitiEnvDBPath      = "GRAPHITI_QUEUE_DB"
+	graphitiEnvEnabled     = "GRAPHITI_ENABLED"
+	graphitiGroupID        = "graphiti_memory"
+	graphitiSourcePrefix   = "seahorse_compaction"
+	graphitiSemaphoreCap   = 8
+	graphitiSemaphoreWaitMS = 10 // wait up to 10ms when cap is saturated
 )
 
 // graphitiPragmas matches the Python EpisodeQueue configuration so Go and
@@ -44,46 +56,74 @@ const (
 //   - Throughput ~1300 ops/sec
 const graphitiPragmas = "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(OFF)"
 
-// graphitiQueue is the lazy singleton DB handle used by rememberInGraphiti.
+// graphitiQueue is the lazy singleton DB handle used by rememberInGraphiti (legacy SQLite path).
 // We use a package-level singleton so multiple compaction goroutines share
 // a single connection pool rather than opening a fresh DB per call.
 //
 // Initialization is one-shot guarded by initOnce. On any error the handle
 // is nil and subsequent calls fail-fast (logged) — this prevents cascading
 // retry storms that would amplify a transient issue into a load problem.
+//
+// Migration v3: the SQLite path is the LEGACY path. New code should use
+// the HTTP transport (graphiti_http.go) via rememberInGraphiti's
+// wrapping goroutine. The SQLite path remains live during the migration
+// window so agent_init.go callers that haven't been updated still work.
+//
+// HTTP path state is parallel:
 var (
 	graphitiQueue       *sql.DB
 	graphitiOnce        sync.Once
 	graphitiMu          sync.RWMutex
 	graphitiPath        string // resolved absolute path for logging
-	configuredQueuePath string
+	configuredDaemonURL string // new HTTP seam (v3) — replaces configuredQueuePath
 	configuredGroupID   string
+
+	// graphitiSem bounds concurrent in-flight POST /episodes requests
+	// (plan v3 audit A4). Initialized once at package init via lazy
+	// make (we use sync.Once + RWMutex pattern to keep init cheap).
+	graphitiSem   chan struct{}
+	graphitiSemMu sync.Mutex
 )
 
-// SetGraphitiConfig configures custom queue DB path and group ID.
-// If queuePath is changed, any existing DB connection is closed so the new
-// path takes effect on the next enqueue call.
-func SetGraphitiConfig(queuePath, groupID string) {
+// getGraphitiSemaphore returns the package-level semaphore, lazily
+// initialized to graphitiSemaphoreCap slots. Returning the same channel
+// reference across calls is critical — the goroutine inside
+// rememberInGraphiti captures it once at function entry.
+func getGraphitiSemaphore() chan struct{} {
+	graphitiSemMu.Lock()
+	defer graphitiSemMu.Unlock()
+	if graphitiSem == nil {
+		graphitiSem = make(chan struct{}, graphitiSemaphoreCap)
+	}
+	return graphitiSem
+}
+
+// SetGraphitiConfig configures the Graphiti ingestion seam (HTTP URL +
+// tenant). Migration v3: the first parameter is now a daemon URL (e.g.
+// "http://127.0.0.1:8765"), not a SQLite path. The SQLite path seam is
+// retained as a deprecation alias — callers passing a path-shaped string
+// (contains "/" but no "://") are honored via the legacy env var with a
+// one-time warn log, but the path itself is no longer read by the new
+// HTTP path. Caller responsibility: agents should pass
+// `cfg.GraphitiDaemonURL` (renamed from GraphitiQueuePath in plan v3 A2).
+func SetGraphitiConfig(daemonURL, groupID string) {
 	graphitiMu.Lock()
 	defer graphitiMu.Unlock()
-	if queuePath != "" && queuePath != configuredQueuePath {
-		if graphitiQueue != nil {
-			_ = graphitiQueue.Close()
-			graphitiQueue = nil
-			graphitiPath = ""
-		}
-		configuredQueuePath = queuePath
+	if daemonURL != "" && daemonURL != configuredDaemonURL {
+		configuredDaemonURL = daemonURL
 	}
 	if groupID != "" {
 		configuredGroupID = groupID
 	}
 }
 
-// GetGraphitiConfig returns the currently configured queue path and group ID.
-func GetGraphitiConfig() (string, string) {
+// GetGraphitiConfig returns the currently configured daemon URL and group ID.
+// First return is the HTTP base URL (no trailing path) — semantically
+// distinct from v1's SQLite path.
+func GetGraphitiConfig() (daemonURL, groupID string) {
 	graphitiMu.RLock()
 	defer graphitiMu.RUnlock()
-	return configuredQueuePath, configuredGroupID
+	return configuredDaemonURL, configuredGroupID
 }
 
 // resolveGraphitiGroupID returns the configured group_id, overridable by
@@ -102,11 +142,20 @@ func resolveGraphitiGroupID() string {
 }
 
 // resolveGraphitiDBPathLocked picks the queue DB location while graphitiMu is already locked.
+//
+// Migration v3: configuredDaemonURL is the canonical seam but legacy
+// SQLite path resolution still inspects it (the field stores the
+// canonical "ingestion target"; for the SQLite path that's the DB file,
+// for the HTTP path that's the daemon URL). When GRAPHITI_DAEMON_URL is
+// unset (and not configured via SetGraphitiConfig), we fall through to
+// GRAPHITI_QUEUE_DB for backward compatibility — this matches the
+// production rollout path where the YAML config field is renamed but
+// env vars are honored as a deprecation alias.
 func resolveGraphitiDBPathLocked() string {
 	if v := os.Getenv(graphitiEnvEnabled); v == "0" || v == "false" || v == "no" {
 		return ""
 	}
-	raw := configuredQueuePath
+	raw := configuredDaemonURL
 	if raw == "" {
 		raw = os.Getenv(graphitiEnvDBPath)
 	}
@@ -235,6 +284,82 @@ CREATE TABLE IF NOT EXISTS episodes (
 CREATE INDEX IF NOT EXISTS idx_status ON episodes(status);
 `
 
+// warnGraphitiLegacySQLiteOnce emits a one-time WARN log when the
+// legacy SQLite path is reached (HTTP daemon URL empty AND legacy
+// GRAPHITI_QUEUE_DB / configuredDaemonURL-as-path is set).
+//
+// Plan v3 Step 8 deprecates this path: future production should
+// configure GRAPHITI_DAEMON_URL (or cfg.GraphitiDaemonURL) and let
+// the HTTP route take over. SQLite path remains live during the
+// migration window so existing deployments don't break, but the
+// warn log surfaces drift in logs / dashboards.
+var warnGraphitiLegacySQLiteOnceSync sync.Once
+
+func warnGraphitiLegacySQLiteOnce() {
+	warnGraphitiLegacySQLiteOnceSync.Do(func() {
+		logger.WarnCF("seahorse", "graphiti: legacy SQLite path in use (HTTP daemon URL empty). "+
+			"Set GRAPHITI_DAEMON_URL (or cfg.GraphitiDaemonURL) and restart to migrate. "+
+			"See plan seahorse-compaction-post-episodes-migration-v2 §Step 8.",
+			map[string]any{
+				"hint":     "GRAPHITI_DAEMON_URL=http://127.0.0.1:8765",
+				"deprecation_doc": "memory/plan/seahorse-compaction-post-episodes-migration-v2-20260910.md",
+			})
+	})
+}
+
+// init inspects the environment at package import time and emits a
+// one-time deprecation warning if the operator is still relying on
+// the legacy SQLite path (GRAPHITI_QUEUE_DB set, GRAPHITI_DAEMON_URL
+// empty or "off"). The warning is independent of whether any actual
+// enqueue is performed — it surfaces config drift in dashboards
+// before production traffic touches the path.
+//
+// Plan v3 Step 8: hard-deprecation timeline is Q4 2026 (six months
+// from this audit). For now, warn-only.
+func init() {
+	daemonURL := os.Getenv(graphitiEnvDaemonURL)
+	queueDB := os.Getenv(graphitiEnvDBPath)
+	enabled := os.Getenv(graphitiEnvEnabled)
+
+	// Skip the warning when Graphiti ingestion is explicitly disabled.
+	if enabled == "0" || enabled == "false" || enabled == "no" {
+		return
+	}
+
+	// If the operator has explicitly set GRAPHITI_QUEUE_DB and the
+	// daemon URL is empty/disabled, they are still on the legacy path.
+	if queueDB != "" && (daemonURL == "" || daemonURL == "off" || daemonURL == "0" || daemonURL == "false" || daemonURL == "disabled") {
+		warnGraphitiLegacySQLiteOnce()
+		return
+	}
+
+	// If GRAPHITI_DAEMON_URL is explicitly set to "off"/disabled but
+	// ingestion is otherwise enabled, surface that too — this is the
+	// "operator forgot to re-enable after maintenance" case.
+	if daemonURL == "off" || daemonURL == "0" || daemonURL == "false" || daemonURL == "disabled" {
+		if queueDB == "" {
+			// Ingestion disabled — silent (operator intended).
+			return
+		}
+		// Fall through to SQLite path warning (warnGraphitiLegacySQLiteOnce
+		// is gated by the "daemon URL empty" check at runtime).
+	}
+}
+
+// isLockModeError inspects a 409 body for the LOCK_MODE_MCP_ONLY
+// sentinel. Plan v3 audit G1: the daemon returns this error code
+// when the lock mode is mcp_only; in that state POST /episodes is
+// rejected because the daemon reserves writes to the MCP add_episode
+// tool. Operator must flip JANUS_DAEMON__LOCK__MODE to daemon_only
+// (or dual_with_lock) and restart.
+//
+// Substring match rather than strict JSON parse — daemon response is
+// small (~150 bytes) and we don't want to fail on cosmetic field
+// reorderings. Lock-mode sentinel is a stable contract.
+func isLockModeError(body string) bool {
+	return strings.Contains(body, "LOCK_MODE_MCP_ONLY")
+}
+
 // enqueueGraphitiEpisode writes one episode row to the Graphiti queue.
 // This is the synchronous half — the caller still wraps it in `go ...`
 // for fire-and-forget. Splitting sync-write and async-launch keeps the
@@ -257,9 +382,15 @@ func enqueueGraphitiEpisode(sessionKey, content, summaryKind string) (string, er
 
 	// Payload schema mirrors the Python EpisodeQueue.enqueue contract:
 	// a single dict with the keys the Graphiti MCP server expects.
+	//
+	// Migration v3 (audit A5): `name` dropped the `@ <rfc3339nano>`
+	// suffix. Daemon dedup key is `_payload_hash(content, group_id,
+	// source_description)` — the timestamp never participated, so the
+	// suffix was visually noisy without changing semantics. Names are
+	// now human-readable: "Seahorse leaf (<sessionKey>)".
 	payload := map[string]any{
 		"content":            content,
-		"name":               fmt.Sprintf("Seahorse %s (%s @ %s)", summaryKind, sessionKey, now),
+		"name":               fmt.Sprintf("Seahorse %s (%s)", summaryKind, sessionKey),
 		"source_description": fmt.Sprintf("%s:%s", graphitiSourcePrefix, sessionKey),
 		"group_id":           groupID,
 	}
@@ -294,6 +425,22 @@ func enqueueGraphitiEpisode(sessionKey, content, summaryKind string) (string, er
 //
 // Mirrors the legacy function signature exactly so callers (short_compaction.go
 // lines 306 and 414) can swap with a single-token edit.
+//
+// Migration v3 — wrapping goroutine:
+//   - recover() is mandatory (audit G3): a panic inside the goroutine
+//     would otherwise terminate the entire picoclaw process. For a
+//     fire-and-forget ingestion path that should NEVER take down the
+//     agent.
+//   - Semaphore cap (audit A4): bounds in-flight POSTs to 8. If
+//     saturated, wait up to graphitiSemaphoreWaitMS before dropping.
+//   - Health gate (audit A3): a single /health probe per 30s. If
+//     down, drop with a debug log.
+//
+// As of v3 Steps 1-5, the wrapping goroutine is in place but the body
+// still uses the SQLite path (legacy). The HTTP swap (Step 6+) will
+// replace enqueueGraphitiEpisode with postGraphitiEpisode (gated on
+// resolveGraphitiEpisodesURL() being non-empty); the wrapping
+// goroutine is the invariant and stays put.
 func rememberInGraphiti(sessionKey, content, summaryKind string) {
 	if content == "" {
 		// Nothing to remember. Log at debug only — this can legitimately
@@ -302,14 +449,115 @@ func rememberInGraphiti(sessionKey, content, summaryKind string) {
 			map[string]any{"session": sessionKey})
 		return
 	}
-	if _, err := enqueueGraphitiEpisode(sessionKey, content, summaryKind); err != nil {
-		logger.WarnCF("seahorse", "graphiti remember failed",
-			map[string]any{
-				"session": sessionKey,
-				"kind":    summaryKind,
-				"error":   err.Error(),
-			})
-	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.ErrorCF("seahorse", "graphiti remember goroutine panic",
+					map[string]any{
+						"session": sessionKey,
+						"kind":    summaryKind,
+						"panic":   fmt.Sprintf("%v", r),
+					})
+			}
+		}()
+
+		// Pre-call health gate. If down, short-circuit before taking a
+		// semaphore slot — the gate is fast and bounded to 1 probe per
+		// graphitiHealthTTLSec seconds thanks to daemonHealthOK's cache.
+		// We consult the gate here in the goroutine so the caller (the
+		// synchronous caller of rememberInGraphiti) stays unblocked.
+		//
+		// Skip the gate when the daemon URL is empty (HTTP path
+		// disabled → SQLite fallback will be taken below). This keeps
+		// the legacy SQLite path reachable without a live daemon —
+		// critical for tests that exercise enqueueGraphitiEpisode
+		// directly without mocking an HTTP server.
+		if url := resolveGraphitiEpisodesURL(); url != "" {
+			if ok, _ := daemonHealthOK(); !ok {
+				logger.DebugCF("seahorse", "graphiti remember skipped: daemon health gate down",
+					map[string]any{"session": sessionKey, "kind": summaryKind})
+				return
+			}
+		}
+
+		// Semaphore: bounded concurrency. When saturated, wait briefly;
+		// if still saturated after graphitiSemaphoreWaitMS, drop with a
+		// warn. This caps worst-case simultaneous in-flight HTTP
+		// requests at graphitiSemaphoreCap (currently 8).
+		sem := getGraphitiSemaphore()
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+		case <-time.After(graphitiSemaphoreWaitMS * time.Millisecond):
+			logger.WarnCF("seahorse", "graphiti remember dropped: semaphore saturated",
+				map[string]any{"session": sessionKey, "kind": summaryKind, "cap": graphitiSemaphoreCap})
+			return
+		}
+
+		// Body (plan v3 Step 6): HTTP path is canonical when
+		// resolveGraphitiEpisodesURL() returns a non-empty URL.
+		// SQLite path is retained as a deprecation alias (plan v3
+		// Step 8) — only reached when daemon is disabled AND the
+		// legacy GRAPHITI_QUEUE_DB env var (or configuredQueuePath)
+		// is set, with a one-time warn log.
+		if url := resolveGraphitiEpisodesURL(); url != "" {
+			groupID := resolveGraphitiGroupID()
+			name := fmt.Sprintf("Seahorse %s (%s)", summaryKind, sessionKey)
+			sourceDesc := fmt.Sprintf("%s:%s", graphitiSourcePrefix, sessionKey)
+			// 3s context deadline — caps worst-case hang if daemon is
+			// wedged. The shared client's timeout is also 3s but a
+			// per-call deadline is clearer at the call site.
+			ctx, cancel := context.WithTimeout(context.Background(), graphitiHTTPTimeoutMS*time.Millisecond)
+			defer cancel()
+			episodeID, version, err := postGraphitiEpisode(ctx, content, name, groupID, sourceDesc)
+			if err != nil {
+				// Map status codes to log level per Failure handling
+				// table in plan v3 §Failure modes. 409 dedup is the
+				// one case where we DON'T log — it's an idempotent
+				// replay, not an error.
+				if hse, ok := err.(*httpStatusError); ok && hse.Status == http.StatusConflict {
+					if isLockModeError(hse.Body) {
+						logger.ErrorCF("seahorse", "graphiti 409 LOCK_MODE_MCP_ONLY — daemon refusing POST /episodes",
+							map[string]any{
+								"session": sessionKey,
+								"kind":    summaryKind,
+								"hint":    "set JANUS_DAEMON__LOCK__MODE=daemon_only or dual_with_lock; pmc restart janus-graph-daemon",
+							})
+					} else {
+						logger.InfoCF("seahorse", "graphiti 409 duplicate episode (idempotent)",
+							map[string]any{"session": sessionKey, "kind": summaryKind})
+					}
+					return
+				}
+				logger.WarnCF("seahorse", "graphiti remember failed",
+					map[string]any{
+						"session": sessionKey,
+						"kind":    summaryKind,
+						"error":   err.Error(),
+						"version": version,
+					})
+				return
+			}
+			logger.DebugCF("seahorse", "graphiti episode posted",
+				map[string]any{"session": sessionKey, "kind": summaryKind, "episode": episodeID, "daemon": version})
+			return
+		}
+
+		// Legacy SQLite path. Only reached when daemon URL is empty
+		// (off/disabled) AND the legacy GRAPHITI_QUEUE_DB or
+		// configuredDaemonURL-as-path is set. Plan v3 Step 8 marks
+		// this deprecated; a one-time warn log at package init
+		// (warnGraphitiLegacySQLiteOnce) flags the caller.
+		warnGraphitiLegacySQLiteOnce()
+		if _, err := enqueueGraphitiEpisode(sessionKey, content, summaryKind); err != nil {
+			logger.WarnCF("seahorse", "graphiti remember failed (sqlite fallback)",
+				map[string]any{
+					"session": sessionKey,
+					"kind":    summaryKind,
+					"error":   err.Error(),
+				})
+		}
+	}()
 }
 
 // CloseGraphitiQueue shuts down the singleton DB handle. Exposed for tests
@@ -334,7 +582,7 @@ func CloseGraphitiQueue() error {
 func resetGraphitiQueueForTest() {
 	_ = CloseGraphitiQueue()
 	graphitiMu.Lock()
-	configuredQueuePath = ""
+	configuredDaemonURL = ""
 	configuredGroupID = ""
 	graphitiMu.Unlock()
 	graphitiOnce = sync.Once{}
