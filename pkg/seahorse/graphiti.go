@@ -85,6 +85,23 @@ var (
 	graphitiSemMu sync.Mutex
 )
 
+// postGraphitiEpisodeFn is the test seam for swapping the production
+// HTTP poster out at runtime. Same-package tests can replace this with
+// a closure that intentionally panics to exercise the defer-recover()
+// guard in rememberInGraphiti's wrapping goroutine (audit G3). The
+// production assignment is to postGraphitiEpisode; reset helper
+// resetPostGraphitiEpisodeFnForTest restores it.
+//
+// Why a function var instead of a mock RoundTripper: Go's
+// http.Client.Do has its own recover() that catches panics raised in
+// custom RoundTrippers and surfaces them as connection errors. That
+// means a Transport-level panic NEVER reaches the wrapping goroutine
+// of rememberInGraphiti — leaving the production defer-recover()
+// guard completely untestable via the HTTP surface alone. Calling
+// the function directly from the goroutine is the only path that
+// exercises the guard.
+var postGraphitiEpisodeFn = postGraphitiEpisode
+
 // getGraphitiSemaphore returns the package-level semaphore, lazily
 // initialized to graphitiSemaphoreCap slots. Returning the same channel
 // reference across calls is critical — the goroutine inside
@@ -294,6 +311,14 @@ CREATE INDEX IF NOT EXISTS idx_status ON episodes(status);
 // migration window so existing deployments don't break, but the
 // warn log surfaces drift in logs / dashboards.
 var warnGraphitiLegacySQLiteOnceSync sync.Once
+
+// resetPostGraphitiEpisodeFnForTest restores postGraphitiEpisodeFn to
+// the production implementation. Tests that swap the function var for
+// panic-injection should call this in their cleanup so subsequent
+// tests get the real HTTP poster.
+func resetPostGraphitiEpisodeFnForTest() {
+	postGraphitiEpisodeFn = postGraphitiEpisode
+}
 
 func warnGraphitiLegacySQLiteOnce() {
 	warnGraphitiLegacySQLiteOnceSync.Do(func() {
@@ -509,7 +534,7 @@ func rememberInGraphiti(sessionKey, content, summaryKind string) {
 			// per-call deadline is clearer at the call site.
 			ctx, cancel := context.WithTimeout(context.Background(), graphitiHTTPTimeoutMS*time.Millisecond)
 			defer cancel()
-			episodeID, version, err := postGraphitiEpisode(ctx, content, name, groupID, sourceDesc)
+			episodeID, version, err := postGraphitiEpisodeFn(ctx, content, name, groupID, sourceDesc)
 			if err != nil {
 				// Map status codes to log level per Failure handling
 				// table in plan v3 §Failure modes. 409 dedup is the

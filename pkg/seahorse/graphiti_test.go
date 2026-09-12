@@ -1,6 +1,7 @@
 package seahorse
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -17,6 +18,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 // withTempGraphitiDB sets GRAPHITI_QUEUE_DB to a temp file path and resets
@@ -1341,3 +1344,107 @@ func TestWarnGraphitiLegacySQLiteOnce_OneShot(t *testing.T) {
 	// No assertion on log content (logger output not captured here);
 	// the test passes if no panic occurs and sync.Once semantics hold.
 }
+
+// TestRememberInGraphiti_GoroutineRecoversFromPanic (Plan v3 audit G3 /
+// Step 7 mandatory) — locks in the defer-recover() guard around the
+// rememberInGraphiti wrapping goroutine. If the HTTP client panics
+// inside the POST path, the panic must be caught by the wrapping
+// goroutine's recover() and surfaced as an ErrorCF log line — NOT
+// terminate the picoclaw process.
+//
+// Without this test, a refactor that accidentally drops the defer
+// recover() would silently regress to a process-level panic on the
+// next client-side fault, crashing the agent on what should be a
+// best-effort, fire-and-forget ingestion path.
+//
+// Implementation approach:
+//   - A panic INSIDE the mock daemon handler is caught by net/http's
+//     own server-level recover() and surfaces as a connection EOF on
+//     the client side. That EOF is returned as a normal error — NOT
+//     a panic in the client goroutine.
+//   - Likewise, http.Client.Do has its own recover() that catches
+//     panics from custom RoundTripper implementations and surfaces
+//     them as errors.
+//   - Both layers of net/http recovery mean a server-side OR
+//     transport-side panic does NOT exercise the production
+//     defer-recover() guard we want to lock in. The only path that
+//     actually triggers it is when postGraphitiEpisode ITSELF (the
+//     function called from inside the wrapping goroutine) panics.
+//   - We use the postGraphitiEpisodeFn function-var seam (test-only,
+//     see declaration in graphiti.go) to swap the production
+//     implementation for a closure that panics. This panics
+//     synchronously inside the wrapping goroutine — exactly the
+//     path the production guard catches.
+func TestRememberInGraphiti_GoroutineRecoversFromPanic(t *testing.T) {
+	// Capture logger output so we can assert the recover()'d panic
+	// is surfaced as ErrorCF (not silently swallowed).
+	var logBuf bytes.Buffer
+	cleanupLog := logger.WithTestWriter(&logBuf)
+	defer cleanupLog()
+
+	// Stand up a healthy mock daemon. rememberInGraphiti consults
+	// the health gate before reaching postGraphitiEpisodeFn, so
+	// the gate must pass (200 + falkor_ok:alive).
+	md := newMockDaemon()
+	defer md.Close()
+	withMockDaemon(t, md)
+
+	// Swap the production function for a panicking closure. Reset
+	// in cleanup so subsequent tests get the real HTTP poster.
+	resetPostGraphitiEpisodeFnForTest()
+	postGraphitiEpisodeFn = func(ctx context.Context, content, name, groupID, sourceDesc string) (string, string, error) {
+		panic("synthetic client panic for recover test")
+	}
+	defer resetPostGraphitiEpisodeFnForTest()
+
+	// Baseline goroutine count for leak assertion.
+	before := runtime.NumGoroutine()
+
+	// rememberInGraphiti is fire-and-forget — returns immediately
+	// after spawning the wrapping goroutine. The panic happens
+	// inside that goroutine; if recover() is missing, the test
+	// process dies right here.
+	rememberInGraphiti(
+		"sess-panic-1",
+		"content that triggers the post path",
+		"leaf",
+	)
+
+	// Give the wrapping goroutine time to: take the semaphore,
+	// pass daemonHealthOK, hit the panicking call site, and recover.
+	time.Sleep(500 * time.Millisecond)
+
+	// Assertion 1: the test process is still alive. If recover()
+	// were missing, we'd have crashed before reaching this line.
+	// (The very act of executing this assertion is the proof.)
+
+	// Assertion 2: the recover()'d panic was logged via ErrorCF.
+	out := logBuf.String()
+	if !strings.Contains(out, "graphiti remember goroutine panic") {
+		t.Errorf("expected panic log line; got: %s", out)
+	}
+	if !strings.Contains(out, "synthetic client panic for recover test") {
+		t.Errorf("expected panic value in log; got: %s", out)
+	}
+	if !strings.Contains(out, "sess-panic-1") {
+		t.Errorf("expected session key in log fields; got: %s", out)
+	}
+
+	// Assertion 3: no goroutine leak. The wrapping goroutine must
+	// have exited cleanly (recover + return). Allow +3 for httptest
+	// server accept-loop goroutines and runtime drift.
+	time.Sleep(50 * time.Millisecond)
+	after := runtime.NumGoroutine()
+	if after > before+3 {
+		t.Errorf("goroutine leak: before=%d, after=%d", before, after)
+	}
+}
+
+// TestRememberInGraphiti_NoRecoverWouldCrashProcess (negative-control,
+// optional docstring) — kept as a comment block here so reviewers
+// understand why we DO NOT add a `recover`-less variant of the above
+// test. A version of this test without the defer recover() in
+// rememberInGraphiti would crash the entire `go test` binary mid-run;
+// running it once locks in the panic behavior implicitly. We rely on
+// TestRememberInGraphiti_GoroutineRecoversFromPanic to enforce the
+// invariant.
