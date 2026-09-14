@@ -50,15 +50,18 @@ type Config struct {
 	Voice     VoiceConfig     `json:"voice"               yaml:"-"`
 	// Graphiti / Janus-Graph long-term memory ingestion configuration
 	//
-	// Migration v3 (plan: seahorse-compaction-post-episodes-migration-v3):
-	//   - GraphitiQueuePath (SQLite WAL DB path) — LEGACY seam, kept for
-	//     backward compatibility with existing production YAML configs
-	//     and the seahorse SQLite test fixture (TestMain in
-	//     pkg/seahorse/test_main_test.go redirects via GRAPHITI_QUEUE_DB).
+	// Migration v3 (SHIPPED 2026-09-10) → SQLite cut (2026-09-15,
+	// feat/remove-sqlite-queue):
+	//   - GraphitiQueuePath (SQLite WAL DB path) — REMOVED. The Go
+	//     runtime no longer writes to apps/graphiti-mcp/queue/episodes.db;
+	//     ingestion goes exclusively through the HTTP seam below. YAML
+	//     configs that still set GraphitiQueuePath are silently ignored.
+	//     pkg/seahorse/test_main_test.go (which redirected via
+	//     GRAPHITI_QUEUE_DB) was also deleted in feat/remove-sqlite-queue.
 	//   - GraphitiDaemonURL (HTTP base URL of janus-graph-daemon) —
-	//     CANONICAL seam going forward. When set, the seahorse ingestion
-	//     layer dispatches to POST {daemonURL}/episodes; the daemon is
-	//     the source of truth for dedup, advisory lock, and retry/DLQ.
+	//     CANONICAL seam. When set, the seahorse ingestion layer
+	//     dispatches to POST {daemonURL}/episodes; the daemon is the
+	//     source of truth for dedup, advisory lock, and retry/DLQ.
 	//
 	// Resolution priority (in pkg/agent/agent_init.go + context_seahorse.go):
 	//   1. cfg.GraphitiDaemonURL (top-level) — preferred
