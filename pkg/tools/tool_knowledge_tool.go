@@ -15,11 +15,14 @@ import (
 // Wired by default in NewToolRegistry below; visibility is hidden (only
 // reachable via TTL lookup) so it does not pollute every prompt.
 //
-// Action argument (required): one of "save" | "read" | "list" | "delete"
-// Tool argument (required for save/read/delete): the canonical tool name
-//   (e.g. "fs.read", "web.fetch"). Must match sanitizeToolName regex.
-// Body argument (required for save): the knowledge body in markdown.
-//   Plain text or markdown is fine; YAML frontmatter is auto-stamped.
+// Action argument (required): one of "replace" | "append" | "read" | "list" | "delete"
+// Tool argument (required for replace/append/read/delete): the canonical tool name
+//
+//	(e.g. "fs.read", "web.fetch"). Must match sanitizeToolName regex.
+//
+// Body argument (required for replace/append): the knowledge body in markdown.
+//
+//	Plain text or markdown is fine; YAML frontmatter is auto-stamped.
 type ToolKnowledgeTool struct {
 	store *ToolKnowledgeStore
 }
@@ -39,11 +42,11 @@ func (t *ToolKnowledgeTool) Name() string {
 
 // Description is shown to the LLM. Kept terse to preserve prompt budget.
 func (t *ToolKnowledgeTool) Description() string {
-	return "Save or recall persistent 'lessons learned' notes per tool name. " +
-		"Use `action=save` after a tool fails twice with the same approach to record " +
-		"what went wrong and what works instead. Use `action=read <tool>` before retrying " +
-		"a tool that you (or a prior turn) previously saved knowledge for. " +
-		"Use `action=list` to enumerate saved tools. Use `action=delete <tool>` to forget. " +
+	return "Store or recall persistent 'lessons learned' notes per tool name. " +
+		"Use `action=replace` to OVERWRITE an entry after a tool fails twice with the same approach. " +
+		"Use `action=append` to ADD to an existing entry without overwriting it. " +
+		"Use `action=read <tool>` before retrying a tool that you (or a prior turn) previously stored knowledge for. " +
+		"Use `action=list` to enumerate stored tools. Use `action=delete <tool>` to forget. " +
 		"Knowledge is per-workspace, persisted across sessions, and overrides transient tool hints."
 }
 
@@ -53,17 +56,18 @@ func (t *ToolKnowledgeTool) Parameters() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"action": map[string]any{
-				"type":        "string",
-				"enum":        []string{"save", "read", "list", "delete"},
-				"description": "REQUIRED. Which operation to perform: save | read | list | delete.",
+				"type": "string",
+				"enum": []string{"replace", "append", "read", "list", "delete"},
+				"description": "REQUIRED. Which operation to perform: replace | append | read | list | delete. " +
+					"'replace' overwrites the entry, 'append' adds to it.",
 			},
 			"tool": map[string]any{
 				"type":        "string",
-				"description": "REQUIRED for save/read/delete. The canonical tool name (e.g. 'fs.read', 'web.fetch'). Names are normalized to lower-case; only [a-z0-9._-] allowed; no slashes, no '..'.",
+				"description": "REQUIRED for replace/append/read/delete. The canonical tool name (e.g. 'fs.read', 'web.fetch'). Names are normalized to lower-case; only [a-z0-9._-] allowed; no slashes, no '..'.",
 			},
 			"body": map[string]any{
 				"type":        "string",
-				"description": "REQUIRED for save. The knowledge body in markdown. Plain text fine. Recommended sections: '## What goes wrong' and '## What works instead'. Aim for 50+ chars; bodies shorter than that get a 'consider expanding' hint.",
+				"description": "REQUIRED for replace/append. The knowledge body in markdown. Plain text fine. Recommended sections: '## What goes wrong' and '## What works instead'. Aim for 50+ chars; bodies shorter than that get a 'consider expanding' hint.",
 			},
 		},
 		"required": []string{"action"},
@@ -93,75 +97,108 @@ func (t *ToolKnowledgeTool) Execute(ctx context.Context, args map[string]any) *t
 	action = strings.TrimSpace(strings.ToLower(action))
 	if action == "" {
 		return toolshared.ErrorResult(
-			"tool_knowledge requires an `action` argument: save | read | list | delete.",
+			"tool_knowledge requires an `action` argument: replace | append | read | list | delete.",
 		).WithErrorKind(toolshared.ErrInvalidInput)
 	}
 
 	switch action {
-	case "save":
-		return t.doSave(args)
+	case "replace":
+		return t.doReplace(args)
+	case "append":
+		return t.doAppend(args)
 	case "read":
 		return t.doRead(args)
 	case "list":
 		return t.doList()
 	case "delete":
 		return t.doDelete(args)
+	case "save":
+		return toolshared.ErrorResult(
+			"the action `save` was removed on 2026-10-20 because it silently OVERWROTE the whole entry, destroying anything already stored. Use `replace` to overwrite deliberately, or `append` to add to the entry while keeping every byte already there.",
+		).WithErrorKind(toolshared.ErrInvalidInput)
 	default:
 		return toolshared.ErrorResult(
-			fmt.Sprintf("unknown action %q: must be save | read | list | delete", action),
+			fmt.Sprintf("unknown action %q: must be replace | append | read | list | delete", action),
 		).WithErrorKind(toolshared.ErrInvalidInput)
 	}
 }
 
-func (t *ToolKnowledgeTool) doSave(args map[string]any) *toolshared.ToolResult {
+// writeBody dispatches a write action at the store level and renders the
+// shared validation messages. write is one of "replace" or "append".
+func (t *ToolKnowledgeTool) writeBody(write string, args map[string]any) *toolshared.ToolResult {
 	tool, _ := args["tool"].(string)
 	body, _ := args["body"].(string)
 
 	if strings.TrimSpace(tool) == "" {
 		return toolshared.ErrorResult(
-			"tool_knowledge action=save requires a `tool` argument " +
-				"(e.g. tool='fs.read').",
+			fmt.Sprintf("tool_knowledge action=%s requires a %s argument "+
+				"(e.g. tool='fs.read').", write, "`tool`"),
 		).WithErrorKind(toolshared.ErrInvalidInput)
 	}
 
-	path, size, err := t.store.Save(tool, body)
+	var path string
+	var size int
+	var err error
+	switch write {
+	case "replace":
+		path, size, err = t.store.Replace(tool, body)
+	case "append":
+		path, size, err = t.store.Append(tool, body)
+	default:
+		// Unreachable: Execute validated the action before dispatching here.
+		return toolshared.ErrorResult(
+			fmt.Sprintf("internal: unhandled knowledge write action %q", write),
+		).WithErrorKind(toolshared.ErrInvalidInput)
+	}
 	if err != nil {
 		// Distinguish user errors (retryable advice) vs internal (donut retry).
 		switch err {
 		case ErrKnowledgeEmpty:
 			return toolshared.ErrorResult(
-				"tool_knowledge action=save requires a non-empty `body` argument. " +
-					"Plain text or markdown; aim for 50+ chars across " +
-					"'## What goes wrong' / '## What works instead' sections.",
+				fmt.Sprintf("tool_knowledge action=%s requires a non-empty `body` argument. "+
+					"Plain text or markdown; aim for 50+ chars across "+
+					"'## What goes wrong' / '## What works instead' sections.", write),
 			).WithErrorKind(toolshared.ErrInvalidInput)
 		case ErrKnowledgeToolNameInvalid:
 			return toolshared.ErrorResult(
-				"tool_knowledge action=save received an invalid `tool` name. " +
-					"Only [a-z0-9._-] characters allowed; no slashes, no '..'. " +
-					"Use the canonical tool name (e.g. 'fs.read').",
+				fmt.Sprintf("tool_knowledge action=%s received an invalid `tool` name. "+
+					"Only [a-z0-9._-] characters allowed; no slashes, no '..'. "+
+					"Use the canonical tool name (e.g. 'fs.read').", write),
 			).WithErrorKind(toolshared.ErrInvalidInput)
 		default:
 			return toolshared.ErrorResult(
-				fmt.Sprintf("tool_knowledge save failed: %v", err),
+				fmt.Sprintf("tool_knowledge %s failed: %v", write, err),
 			).WithErrorKind(toolshared.ErrDependencyDown)
 		}
 	}
 
 	// Warn on short bodies — soft nudge, not an error.
 	hint := ""
-	if size < MinBodyChars+150 { // frontmatter overhead means body itself can be slightly < cap
+	if size < MinBodyChars+150 {
 		hint = "\n\nNote: body is short. Consider expanding under " +
 			"'## What goes wrong' and '## What works instead' headings " +
 			"so future turns benefit from the lesson."
 	}
 
 	return toolshared.SilentResult(fmt.Sprintf(
-		"Saved knowledge for tool %q (%d bytes) at %s.%s",
+		"%s knowledge for tool %q (%d bytes) at %s.%s",
+		strings.ToUpper(write[:1])+write[1:],
 		strings.ToLower(strings.TrimSpace(tool)),
 		size,
 		path,
 		hint,
 	))
+}
+
+// doReplace overwrites the entry. This is the explicit-destruction path —
+// prefer doAppend when adding to a lesson.
+func (t *ToolKnowledgeTool) doReplace(args map[string]any) *toolshared.ToolResult {
+	return t.writeBody("replace", args)
+}
+
+// doAppend adds to the entry, leaving every byte already stored in place.
+func (t *ToolKnowledgeTool) doAppend(args map[string]any) *toolshared.ToolResult {
+	return t.writeBody("append", args)
 }
 
 func (t *ToolKnowledgeTool) doRead(args map[string]any) *toolshared.ToolResult {
@@ -179,7 +216,7 @@ func (t *ToolKnowledgeTool) doRead(args map[string]any) *toolshared.ToolResult {
 			return toolshared.SilentResult(fmt.Sprintf(
 				"No saved knowledge for tool %q yet. "+
 					"If you just hit a non-trivial failure on this tool, consider calling "+
-					"`tool_knowledge action=save tool=%q body='<lesson>'` so future turns benefit.",
+					"`tool_knowledge action=replace tool=%q body='<lesson>'` so future turns benefit.",
 				strings.ToLower(strings.TrimSpace(tool)),
 				strings.ToLower(strings.TrimSpace(tool)),
 			))
@@ -206,7 +243,7 @@ func (t *ToolKnowledgeTool) doList() *toolshared.ToolResult {
 	}
 	if len(tools) == 0 {
 		return toolshared.SilentResult(
-			"No tool knowledge saved yet. Call `tool_knowledge action=save tool=<name> body=<lesson>` " +
+			"No tool knowledge saved yet. Call `tool_knowledge action=replace tool=<name> body=<lesson>` " +
 				"after a non-trivial tool failure to start building the knowledge base.",
 		)
 	}

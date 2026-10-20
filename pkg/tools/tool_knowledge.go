@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // ToolKnowledgeStore is a per-workspace, per-tool persistent memory of
@@ -44,8 +45,14 @@ const DefaultKnowledgeDir = "memory/tool_knowledge"
 // 0600 = owner read/write only; knowledge can be sensitive (paths, args).
 const KnowledgeFileMode = 0o600
 
-// KnowledgeSizeCap is the soft cap per knowledge file (bytes).
-// Exceeding it triggers smart truncation that preserves frontmatter + headings.
+// KnowledgeSizeCap bounds what a knowledge file may contribute to a PROMPT,
+// not what may be stored. It is applied on the read path (Read,
+// LoadForEscalation) so an oversized entry does not flood the context window.
+//
+// It must never be applied on the write path: Save persists the body verbatim.
+// A cap that truncates at save time is silent, unrecoverable data loss — the
+// caller gets a success message and the tail is gone (regression test
+// TestKnowledgeStore_Save_DoesNotLoseBodyAboveCap, 2026-10-20).
 const KnowledgeSizeCap = 2 * 1024 // 2KB
 
 // MinBodyChars is the warning threshold — a body shorter than this
@@ -59,10 +66,10 @@ const MinBodyChars = 50
 const (
 	SoftPromptFirstSuccess = "\n\n[Tip] First successful pattern for this tool/signature. " +
 		"If you learned anything generalizable, consider saving it via `tool_knowledge` " +
-		"(action=save, tool=<this>, body='<lesson>')."
+		"(action=replace, tool=<this>, body='<lesson>')."
 	SoftPromptRepeatedFailure = "\n\n[Tip] Repeated failure on same signature. " +
 		"If you discovered a workaround, save it via `tool_knowledge` " +
-		"(action=save, tool=<this>, body='<lesson>') so future turns benefit."
+		"(action=replace, tool=<this>, body='<lesson>') so future turns benefit."
 )
 
 // Knowledge section markers appended to escalation messages (Phase 2).
@@ -134,9 +141,15 @@ func sanitizeToolName(tool string) (string, error) {
 		return "", ErrKnowledgeToolNameInvalid
 	}
 	for _, r := range t {
-		if r >= 'a' && r <= 'z' { continue }
-		if r >= '0' && r <= '9' { continue }
-		if r == '.' || r == '-' || r == '_' { continue }
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		if r == '.' || r == '-' || r == '_' {
+			continue
+		}
 		return "", ErrKnowledgeToolNameInvalid
 	}
 	return t, nil
@@ -152,12 +165,43 @@ func (s *ToolKnowledgeStore) PathFor(tool string) (string, error) {
 	return filepath.Join(s.root, safe+".md"), nil
 }
 
-// Save writes (or overwrites) the knowledge body for the given tool.
+// Replace overwrites the knowledge body for the given tool.
 // Body must be non-empty. Returns the final path written and the byte size.
 //
-// Concurrency: per-tool mutex. Two concurrent saves to the same tool
-// serialize; saves to different tools do not block each other.
-func (s *ToolKnowledgeStore) Save(tool, body string) (string, int, error) {
+// This is the explicit-destruction path: whatever was there before is gone.
+// Callers that want to add to an entry must use Append instead — an
+// accidental Replace silently destroys context that only existed in this file
+// (measured 2026-10-20: a save-shaped overwrite dropped a recovered entry).
+//
+// Concurrency: per-tool mutex. Two concurrent writes to the same tool
+// serialize; writes to different tools do not block each other.
+// writeLocked renders and writes an entry. The caller MUST already hold the
+// per-tool lock for safe. Splitting this out of Replace is what lets Append
+// create a missing entry without deadlocking on the same mutex (2026-10-20).
+func (s *ToolKnowledgeStore) writeLocked(safe, body string) (string, int, error) {
+	path := filepath.Join(s.root, safe+".md")
+	// No truncation here. The cap is a prompt-budget concern, enforced by the
+	// read path; applying it before the write silently destroyed body tails
+	// while still reporting success (see KnowledgeSizeCap).
+	final := renderKnowledgeFile(safe, body, time.Now().UTC())
+
+	if err := os.WriteFile(path, []byte(final), KnowledgeFileMode); err != nil {
+		return "", 0, fmt.Errorf("write knowledge file: %w", err)
+	}
+	return path, len(final), nil
+}
+
+// Replace overwrites the knowledge body for the given tool.
+// Body must be non-empty. Returns the final path written and the byte size.
+//
+// This is the explicit-destruction path: whatever was there before is gone.
+// Callers that want to add to an entry must use Append instead — an
+// accidental Replace silently destroys context that only existed in this file
+// (measured 2026-10-20: a save-shaped overwrite dropped a recovered entry).
+//
+// Concurrency: per-tool mutex. Two concurrent writes to the same tool
+// serialize; writes to different tools do not block each other.
+func (s *ToolKnowledgeStore) Replace(tool, body string) (string, int, error) {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return "", 0, ErrKnowledgeEmpty
@@ -170,18 +214,67 @@ func (s *ToolKnowledgeStore) Save(tool, body string) (string, int, error) {
 	lk.Lock()
 	defer lk.Unlock()
 
+	return s.writeLocked(safe, body)
+}
+
+// Append adds body to the end of the existing knowledge for the given tool,
+// keeping every byte already stored. Returns the final path written and the
+// resulting byte size.
+//
+// If no entry exists yet, Append behaves like Replace — creating the file is
+// not destructive, so there is nothing to protect.
+//
+// Concurrency: the read-modify-write happens entirely under the per-tool
+// mutex, so a concurrent Replace on the same tool serializes against it
+// instead of silently dropping one of the two bodies.
+// Append adds body to the end of the existing knowledge for the given tool,
+// keeping every byte already stored. Returns the final path written and the
+// resulting byte size.
+//
+// If no entry exists yet, Append behaves like Replace — creating the file is
+// not destructive, so there is nothing to protect.
+//
+// Concurrency: the read-modify-write happens entirely under the per-tool
+// mutex, so a concurrent Replace on the same tool serializes against it
+// instead of silently dropping one of the two bodies. This is also why the
+// missing-entry branch below calls the UNLOCKED writeLocked rather than
+// Replace: calling a lock-taking method while holding that same non-reentrant
+// mutex deadlocks forever (caught by
+// TestToolKnowledge_AppendCreatesMissingEntry, 2026-10-20).
+func (s *ToolKnowledgeStore) Append(tool, body string) (string, int, error) {
+	add := strings.TrimSpace(body)
+	if add == "" {
+		return "", 0, ErrKnowledgeEmpty
+	}
+	safe, err := sanitizeToolName(tool)
+	if err != nil {
+		return "", 0, err
+	}
+	lk := s.fileLock(safe)
+	lk.Lock()
+	defer lk.Unlock()
+
 	path := filepath.Join(s.root, safe+".md")
-	final := renderKnowledgeFile(safe, body, time.Now().UTC())
-
-	// Smart truncate if over cap (Q4 decision).
-	if len(final) > KnowledgeSizeCap {
-		final = smartTruncate(final, KnowledgeSizeCap)
+	existing, readErr := os.ReadFile(path)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			// No entry yet — creating one destroys nothing.
+			return s.writeLocked(safe, add)
+		}
+		return "", 0, fmt.Errorf("read knowledge file: %w", readErr)
 	}
 
-	if err := os.WriteFile(path, []byte(final), KnowledgeFileMode); err != nil {
-		return "", 0, fmt.Errorf("write knowledge file: %w", err)
+	merged := string(existing)
+	if !strings.HasSuffix(merged, "\n") {
+		merged += "\n"
 	}
-	return path, len(final), nil
+	merged += add + "\n"
+	// Same guarantee as Replace: the composed file is written verbatim. The
+	// read-path cap must never be applied to a write.
+	if err := os.WriteFile(path, []byte(merged), KnowledgeFileMode); err != nil {
+		return "", 0, fmt.Errorf("append knowledge file: %w", err)
+	}
+	return path, len(merged), nil
 }
 
 // Read returns the body (without frontmatter) for the given tool.
@@ -302,8 +395,15 @@ func extractBody(content string) string {
 	return strings.TrimSpace(body)
 }
 
-// smartTruncate keeps the frontmatter intact and preserves the first
-// markdown heading + as much of the body as fits within byteCap.
+// smartTruncate keeps the frontmatter intact and preserves as much of the body
+// as fits within byteCap. READ PATH ONLY - never call this before a write.
+//
+// The cut is UTF-8 safe: the body is sliced at byteCap, then walked back byte by
+// byte until the result is valid UTF-8, then snapped back to the last newline so
+// the output never ends mid-line. Without those two steps the result can end
+// inside a multi-byte rune (measured 2026-10-20: 4/8 and 5/8 offsets on
+// Vietnamese text produced invalid UTF-8) or mid-line. Mirrors
+// truncateDiffPreview in shared/diff_result.go.
 func smartTruncate(content string, byteCap int) string {
 	if len(content) <= byteCap {
 		return content
@@ -311,20 +411,51 @@ func smartTruncate(content string, byteCap int) string {
 	const fmEnd = "\n---\n\n"
 	fmIdx := strings.Index(content, fmEnd)
 	if fmIdx < 0 {
-		// No frontmatter — just hard truncate.
-		return content[:byteCap] + "\n... [truncated]\n"
+		// No frontmatter - just hard truncate.
+		return hardTruncate(content, byteCap)
 	}
 	fmEndIdx := fmIdx + len(fmEnd)
 	head := content[:fmEndIdx]
 	body := content[fmEndIdx:]
 	remaining := byteCap - len(head)
 	if remaining <= 0 {
-		// Frontmatter alone exceeded cap (shouldn't happen with sane
+		// Frontmatter alone exceeded cap (should not happen with sane
 		// frontmatter); just hard-truncate the whole thing.
-		return content[:byteCap] + "\n... [truncated]\n"
+		return hardTruncate(content, byteCap)
 	}
 	if remaining >= len(body) {
 		return content // would fit, recompute elsewhere if needed
 	}
-	return head + body[:remaining] + "\n... [truncated]\n"
+	// Reserve room for the marker so the result stays inside byteCap.
+	tail := body[:remaining]
+	if room := remaining - len(truncationMarker); room > 0 {
+		tail = body[:room]
+	}
+	return head + trimToUTF8LineBoundary(tail) + truncationMarker
+}
+
+// truncationMarker is appended whenever a body is cut for display. Stable so
+// snapshot tests can pin the format.
+const truncationMarker = "\n... [truncated]\n"
+
+// hardTruncate truncates content that has no recognisable frontmatter.
+func hardTruncate(content string, byteCap int) string {
+	if byteCap > len(content) {
+		byteCap = len(content)
+	}
+	return trimToUTF8LineBoundary(content[:byteCap]) + truncationMarker
+}
+
+// trimToUTF8LineBoundary walks the tail back until it ends on a valid UTF-8
+// rune AND a newline, so the result is both parseable and line-complete.
+// ValidString on the whole slice is the rune check; a rune boundary alone can
+// still leave a half-written line, which is why the newline snap is separate.
+func trimToUTF8LineBoundary(s string) string {
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	if nl := strings.LastIndexByte(s, '\n'); nl >= 0 {
+		s = s[:nl]
+	}
+	return s
 }

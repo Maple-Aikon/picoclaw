@@ -22,7 +22,7 @@ func TestKnowledgeStore_SaveAndRead(t *testing.T) {
 	}
 
 	body := "## What goes wrong\n- Missing path returns: 'no such file'\n\n## What works instead\n- Check path with fs.stat first"
-	path, size, err := s.Save("fs.read", body)
+	path, size, err := s.Replace("fs.read", body)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestKnowledgeStore_Delete_Idempotent(t *testing.T) {
 	}
 
 	// Save then Delete → file gone, second Delete → nil.
-	if _, _, err := s.Save("fs.read", "lesson"); err != nil {
+	if _, _, err := s.Replace("fs.read", "lesson"); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	if err := s.Delete("fs.read"); err != nil {
@@ -147,7 +147,7 @@ func TestKnowledgeStore_List_Sorted(t *testing.T) {
 
 	tools := []string{"web.fetch", "fs.read", "shell.run"}
 	for _, name := range tools {
-		if _, _, err := s.Save(name, "lesson for "+name); err != nil {
+		if _, _, err := s.Replace(name, "lesson for "+name); err != nil {
 			t.Fatalf("Save %s: %v", name, err)
 		}
 	}
@@ -185,7 +185,7 @@ func TestKnowledgeStore_LoadForEscalation_TruncatesOverCap(t *testing.T) {
 	// Build a body that exceeds 2KB after rendering. Save truncates
 	// down to cap; LoadForEscalation must return truncated body too.
 	big := strings.Repeat("line of text\n", 200)
-	if _, _, err := s.Save("fs.read", big); err != nil {
+	if _, _, err := s.Replace("fs.read", big); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -216,7 +216,7 @@ func TestKnowledgeStore_ConcurrentSaveSameTool(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			body := "lesson from goroutine " + string(rune('a'+i%26))
-			if _, _, err := s.Save("fs.read", body); err != nil {
+			if _, _, err := s.Replace("fs.read", body); err != nil {
 				t.Errorf("goroutine Save: %v", err)
 			}
 		}()

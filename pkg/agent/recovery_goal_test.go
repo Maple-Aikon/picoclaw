@@ -726,7 +726,7 @@ func TestBuildToolExecErrorRetryMessage_WithKnowledge_Appends(t *testing.T) {
 		t.Fatalf("NewToolKnowledgeStore: %v", err)
 	}
 	body := "Always include retry_count argument; default 0 makes call infinite-loop."
-	if _, _, err := store.Save("web_search", body); err != nil {
+	if _, _, err := store.Replace("web_search", body); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
