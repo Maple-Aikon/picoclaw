@@ -19,7 +19,7 @@ import (
 // File format (deterministic, hashable, human-readable):
 //
 //	---
-//	tool: fs.read
+//	tool: exec
 //	updated: 2026-07-18T08:59:00Z
 //	version: 1
 //	---
@@ -28,7 +28,7 @@ import (
 //	- Missing path returns: "no such file"
 //
 //	## What works instead
-//	- Check path with fs.stat first
+//	- Check path with list_dir first
 //
 // Thread-safety: per-tool mutex; safe for concurrent append/read.
 type ToolKnowledgeStore struct {

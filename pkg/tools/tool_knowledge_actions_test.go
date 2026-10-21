@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -113,6 +114,121 @@ func TestToolKnowledge_ActionEnumNoLongerAdvertisesSave(t *testing.T) {
 	}
 	if !strings.Contains(desc, "action=replace") || !strings.Contains(desc, "action=append") {
 		t.Errorf("Description() must advertise both action=replace and action=append: %q", desc)
+	}
+}
+
+func TestToolKnowledge_SchemaTeachesRuntimeNames(t *testing.T) {
+	// The `tool` parameter description is the ONLY place the LLM learns which
+	// name to key on. Before 2026-10-21 it taught 'fs.read' -- a dotted name
+	// matching no runtime tool -- and never mentioned the MCP namespace, so
+	// entries were filed under keys escalation can never load.
+	tool := NewToolKnowledgeTool(knowledgeStoreForTest(t))
+
+	params := tool.Parameters()
+	props, ok := params["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("Parameters() has no properties map: %T", params["properties"])
+	}
+	toolProp, ok := props["tool"].(map[string]any)
+	if !ok {
+		t.Fatalf("no tool property: %T", props["tool"])
+	}
+	desc, ok := toolProp["description"].(string)
+	if !ok {
+		t.Fatalf("tool description is %T, want string", toolProp["description"])
+	}
+
+	// Stale examples must be gone.
+	if strings.Contains(desc, "fs.read") || strings.Contains(desc, "web.fetch") {
+		t.Errorf("tool description still teaches the unmatchable 'fs.read'/'web.fetch' "+
+			"examples: %q", desc)
+	}
+	// The real namespace shape must be present.
+	for _, want := range []string{
+		"mcp_<server>_<tool>",
+		"mcp_janus-graph_search_memory",
+		"mcp_context-mode_ctx_execute",
+		"exec",
+		"RULE 1",
+		"RULE 5",
+		"never loads",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("tool description missing %q", want)
+		}
+	}
+
+	// Description() must warn that matching is exact. Assert on the words the
+	// description actually carries -- an earlier version of this test needle'd
+	// "byte-identical", which lives in the parameter description, not here.
+	if d := tool.Description(); !strings.Contains(d, "EXACTLY") || !strings.Contains(d, "never loads") {
+		t.Errorf("Description() must warn that key matching is exact: %q", d)
+	}
+}
+
+// The LLM also learns names from RUNTIME error messages -- a missing-`tool`
+// error is exactly where it picks the name to retry with. On 2026-10-21 the
+// parameter description was fixed but action=read's error message still said
+// "tool='fs.read'", so the stale name kept shipping to the model on every
+// malformed call. This test walks every runtime path that can echo a tool
+// name and forbids the unmatchable examples in ALL of them.
+func TestToolKnowledge_NoRuntimePathTeachesStaleNames(t *testing.T) {
+	stale := []string{"fs.read", "web.fetch", "shell.run"}
+	tool := NewToolKnowledgeTool(knowledgeStoreForTest(t))
+
+	messages := map[string]string{
+		"Description()": tool.Description(),
+	}
+
+	// Every action that can be called with a missing/invalid `tool`.
+	for _, action := range []string{"replace", "append", "read"} {
+		res := tool.Execute(context.Background(), map[string]any{"action": action})
+		if res == nil {
+			t.Fatalf("action=%s returned nil result", action)
+		}
+		messages["action="+action+"(no tool)"] = res.ForLLM
+	}
+
+	for label, msg := range messages {
+		for _, bad := range stale {
+			if strings.Contains(msg, bad) {
+				t.Errorf("%s teaches the unmatchable name %q: %q", label, bad, msg)
+			}
+		}
+	}
+}
+
+// Near-miss names are DISTINCT entries, not variants of one. This is the
+// property that makes separator-guessing fail, so it is pinned here: if a
+// future change makes sanitizeToolName collapse separators, this test fails
+// and the naming spec has to be rewritten rather than silently contradicted.
+func TestToolKnowledge_NearMissNamesStayDistinct(t *testing.T) {
+	s := knowledgeStoreForTest(t)
+	const a, b = "ctx_execute_run", "ctx-execute-run"
+
+	if _, _, err := s.Replace(a, "BODY-UNDERSCORE"); err != nil {
+		t.Fatalf("Replace(%q): %v", a, err)
+	}
+	if _, _, err := s.Replace(b, "BODY-HYPHEN"); err != nil {
+		t.Fatalf("Replace(%q): %v", b, err)
+	}
+
+	ga, err := s.Read(a)
+	if err != nil {
+		t.Fatalf("Read(%q): %v", a, err)
+	}
+	gb, err := s.Read(b)
+	if err != nil {
+		t.Fatalf("Read(%q): %v", b, err)
+	}
+	if !strings.Contains(ga, "BODY-UNDERSCORE") {
+		t.Errorf("read(%q) = %q, want BODY-UNDERSCORE", a, ga)
+	}
+	if !strings.Contains(gb, "BODY-HYPHEN") {
+		t.Errorf("read(%q) = %q, want BODY-HYPHEN", b, gb)
+	}
+	if pa, pb := knowledgePathForTest(t, s, a), knowledgePathForTest(t, s, b); pa == pb {
+		t.Errorf("near-miss names share one path %q", pa)
 	}
 }
 

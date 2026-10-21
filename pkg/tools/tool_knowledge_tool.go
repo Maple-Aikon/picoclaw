@@ -16,9 +16,11 @@ import (
 // reachable via TTL lookup) so it does not pollute every prompt.
 //
 // Action argument (required): one of "replace" | "append" | "read" | "list" | "delete"
-// Tool argument (required for replace/append/read/delete): the canonical tool name
+// Tool argument (required for replace/append/read/delete): the RUNTIME tool name,
+// stored verbatim as <tool>.md and loaded only on a byte-identical name.
 //
-//	(e.g. "fs.read", "web.fetch"). Must match sanitizeToolName regex.
+//	Native tools are snake_case ('exec'); MCP tools are 'mcp_<server>_<tool>'
+//	('mcp_janus-graph_search_memory'). See Parameters() for the 5 naming rules.
 //
 // Body argument (required for replace/append): the knowledge body in markdown.
 //
@@ -40,13 +42,16 @@ func (t *ToolKnowledgeTool) Name() string {
 	return "tool_knowledge"
 }
 
-// Description is shown to the LLM. Kept terse to preserve prompt budget.
+// Description is shown to the LLM. Kept terse to preserve prompt budget —
+// the naming rules live on the `tool` parameter, which is where the decision
+// actually gets made.
 func (t *ToolKnowledgeTool) Description() string {
 	return "Store or recall persistent 'lessons learned' notes per tool name. " +
 		"Use `action=replace` to OVERWRITE an entry after a tool fails twice with the same approach. " +
 		"Use `action=append` to ADD to an existing entry without overwriting it. " +
 		"Use `action=read <tool>` before retrying a tool that you (or a prior turn) previously stored knowledge for. " +
 		"Use `action=list` to enumerate stored tools. Use `action=delete <tool>` to forget. " +
+		"Keys match the RUNTIME tool name EXACTLY — an entry under a near-miss name never loads. " +
 		"Knowledge is per-workspace, persisted across sessions, and overrides transient tool hints."
 }
 
@@ -62,8 +67,25 @@ func (t *ToolKnowledgeTool) Parameters() map[string]any {
 					"'replace' overwrites the entry, 'append' adds to it.",
 			},
 			"tool": map[string]any{
-				"type":        "string",
-				"description": "REQUIRED for replace/append/read/delete. The canonical tool name (e.g. 'fs.read', 'web.fetch'). Names are normalized to lower-case; only [a-z0-9._-] allowed; no slashes, no '..'.",
+				"type": "string",
+				"description": "REQUIRED for replace/append/read/delete. " +
+					"KEY MATCHING IS EXACT: the entry is stored at <tool>.md and loaded only when a tool with " +
+					"byte-identical runtime name is about to fail. A near-miss ('ctx_execute_run' vs " +
+					"'ctx-execute-run') is a different entry that never loads, so there is no separator to " +
+					"'normalize' -- pick the name the runtime actually reports. " +
+					"Allowed characters: [a-z0-9._-]; lower-cased automatically; no slashes, no '..'. " +
+					"RULE 1 (strongest, use whenever the tool exists): use the RUNTIME name verbatim -- native " +
+					"tools are snake_case ('exec', 'read_file', 'write_file', 'edit_file', 'list_dir', " +
+					"'tool_knowledge'); MCP tools are 'mcp_<server>_<tool>' ('mcp_janus-graph_search_memory', " +
+					"'mcp_context-mode_ctx_execute', 'mcp_planning-mcp_plan_get'). " +
+					"RULE 2 (a native tool's recurring topic, when there is no such tool): '<tool>.<aspect>' " +
+					"('exec.background'). " +
+					"RULE 3 (an MCP server's topic, not one of its tools): '<server>.<tool>' without the mcp_ " +
+					"prefix, keeping the server's hyphens ('janus-graph.search-config'). " +
+					"RULE 4 (a system domain, not a tool): '<domain>.<aspect>' ('janus.dlq-replay'). " +
+					"RULE 5: pick ONE separator for the aspect part and stay with it ('-._' mix is the thing " +
+					"that creates look-alike keys). Rules 2-4 are retrieval-only labels -- they are found by " +
+					"searching, not auto-loaded; only Rule 1 fires on failure.",
 			},
 			"body": map[string]any{
 				"type":        "string",
@@ -132,7 +154,8 @@ func (t *ToolKnowledgeTool) writeBody(write string, args map[string]any) *toolsh
 	if strings.TrimSpace(tool) == "" {
 		return toolshared.ErrorResult(
 			fmt.Sprintf("tool_knowledge action=%s requires a %s argument "+
-				"(e.g. tool='fs.read').", write, "`tool`"),
+				"(e.g. tool='exec' for a native tool, or "+
+				"'mcp_janus-graph_search_memory' for an MCP tool).", write, "`tool`"),
 		).WithErrorKind(toolshared.ErrInvalidInput)
 	}
 
@@ -163,7 +186,9 @@ func (t *ToolKnowledgeTool) writeBody(write string, args map[string]any) *toolsh
 			return toolshared.ErrorResult(
 				fmt.Sprintf("tool_knowledge action=%s received an invalid `tool` name. "+
 					"Only [a-z0-9._-] characters allowed; no slashes, no '..'. "+
-					"Use the canonical tool name (e.g. 'fs.read').", write),
+					"Use the runtime tool name verbatim ('exec', 'write_file', or "+
+					"'mcp_janus-graph_search_memory' for MCP tools) — an entry under a "+
+					"near-miss name never loads, so there is no separator to normalize.", write),
 			).WithErrorKind(toolshared.ErrInvalidInput)
 		default:
 			return toolshared.ErrorResult(
@@ -206,7 +231,8 @@ func (t *ToolKnowledgeTool) doRead(args map[string]any) *toolshared.ToolResult {
 	if strings.TrimSpace(tool) == "" {
 		return toolshared.ErrorResult(
 			"tool_knowledge action=read requires a `tool` argument " +
-				"(e.g. tool='fs.read').",
+				"(e.g. tool='exec' for a native tool, or " +
+				"'mcp_janus-graph_search_memory' for an MCP tool).",
 		).WithErrorKind(toolshared.ErrInvalidInput)
 	}
 
