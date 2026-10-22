@@ -445,6 +445,9 @@ func (r *ToolRegistry) getOrCreateSigTracker(channel, chatID string) *SignatureF
 		r.sigTrackerMu.Unlock()
 		return tr
 	}
+	if r.sigTrackers == nil {
+		r.sigTrackers = make(map[string]*SignatureFailureTracker)
+	}
 	tr := NewSignatureFailureTracker(0) // 0 → defaultSigThreshold
 	r.sigTrackers[key] = tr
 	r.sigTrackerMu.Unlock()
@@ -497,6 +500,9 @@ func (r *ToolRegistry) markFirstSuccess(channel, chatID, tool string) {
 		return // anon namespace — soft prompt is meaningless without a session
 	}
 	r.seenFirstSuccessMu.Lock()
+	if r.seenFirstSuccess == nil {
+		r.seenFirstSuccess = make(map[string]struct{})
+	}
 	r.seenFirstSuccess[seenFirstSuccessKey(channel, chatID, tool)] = struct{}{}
 	r.seenFirstSuccessMu.Unlock()
 }
@@ -966,9 +972,15 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		// Other fields (cfg / timeoutStats / sigTrackers / seenFirstSuccess)
 		// are intentionally left nil: cfg is dead in production (no callers
 		// of SetToolsConfig besides tests), timeoutStats lazy-inits via
-		// TimeoutStats() getter, sigTrackers + seenFirstSuccess are
-		// per-session / per-turn and lazy-init in the clone. See plan
-		// §15 T1.10 + Phase 3 audit pattern (R8 F32 HIGH durable rule).
+		// TimeoutStats() getter, and sigTrackers + seenFirstSuccess are
+		// per-session / per-turn state a clone must NOT inherit (the parent
+		// must not seed them). They are allocated lazily at their WRITE SITES
+		// -- getOrCreateSigTracker / markFirstSuccess -- NOT here: a nil map
+		// read returns the zero value (seenFirstSuccessBefore then always
+		// reports false) and a nil map write panics. Leaving them nil without
+		// those write-site guards broke every subturn (nil-map panic,
+		// 2026-10-20); regression test: registry_clone_nilmap_test.go.
+		// See plan §15 T1.10 + Phase 3 audit pattern (R8 F32 HIGH durable rule).
 		projectionFrozen: r.projectionFrozen,
 		phase:            r.phase,
 		knowledgeStore:   r.knowledgeStore,
