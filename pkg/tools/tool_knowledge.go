@@ -348,20 +348,32 @@ func (s *ToolKnowledgeStore) List() ([]string, error) {
 
 // LoadForEscalation returns the body for the given tool iff:
 //  1. a knowledge file exists,
-//  2. its rendered form fits within KnowledgeSizeCap after smart-truncate.
+//  2. its rendered form fits within KnowledgeSizeCap after digesting.
 //
 // Returns "" otherwise — callers (Phase 2 wire in registry.go) treat empty
 // as "no prior knowledge to surface". Pure read path — no frontmatter
 // mutation, no event emission.
+//
+// Phase 12.62 (2026-10-25): oversized entries are now rendered as an
+// H2-heading digest instead of a head-truncated blob. The old
+// smartTruncate kept only the FIRST ~2 KB of the body, so for the 48/102
+// real entries that exceed the cap the tail was unreachable — and since
+// lessons are always APPENDED, the newest lesson (the one most likely to
+// describe the failure that just happened) was exactly what got dropped.
+// The digest keeps EVERY H2 heading (so every lesson stays discoverable)
+// and spends the remaining budget on a bounded excerpt of each section.
+//
+// The full body remains available through `tool_knowledge action=read`,
+// which does not apply the cap (tool_knowledge_tool.go → store.Read).
 func (s *ToolKnowledgeStore) LoadForEscalation(tool string) string {
 	body, err := s.Read(tool)
 	if err != nil {
 		return ""
 	}
-	// Re-render and apply smart-truncate to mirror Save's cap behaviour.
+	// Re-render and apply the digest to mirror Save's cap behaviour.
 	rendered := renderKnowledgeFile(tool, body, time.Now().UTC())
 	if len(rendered) > KnowledgeSizeCap {
-		rendered = smartTruncate(rendered, KnowledgeSizeCap)
+		rendered = digestSections(rendered, KnowledgeSizeCap)
 	}
 	// Strip the frontmatter block — caller only wants the lesson body.
 	return extractBody(rendered)
@@ -393,6 +405,215 @@ func extractBody(content string) string {
 	}
 	body := content[start+idx+len(marker):]
 	return strings.TrimSpace(body)
+}
+
+// digestBudgetLadder is the per-section excerpt budgets tried, in order,
+// by digestSections. The first budget whose rendered result fits the cap
+// wins. Measured 2026-10-25 over the 48 real over-cap entries in
+// memory/tool_knowledge: the ladder [100, 60, 40, 25, 0] resolves every
+// one of them.
+var digestBudgetLadder = []int{100, 60, 40, 25, 0}
+
+// splitFrontmatter separates a leading YAML frontmatter block from the
+// body.
+//
+// Phase 12.62: the frontmatter is only recognised when the content
+// STARTS with "---". A bare strings.Index for the frontmatter terminator finds
+// horizontal rules in the middle of a markdown document (measured:
+// memory/tool_knowledge/code-review.packet-format.md has seven of them)
+// and would treat everything up to the LAST one as "frontmatter" --
+// a huge bogus head that pushes the digest over the cap and silently
+// drops the tail headings.
+func splitFrontmatter(content string) (head, body string) {
+	const fmEnd = "\n---\n\n"
+	if !strings.HasPrefix(content, "---") {
+		return "", content
+	}
+	fmIdx := strings.Index(content, fmEnd)
+	if fmIdx < 0 {
+		return "", content
+	}
+	fmEndIdx := fmIdx + len(fmEnd)
+	return content[:fmEndIdx], content[fmEndIdx:]
+}
+
+// digestSections renders an H2-heading digest of an oversized knowledge
+// file so the result NEVER exceeds byteCap -- including the truncation
+// marker.
+//
+// Phase 12.62 (2026-10-25). The problem it replaces: smartTruncate kept
+// the HEAD of the body, so for an entry with 31 H2 sections only the
+// first ~2 KB survived -- every lesson after that point was invisible to
+// the LLM. Lessons are appended, so the newest lesson was always the one
+// dropped.
+//
+// The digest keeps EVERY "## " heading verbatim (so no lesson becomes
+// undiscoverable) and fills the remaining budget with a bounded excerpt
+// of each section body. Two passes per budget:
+//
+//  1. Prefer keeping the FIRST headed section in full (it usually holds
+//     the "What goes wrong" lesson, which is the part an LLM needs most),
+//     then digest the rest.
+//  2. If that still overflows the cap, fall back to digesting ALL
+//     sections including the first.
+//
+// If even the headings alone exceed the cap, the headings are truncated
+// so the result still respects the cap.
+//
+// Frontmatter is preserved verbatim when present. A file WITHOUT
+// frontmatter is still digested by its H2 headings (measured 2026-10-25:
+// 7 of the 48 real over-cap entries have no frontmatter, and the old
+// fallback truncated them to a blind head-slice).
+//
+// The output is valid UTF-8 by construction: excerpts are cut on rune
+// boundaries via trimToUTF8LineBoundary.
+func digestSections(content string, byteCap int) string {
+	if len(content) <= byteCap {
+		return content
+	}
+	head, body := splitFrontmatter(content)
+
+	sections := splitH2Sections(body)
+	if len(sections) == 0 {
+		// No H2 structure at all - nothing to digest by.
+		return truncateWithinCap(content, byteCap)
+	}
+
+	for _, budget := range digestBudgetLadder {
+		// Pass 1: first headed section full, rest digested.
+		if out, ok := renderDigest(head, sections, budget, true, byteCap); ok {
+			return out
+		}
+		// Pass 2: all sections digested.
+		if out, ok := renderDigest(head, sections, budget, false, byteCap); ok {
+			return out
+		}
+	}
+
+	// Headings alone exceeded the cap. Keep the frontmatter and as many
+	// headings as fit, dropping the tail -- still respecting the cap.
+	return headingsOnly(head, sections, byteCap)
+}
+
+// truncateWithinCap truncates content so that the result INCLUDING the
+// truncation marker never exceeds byteCap.
+//
+// Phase 12.62: the older hardTruncate cut to byteCap and THEN appended
+// the marker, so its output could exceed the cap by len(marker) bytes
+// (measured: 2057 bytes for a 2048-byte cap). Every cap-respecting
+// caller must use this variant instead.
+func truncateWithinCap(content string, byteCap int) string {
+	if len(content) <= byteCap {
+		return content
+	}
+	if byteCap <= len(truncationMarker) {
+		// Even the marker does not fit - fall back to a raw byte slice.
+		if byteCap <= 0 {
+			return ""
+		}
+		return trimToUTF8LineBoundary(content[:byteCap])
+	}
+	room := byteCap - len(truncationMarker)
+	return trimToUTF8LineBoundary(content[:room]) + truncationMarker
+}
+
+// h2Section is one "## " heading plus the body lines that follow it.
+type h2Section struct {
+	heading string
+	body    string
+}
+
+// splitH2Sections splits a body into its H2 sections. Text before the
+// first H2 (a preamble) is returned as a leading section with an empty
+// heading so it is not silently dropped.
+func splitH2Sections(body string) []h2Section {
+	var (
+		sections []h2Section
+		cur      *h2Section
+		preamble strings.Builder
+	)
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "## ") {
+			sections = append(sections, h2Section{heading: line})
+			cur = &sections[len(sections)-1]
+			continue
+		}
+		if cur == nil {
+			preamble.WriteString(line)
+			preamble.WriteString("\n")
+			continue
+		}
+		cur.body += line
+		cur.body += "\n"
+	}
+	if p := strings.TrimSpace(preamble.String()); p != "" {
+		sections = append([]h2Section{{body: p + "\n"}}, sections...)
+	}
+	return sections
+}
+
+// firstHeadedIndex returns the index of the first section that carries an
+// H2 heading, or -1 when the document has none.
+func firstHeadedIndex(sections []h2Section) int {
+	for i, s := range sections {
+		if s.heading != "" {
+			return i
+		}
+	}
+	return -1
+}
+
+// renderDigest renders the digest and reports whether it fits the cap.
+// keepFirstFull keeps the first HEADED section's body verbatim instead of
+// excerpting it.
+func renderDigest(head string, sections []h2Section, budget int, keepFirstFull bool, byteCap int) (string, bool) {
+	fullIdx := -1
+	if keepFirstFull {
+		fullIdx = firstHeadedIndex(sections)
+	}
+	var b strings.Builder
+	b.WriteString(head)
+	for i, s := range sections {
+		if s.heading != "" {
+			b.WriteString(s.heading)
+			b.WriteString("\n")
+		}
+		body := strings.TrimSpace(s.body)
+		if body != "" {
+			if i == fullIdx {
+				b.WriteString(body)
+			} else if budget > 0 {
+				cut := body
+				if len(cut) > budget {
+					cut = cut[:budget]
+				}
+				b.WriteString(trimToUTF8LineBoundary(cut))
+			}
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString(truncationMarker)
+	out := b.String()
+	if len(out) > byteCap {
+		return "", false
+	}
+	return out, true
+}
+
+// headingsOnly renders just the headings of the given sections, dropping
+// every body. Used as the last-resort fallback when even the headings
+// overflow the cap.
+func headingsOnly(head string, sections []h2Section, byteCap int) string {
+	var b strings.Builder
+	b.WriteString(head)
+	for _, s := range sections {
+		if s.heading != "" {
+			b.WriteString(s.heading)
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString(truncationMarker)
+	return truncateWithinCap(b.String(), byteCap)
 }
 
 // smartTruncate keeps the frontmatter intact and preserves as much of the body

@@ -261,14 +261,25 @@ func (t *MCPTool) Execute(ctx context.Context, args map[string]any) *ToolResult 
 		t.publishRuntimeEvent(ctx, runtimeevents.KindMCPToolCallEnd, startedAt, true, err.Error())
 		res := ErrorResult(fmt.Sprintf("MCP tool execution failed: %v", err)).WithError(err)
 		errStr := err.Error()
-		if strings.Contains(errStr, "reconnect failed") ||
-			strings.Contains(errStr, "failed to recover lost MCP session") {
+		switch {
+		case strings.Contains(errStr, "reconnect failed") ||
+			strings.Contains(errStr, "failed to recover lost MCP session"):
 			res = res.WithErrorKind(toolshared.ErrDependencyDown)
-		} else if toolshared.IsTransientErrorText(errStr) {
+		case toolshared.IsTransientErrorText(errStr):
 			// W1 fix (2026-08-07): type transient transport errors (timeout,
 			// connection refused, ...) so the registry escalator / soft-prompt
 			// layer can classify MCP failures without text heuristics.
 			res = res.WithErrorKind(toolshared.ErrTransient)
+		default:
+			// Phase 12.62 (2026-10-25): an unclassifiable transport error
+			// must NOT leave ErrKind empty — an empty kind sends the agent
+			// recovery layer down the legacy "Tool execution failed:" prefix
+			// heuristic, which no MCP error matches, so recovery silently
+			// stopped firing and the tool_knowledge lesson was never
+			// surfaced. ErrInvalidInput is the conservative choice: the
+			// shared handler tells the LLM not to repeat the identical
+			// call, which is correct for a non-transient transport fault.
+			res = res.WithErrorKind(toolshared.ErrInvalidInput)
 		}
 		return res
 	}
@@ -276,7 +287,17 @@ func (t *MCPTool) Execute(ctx context.Context, args map[string]any) *ToolResult 
 	if result == nil {
 		nilErr := fmt.Errorf("MCP tool returned nil result without error")
 		t.publishRuntimeEvent(ctx, runtimeevents.KindMCPToolCallEnd, startedAt, true, nilErr.Error())
-		return ErrorResult("MCP tool execution failed: nil result").WithError(nilErr)
+		// Phase 12.62 (2026-10-25): stamp a typed ErrKind. A nil result is
+		// an upstream contract violation — retrying the same call may work
+		// (the server may have raced), so it is classified as transient.
+		// Previously this path left ErrKind EMPTY, which made the agent
+		// recovery layer's classifier fall through to the legacy
+		// "Tool execution failed:" prefix heuristic — a prefix no MCP
+		// error ever emits — so recovery never fired and the tool_knowledge
+		// lesson was never surfaced.
+		return ErrorResult("MCP tool execution failed: nil result").
+			WithError(nilErr).
+			WithErrorKind(toolshared.ErrTransient)
 	}
 
 	// Handle error result from server
@@ -285,11 +306,25 @@ func (t *MCPTool) Execute(ctx context.Context, args map[string]any) *ToolResult 
 		t.publishRuntimeEvent(ctx, runtimeevents.KindMCPToolCallEnd, startedAt, true, errMsg)
 		res := ErrorResult(fmt.Sprintf("MCP tool returned error: %s", errMsg)).
 			WithError(fmt.Errorf("MCP tool error: %s", errMsg))
-		if toolshared.IsTransientErrorText(errMsg) {
+		switch {
+		case toolshared.IsTransientErrorText(errMsg):
 			// W1 fix (2026-08-07): tool-level MCP errors (e.g. SearXNG 403
 			// from search tools) carry no typed ErrKind; classify transient
 			// markers so the registry escalator fires (12.55 regression).
 			res = res.WithErrorKind(toolshared.ErrTransient)
+		default:
+			// Phase 12.62 (2026-10-25): an MCP tool-level error that is NOT
+			// transient is a permanent failure of that call — most often an
+			// invalid argument or an upstream 4xx. Leaving ErrKind EMPTY
+			// here meant the agent recovery layer never classified the
+			// error as recoverable (the legacy "Tool execution failed:"
+			// prefix heuristic does not match "MCP tool returned error:"),
+			// so the tool_knowledge lesson for the failing MCP tool was
+			// never appended to the retry message. Classify it as
+			// invalid-input so recovery fires and the lesson is surfaced.
+			// The "do not retry the exact call" guidance comes from the
+			// shared ErrInvalidInput handling (shared/result.go).
+			res = res.WithErrorKind(toolshared.ErrInvalidInput)
 		}
 		return res
 	}
