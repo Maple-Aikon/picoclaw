@@ -407,13 +407,6 @@ func extractBody(content string) string {
 	return strings.TrimSpace(body)
 }
 
-// digestBudgetLadder is the per-section excerpt budgets tried, in order,
-// by digestSections. The first budget whose rendered result fits the cap
-// wins. Measured 2026-10-25 over the 48 real over-cap entries in
-// memory/tool_knowledge: the ladder [100, 60, 40, 25, 0] resolves every
-// one of them.
-var digestBudgetLadder = []int{100, 60, 40, 25, 0}
-
 // splitFrontmatter separates a leading YAML frontmatter block from the
 // body.
 //
@@ -479,20 +472,156 @@ func digestSections(content string, byteCap int) string {
 		return truncateWithinCap(content, byteCap)
 	}
 
-	for _, budget := range digestBudgetLadder {
-		// Pass 1: first headed section full, rest digested.
-		if out, ok := renderDigest(head, sections, budget, true, byteCap); ok {
-			return out
-		}
-		// Pass 2: all sections digested.
-		if out, ok := renderDigest(head, sections, budget, false, byteCap); ok {
-			return out
-		}
+	// Phase 12.63 (2026-10-26): global water-filling allocation.
+	//
+	// The old implementation handed the SAME per-section byte budget to
+	// every section and tried a ladder of shrinking budgets. That is
+	// arithmetically hopeless: the digest's fixed overhead (frontmatter +
+	// EVERY heading + marker) grows with the section count, so for a
+	// section-heavy entry NO uniform budget fits, the ladder fell through
+	// to budget=0, and every body was wiped -- the digest degenerated
+	// into a table of contents. Measured on the real store: a 60-section
+	// entry lost the body of 58/60 sections.
+	//
+	// The fix computes the room that is ACTUALLY left after the fixed
+	// overhead, gives every body-bearing section a word-safe minimum
+	// excerpt, and then water-fills the surplus across the sections.
+	plan := allocateDigest(sections, byteCap-len(head)-len(truncationMarker))
+	out, ok := renderDigestAlloc(head, plan, byteCap)
+	if ok {
+		return out
 	}
 
 	// Headings alone exceeded the cap. Keep the frontmatter and as many
 	// headings as fit, dropping the tail -- still respecting the cap.
 	return headingsOnly(head, sections, byteCap)
+}
+
+// allocateDigest splits the available room across the sections.
+//
+// room is the number of bytes left AFTER the frontmatter and the
+// truncation marker have been accounted for. The function reserves:
+//
+//   - one line for each heading (heading + newline),
+//   - one line for each section that carries body text,
+//   - a word-safe minimum excerpt for each body-bearing section.
+//
+// Any surplus is then water-filled: sections that still have unshown
+// body text receive an equal share until the room is exhausted.
+//
+// Every excerpt is cut on a word or line boundary, so the rendered
+// digest never contains a half-written word.
+func allocateDigest(sections []h2Section, room int) []digestSectionPlan {
+	plan := make([]digestSectionPlan, 0, len(sections))
+
+	// Fixed cost, counted BEFORE any excerpt is handed out:
+	//   - every heading costs its bytes plus a newline,
+	//   - every body-bearing section costs one extra newline for its
+	//     excerpt block.
+	//
+	// Phase 12.63: the first version added the body-block newline while
+	// iterating, AFTER `remaining` had been computed -- so the budget was
+	// short by up to N bytes, the render could exceed the cap, and the
+	// caller silently fell back to headingsOnly (losing every body).
+	// Every byte the digest can spend must be accounted for first.
+	fixed := 0
+	for _, s := range sections {
+		if s.heading != "" {
+			fixed += len(s.heading) + 1
+		}
+		if strings.TrimSpace(s.body) != "" {
+			fixed++
+		}
+	}
+
+	remaining := room - fixed
+
+	// Give every body-bearing section a word-safe minimum excerpt.
+	type pendingSection struct {
+		sectionIdx int
+		minBytes   int
+	}
+	var pending []pendingSection
+	for i, s := range sections {
+		p := digestSectionPlan{heading: s.heading}
+		bodyText := strings.TrimSpace(s.body)
+		if bodyText != "" {
+			p.hasBody = true
+			firstLine := strings.Split(bodyText, string(rune(digestNL)))[0]
+			minExcerpt := digestMinWordSafeExcerpt(firstLine)
+			p.excerpt = minExcerpt
+			pending = append(pending, pendingSection{sectionIdx: i, minBytes: len(minExcerpt)})
+		}
+		plan = append(plan, p)
+	}
+
+	// Reserve the minimum excerpts. When the room cannot cover every
+	// minimum, the LAST sections lose their body first -- earlier
+	// sections hold the older lessons, and a section that keeps its
+	// heading but loses its body is still discoverable.
+	for i := range pending {
+		si := pending[i].sectionIdx
+		if remaining < pending[i].minBytes {
+			plan[si].hasBody = false
+			plan[si].excerpt = ""
+			continue
+		}
+		remaining -= pending[i].minBytes
+	}
+
+	// Water-fill the surplus: hand out equal shares to the sections that
+	// still have unshown text, until the room is exhausted.
+	for {
+		var eligible []pendingSection
+		for _, p := range pending {
+			if !plan[p.sectionIdx].hasBody {
+				continue
+			}
+			bodyText := strings.TrimSpace(sections[p.sectionIdx].body)
+			if len(plan[p.sectionIdx].excerpt) < len(bodyText) {
+				eligible = append(eligible, p)
+			}
+		}
+		if len(eligible) == 0 || remaining <= 0 {
+			break
+		}
+		share := remaining / len(eligible)
+		if share <= 0 {
+			break
+		}
+		progressed := false
+		for _, e := range eligible {
+			si := e.sectionIdx
+			bodyText := strings.TrimSpace(sections[si].body)
+			cur := len(plan[si].excerpt)
+			newLen := extendExcerpt(bodyText, cur, cur+share)
+			if newLen <= cur {
+				// The next word does not fit inside this section's
+				// share. Allow exactly ONE more word -- and only when
+				// the GLOBAL room can pay for it.
+				//
+				// Phase 12.63: an earlier version retried with an
+				// unbounded window (cur+share+len(body)), so every
+				// section could grow past the cap. The render then
+				// overflowed and the caller silently fell back to
+				// headingsOnly -- which drops EVERY body. The extra
+				// word must be paid for out of the global room.
+				next := nextWordEnd(bodyText, cur)
+				if next <= cur || next-cur > remaining {
+					continue
+				}
+				newLen = next
+			}
+			plan[si].excerpt = bodyText[:newLen]
+			remaining -= newLen - cur
+			progressed = true
+		}
+		if !progressed {
+			break
+		}
+	}
+
+	return plan
 }
 
 // truncateWithinCap truncates content so that the result INCLUDING the
