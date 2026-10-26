@@ -22,6 +22,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -2111,7 +2112,13 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	}
 
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return ErrorResult("only http/https URLs are allowed")
+		// Phase 12.63 (2026-10-26): stamp ErrKind. A rejected scheme is a
+		// policy rejection of the URL the LLM chose — retrying the same URL
+		// cannot help. Without a typed kind the recovery layer fell back to
+		// the legacy "Tool execution failed:" prefix heuristic, which this
+		// message does not match ⇒ recovery never fired ⇒ no lesson.
+		return ErrorResult("only http/https URLs are allowed").
+			WithErrorKind(toolshared.ErrInvalidInput)
 	}
 
 	if parsedURL.Host == "" {
@@ -2122,7 +2129,14 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	// The real SSRF guard is newSafeDialContext at connect time.
 	hostname := parsedURL.Hostname()
 	if isObviousPrivateHost(hostname, t.whitelist) {
-		return ErrorResult("fetching private or local network hosts is not allowed")
+		// Phase 12.63 (2026-10-26): stamp ErrKind — SSRF guard rejection.
+		// Same class as the exec safety guard: a policy rejection of the
+		// URL the LLM chose, so the recovery layer must see a typed kind
+		// (ErrInvalidInput) instead of falling back to the legacy
+		// "Tool execution failed:" prefix heuristic, which this message
+		// does not match ⇒ recovery never fired ⇒ no lesson surfaced.
+		return ErrorResult("fetching private or local network hosts is not allowed").
+			WithErrorKind(toolshared.ErrInvalidInput)
 	}
 
 	maxChars := t.maxChars

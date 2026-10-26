@@ -308,7 +308,8 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 		}
 		channel = strings.TrimSpace(channel)
 		if channel == "" || !constants.IsInternalChannel(channel) {
-			return ErrorResult("exec is restricted to internal channels")
+			return ErrorResult("exec is restricted to internal channels").
+				WithErrorKind(ErrInvalidInput)
 		}
 	}
 
@@ -335,7 +336,13 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 		if t.restrictToWorkspace && t.workingDir != "" {
 			resolvedWD, err := validatePathWithAllowPaths(wd, t.workingDir, true, t.allowedPathPatterns)
 			if err != nil {
-				return ErrorResult("Command blocked by safety guard (" + err.Error() + ")")
+				// Phase 12.63 (2026-10-26): stamp a typed ErrKind. An empty
+				// ErrKind sends the agent recovery layer down the legacy
+				// "Tool execution failed:" prefix heuristic, which no
+				// safety-guard message matches — recovery never fired and
+				// the tool_knowledge lesson for `exec` was never surfaced.
+				return ErrorResult("Command blocked by safety guard (" + err.Error() + ")").
+					WithErrorKind(ErrInvalidInput)
 			}
 			cwd = resolvedWD
 		} else {
@@ -351,7 +358,14 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 	}
 
 	if guardError := t.guardCommand(command, cwd); guardError != "" {
-		return ErrorResult(guardError)
+		// Phase 12.63 (2026-10-26): stamp ErrKind=ErrInvalidInput. The safety
+		// guard is a POLICY rejection of the command the LLM chose — retrying
+		// the same command cannot help, so this is an invalid-input error,
+		// not a transient one. Without a typed kind the recovery layer fell
+		// back to the legacy "Tool execution failed:" prefix heuristic, which
+		// no guard message matches ⇒ recovery never fired ⇒ the
+		// tool_knowledge lesson for `exec` was never surfaced to the LLM.
+		return ErrorResult(guardError).WithErrorKind(ErrInvalidInput)
 	}
 
 	// Re-resolve symlinks immediately before execution to shrink the TOCTOU window
@@ -359,7 +373,8 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 	if t.restrictToWorkspace && t.workingDir != "" && cwd != t.workingDir {
 		resolved, err := filepath.EvalSymlinks(cwd)
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("Command blocked by safety guard (path resolution failed: %v)", err))
+			return ErrorResult(fmt.Sprintf("Command blocked by safety guard (path resolution failed: %v)", err)).
+				WithErrorKind(ErrInvalidInput)
 		}
 		if isAllowedPath(resolved, t.allowedPathPatterns) {
 			cwd = resolved
@@ -371,7 +386,8 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 			}
 			rel, err := filepath.Rel(wsResolved, resolved)
 			if err != nil || !filepath.IsLocal(rel) {
-				return ErrorResult("Command blocked by safety guard (working directory escaped workspace)")
+				return ErrorResult("Command blocked by safety guard (working directory escaped workspace)").
+					WithErrorKind(ErrInvalidInput)
 			}
 			cwd = resolved
 		}
