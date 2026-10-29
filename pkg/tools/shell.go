@@ -48,55 +48,123 @@ type ExecTool struct {
 	sessionManager      *SessionManager
 }
 
+// compileCaseInsensitive compiles src as a case-insensitive regular
+// expression.
+//
+// The exec safety guard used to lowercase the COMMAND and match
+// case-sensitive patterns against it. Every pattern containing an
+// uppercase literal was therefore a DEAD RULE — it could never fire.
+// (Measured: `defaultDenyPatterns[16]` = `<<\s*EOF` had been dead since
+// commit 01d694b9, 2026-02-18.)
+//
+// Compiling the PATTERN case-insensitively and matching it against the
+// ORIGINAL command fixes the mechanism without mutating the subject:
+//
+//   - lowercasing the input destroys information the guard needs
+//     (`chmod 700` vs `CHMOD 700`);
+//   - a lowercased subject makes a case-SENSITIVE pattern unexpressible;
+//   - matching the original keeps the other guard checks
+//     (absolutePathPattern, path traversal) operating on the true input.
+//
+// A user can still demand case-sensitivity per pattern with `(?-i)`,
+// e.g. `(?i)(?-i)bar` does NOT match "BAR" — verified.
+func compileCaseInsensitive(src string) (*regexp.Regexp, error) {
+	return regexp.Compile("(?i)" + src)
+}
+
+// mustCompileCaseInsensitive is the panic-on-error variant used for the
+// built-in deny lists. It mirrors regexp.MustCompile: a built-in pattern
+// that does not compile is a programming error in this package, not a
+// runtime condition.
+//
+// Prepending "(?i)" can never turn a valid expression into an invalid one
+// (the flag group is valid at any position), so the panic is unreachable
+// in practice — but it is kept so that a future edit to a built-in
+// pattern fails loudly at start-up instead of silently disabling a rule.
+func mustCompileCaseInsensitive(src string) *regexp.Regexp {
+	re, err := compileCaseInsensitive(src)
+	if err != nil {
+		panic(fmt.Sprintf("picoclaw: invalid built-in deny pattern %q: %v", src, err))
+	}
+	return re
+}
+
+// defaultDenyPatterns holds the built-in deny rules.
+//
+// Every pattern here is compiled case-insensitively (see
+// compileCaseInsensitive) so that an uppercase literal such as the
+// `EOF` in the heredoc rule can actually fire. The patterns are kept
+// in their historical source form; the case-insensitivity is applied
+// where the list is assembled, so the literal below stays readable.
 var (
 	defaultDenyPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`\brm\s+-[rf]{1,2}\b`),
-		regexp.MustCompile(`\bdel\s+/[fq]\b`),
-		regexp.MustCompile(`\brmdir\s+/s\b`),
+		mustCompileCaseInsensitive(`\brm\s+-[rf]{1,2}\b`),
+		mustCompileCaseInsensitive(`\bdel\s+/[fq]\b`),
+		mustCompileCaseInsensitive(`\brmdir\s+/s\b`),
 		// Match disk wiping commands (must be followed by space/args)
-		regexp.MustCompile(
+		mustCompileCaseInsensitive(
 			`(^|[^-\w])\b(format|mkfs|diskpart)\b\s`,
 		),
-		regexp.MustCompile(`\bdd\s+if=`),
+		mustCompileCaseInsensitive(`\bdd\s+if=`),
 		// Block writes to block devices (all common naming schemes).
-		regexp.MustCompile(
+		mustCompileCaseInsensitive(
 			`>\s*/dev/(sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|loop\d|dm-\d|md\d|sr\d|nbd\d)`,
 		),
-		regexp.MustCompile(`\b(shutdown|reboot|poweroff)\b`),
-		regexp.MustCompile(`:\(\)\s*\{.*\};\s*:`),
-		regexp.MustCompile(`\$\([^)]+\)`),
-		regexp.MustCompile(`\$\{[^}]+\}`),
-		regexp.MustCompile("`[^`]+`"),
-		regexp.MustCompile(`\|\s*sh\b`),
-		regexp.MustCompile(`\|\s*bash\b`),
-		regexp.MustCompile(`;\s*rm\s+-[rf]`),
-		regexp.MustCompile(`&&\s*rm\s+-[rf]`),
-		regexp.MustCompile(`\|\|\s*rm\s+-[rf]`),
-		regexp.MustCompile(`<<\s*EOF`),
-		regexp.MustCompile(`\$\(\s*cat\s+`),
-		regexp.MustCompile(`\$\(\s*curl\s+`),
-		regexp.MustCompile(`\$\(\s*wget\s+`),
-		regexp.MustCompile(`\$\(\s*which\s+`),
-		regexp.MustCompile(`\bsudo\b`),
-		regexp.MustCompile(`\bchmod\s+[0-7]{3,4}\b`),
-		regexp.MustCompile(`\bchown\b`),
-		regexp.MustCompile(`\bpkill\b`),
-		regexp.MustCompile(`\bkillall\b`),
-		regexp.MustCompile(`\bkill\b`),
-		regexp.MustCompile(`\bcurl\b.*\|\s*(sh|bash)`),
-		regexp.MustCompile(`\bwget\b.*\|\s*(sh|bash)`),
-		regexp.MustCompile(`\bnpm\s+install\s+-g\b`),
-		regexp.MustCompile(`\bpip\s+install\s+--user\b`),
-		regexp.MustCompile(`\bapt\s+(install|remove|purge)\b`),
-		regexp.MustCompile(`\byum\s+(install|remove)\b`),
-		regexp.MustCompile(`\bdnf\s+(install|remove)\b`),
-		regexp.MustCompile(`\bdocker\s+run\b`),
-		regexp.MustCompile(`\bdocker\s+exec\b`),
-		regexp.MustCompile(`\bgit\s+push\b`),
-		regexp.MustCompile(`\bgit\s+force\b`),
-		regexp.MustCompile(`\bssh\b.*@`),
-		regexp.MustCompile(`\beval\b`),
-		regexp.MustCompile(`\bsource\s+.*\.sh\b`),
+		mustCompileCaseInsensitive(`\b(shutdown|reboot|poweroff)\b`),
+		mustCompileCaseInsensitive(`:\(\)\s*\{.*\};\s*:`),
+		mustCompileCaseInsensitive(`\$\([^)]+\)`),
+		mustCompileCaseInsensitive(`\$\{[^}]+\}`),
+		mustCompileCaseInsensitive("`[^`]+`"),
+		mustCompileCaseInsensitive(`\|\s*sh\b`),
+		mustCompileCaseInsensitive(`\|\s*bash\b`),
+		mustCompileCaseInsensitive(`;\s*rm\s+-[rf]`),
+		mustCompileCaseInsensitive(`&&\s*rm\s+-[rf]`),
+		mustCompileCaseInsensitive(`\|\|\s*rm\s+-[rf]`),
+		// The heredoc deny rule used to live here as the pattern
+		// `<<\s*EOF`. It was DEAD since birth (commit 01d694b9,
+		// 2026-02-18) because the guard matched patterns against the
+		// LOWERCASED command while this pattern requires an UPPERCASE
+		// literal.
+		//
+		// It is now implemented in code instead — see
+		// detectDangerousHeredoc. Two reasons it cannot stay a
+		// pattern:
+		//
+		//  1. As a pattern it is bypassable: guardCommand evaluates the
+		//     custom allowlist FIRST and only runs the deny loop when the
+		//     command was not allow-listed, so `git apply <<EOF` would
+		//     pass while `cat <<EOF` is blocked.
+		//  2. Making it case-insensitive would make it fire on `<<EOF`
+		//     text that sits inside a quoted string. Measured on the
+		//     real exec corpus (3098 commands): the pattern matches 3
+		//     commands and ALL 3 are inside a double-quoted region
+		//     (e.g. an `echo "=== mentioning <<EOF ==="` banner).
+		//
+		// The code scanner is quote-aware, so it does not fire on those.
+		mustCompileCaseInsensitive(`\$\(\s*cat\s+`),
+		mustCompileCaseInsensitive(`\$\(\s*curl\s+`),
+		mustCompileCaseInsensitive(`\$\(\s*wget\s+`),
+		mustCompileCaseInsensitive(`\$\(\s*which\s+`),
+		mustCompileCaseInsensitive(`\bsudo\b`),
+		mustCompileCaseInsensitive(`\bchmod\s+[0-7]{3,4}\b`),
+		mustCompileCaseInsensitive(`\bchown\b`),
+		mustCompileCaseInsensitive(`\bpkill\b`),
+		mustCompileCaseInsensitive(`\bkillall\b`),
+		mustCompileCaseInsensitive(`\bkill\b`),
+		mustCompileCaseInsensitive(`\bcurl\b.*\|\s*(sh|bash)`),
+		mustCompileCaseInsensitive(`\bwget\b.*\|\s*(sh|bash)`),
+		mustCompileCaseInsensitive(`\bnpm\s+install\s+-g\b`),
+		mustCompileCaseInsensitive(`\bpip\s+install\s+--user\b`),
+		mustCompileCaseInsensitive(`\bapt\s+(install|remove|purge)\b`),
+		mustCompileCaseInsensitive(`\byum\s+(install|remove)\b`),
+		mustCompileCaseInsensitive(`\bdnf\s+(install|remove)\b`),
+		mustCompileCaseInsensitive(`\bdocker\s+run\b`),
+		mustCompileCaseInsensitive(`\bdocker\s+exec\b`),
+		mustCompileCaseInsensitive(`\bgit\s+push\b`),
+		mustCompileCaseInsensitive(`\bgit\s+force\b`),
+		mustCompileCaseInsensitive(`\bssh\b.*@`),
+		mustCompileCaseInsensitive(`\beval\b`),
+		mustCompileCaseInsensitive(`\bsource\s+.*\.sh\b`),
 	}
 
 	// windowsDenyPatterns contains PowerShell-specific deny patterns that only
@@ -104,19 +172,19 @@ var (
 	windowsDenyPatterns = []*regexp.Regexp{
 		// [Text.Encoding] used to construct command strings at runtime.
 		// Matches [Text.Encoding] and [System.Text.Encoding] variants.
-		regexp.MustCompile(`\[(?:\w+\.)?text\.encoding\]`),
+		mustCompileCaseInsensitive(`\[(?:\w+\.)?text\.encoding\]`),
 		// PowerShell -EncodedCommand flag (base64-encoded command) and all short forms.
 		// Matches: -e, -ec, -enc, -en, -EncodedCommand (all with space prefix)
-		regexp.MustCompile(` -e(?:$|\s)| -ec(?:$|\s)| -enc(?:$|\s)| -en(?:$|\s)| -encodedcommand\b`),
+		mustCompileCaseInsensitive(` -e(?:$|\s)| -ec(?:$|\s)| -enc(?:$|\s)| -en(?:$|\s)| -encodedcommand\b`),
 		// .GetString called on byte array to decode commands.
-		regexp.MustCompile(`\.getstring\s*\(\s*\[byte\[\]`),
+		mustCompileCaseInsensitive(`\.getstring\s*\(\s*\[byte\[\]`),
 		// FromBase64String used in command construction chain.
-		regexp.MustCompile(`frombase64string\(`),
+		mustCompileCaseInsensitive(`frombase64string\(`),
 		// PowerShell variable holding byte array used in GetString.
-		regexp.MustCompile(`\$[a-zA-Z_]\w*\s*=\s*\[byte\[\]`),
+		mustCompileCaseInsensitive(`\$[a-zA-Z_]\w*\s*=\s*\[byte\[\]`),
 		// Unicode escape sequences that could be used to construct commands.
 		// Matches \uXXXX format used to represent characters like i = "i"
-		regexp.MustCompile(`\\u[0-9a-fA-F]{4}`),
+		mustCompileCaseInsensitive(`\\u[0-9a-fA-F]{4}`),
 	}
 
 	// absolutePathPattern matches absolute file paths in commands (Unix and Windows).
@@ -168,7 +236,7 @@ func NewExecToolWithConfig(
 					"patterns": execConfig.CustomDenyPatterns,
 				})
 				for _, pattern := range execConfig.CustomDenyPatterns {
-					re, err := regexp.Compile(pattern)
+					re, err := compileCaseInsensitive(pattern)
 					if err != nil {
 						return nil, fmt.Errorf("invalid custom deny pattern %q: %w", pattern, err)
 					}
@@ -180,7 +248,7 @@ func NewExecToolWithConfig(
 			logger.WarnCF("tools", "deny patterns are disabled, all commands will be allowed", nil)
 		}
 		for _, pattern := range execConfig.CustomAllowPatterns {
-			re, err := regexp.Compile(pattern)
+			re, err := compileCaseInsensitive(pattern)
 			if err != nil {
 				return nil, fmt.Errorf("invalid custom allow pattern %q: %w", pattern, err)
 			}
@@ -1154,12 +1222,21 @@ func expandPowerShellEnvVars(cmd string) string {
 
 func (t *ExecTool) guardCommand(command, cwd string) string {
 	cmd := strings.TrimSpace(command)
-	lower := strings.ToLower(cmd)
+
+	// The patterns are matched against the ORIGINAL command, not a
+	// lowercased copy. The patterns themselves are compiled
+	// case-insensitively (see compileCaseInsensitive), so the guard
+	// still matches `SUDO` and `sudo` alike — but the subject keeps its
+	// real casing, which the other checks in this function (absolute
+	// paths, path traversal) depend on.
+	//
+	// Matching a lowercased copy was the root cause of the dead-rule
+	// bug: a pattern with an UPPERCASE literal could never fire.
 
 	// Custom allow patterns exempt a command from deny checks.
 	explicitlyAllowed := false
 	for _, pattern := range t.customAllowPatterns {
-		if pattern.MatchString(lower) {
+		if pattern.MatchString(cmd) {
 			explicitlyAllowed = true
 			break
 		}
@@ -1167,16 +1244,31 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 
 	if !explicitlyAllowed {
 		for _, pattern := range t.denyPatterns {
-			if pattern.MatchString(lower) {
+			if pattern.MatchString(cmd) {
 				return "Command blocked by safety guard (dangerous pattern detected)"
 			}
 		}
 	}
 
+	// The heredoc check runs AFTER the allowlist on purpose.
+	//
+	// A heredoc rule living in denyPatterns would be skipped entirely
+	// for any command that matches custom_allow_patterns (the deny loop
+	// only runs when `!explicitlyAllowed`), so `git apply <<EOF` would
+	// pass while `cat <<EOF` is blocked. As a separate check it cannot
+	// be bypassed that way.
+	//
+	// Cost of that decision, stated plainly: this rule is not switched
+	// off by `tools.exec.enable_deny_patterns: false`. It is a
+	// construct-level rule, not a pattern.
+	if reason := detectDangerousHeredoc(cmd); reason != "" {
+		return "Command blocked by safety guard (" + reason + ")"
+	}
+
 	if len(t.allowPatterns) > 0 {
 		allowed := false
 		for _, pattern := range t.allowPatterns {
-			if pattern.MatchString(lower) {
+			if pattern.MatchString(cmd) {
 				allowed = true
 				break
 			}
@@ -1371,6 +1463,380 @@ func isShellTokenBoundary(b byte) bool {
 	return false
 }
 
+// ---------------------------------------------------------------------------
+// Heredoc detection
+//
+// A heredoc (`cat <<EOF`) whose delimiter is NOT quoted has its body
+// subjected to parameter expansion, command substitution and arithmetic
+// expansion by the shell. That makes the body an injection surface even
+// when the body itself looks harmless. A QUOTED delimiter (`cat <<'EOF'`)
+// suppresses that expansion.
+//
+// This rule used to be the deny pattern `<<\s*EOF`. It was DEAD since
+// birth (commit 01d694b9, 2026-02-18) because the guard matched patterns
+// against the LOWERCASED command while the pattern requires an UPPERCASE
+// literal. It is implemented in code instead, for three reasons:
+//
+//  1. A pattern inside denyPatterns is bypassable: guardCommand evaluates
+//     the custom allowlist FIRST and only runs the deny loop when the
+//     command was not allow-listed. `git apply <<EOF` would pass while
+//     `cat <<EOF` is blocked.
+//  2. A pattern cannot be quote-aware. Making `<<\s*EOF` case-insensitive
+//     makes it fire on `<<EOF` text that sits inside a quoted string.
+//     Measured on the real exec corpus (3098 commands): the pattern
+//     matches 3 commands and ALL 3 are inside a double-quoted region
+//     (an `echo "=== mentioning <<EOF ==="` banner).
+//  3. A pattern is delimiter-specific: it only knows the literal `EOF`.
+//     The scanner handles `<<PYEOF`, `<<SCRIPT`, `<<'EOF'`, `<<"EOF"`.
+//
+// The scanner is quote-aware, so `git log -S '<<\s*EOF'` (a quoted regex)
+// and `f.read(1<<20)` (a bit-shift inside quoted code) are not affected.
+//
+// The byte constants below are numeric on purpose. The scanner must not
+// depend on escape sequences in this file's literals.
+
+// heredocOperator describes one `<<` or `<<-` operator found OUTSIDE any
+// quoted region.
+type heredocOperator struct {
+	index     int    // index of the first '<'
+	delimiter string // the delimiter word, without its quotes
+	quoted    bool   // true when the delimiter was quoted
+	next      int    // index just past the delimiter
+}
+
+// heredocByte* are the byte values the scanner compares against.
+const (
+	heredocByteNewline     byte = 10
+	heredocByteCR          byte = 13
+	heredocByteTab         byte = 9
+	heredocByteSpace       byte = 32
+	heredocByteBackslash   byte = 92
+	heredocByteSingleQuote byte = 39
+	heredocByteDoubleQuote byte = 34
+	heredocByteBacktick    byte = 96
+	heredocBytePipe        byte = 124
+	heredocByteLess        byte = 60
+	heredocByteDash        byte = 45
+)
+
+// shellInterpreters are the programs that EXECUTE their standard input as
+// a script. Feeding a heredoc into one of them is the strongest signal of
+// intent, and it is dangerous even when the delimiter is quoted (quoting
+// stops expansion, not execution).
+//
+// `python3` and friends are deliberately absent: a heredoc piped into a
+// Python interpreter is a normal, safe idiom (7 real occurrences in the
+// measured corpus).
+var shellInterpreters = map[string]bool{
+	"sh":      true,
+	"bash":    true,
+	"zsh":     true,
+	"dash":    true,
+	"ksh":     true,
+	"csh":     true,
+	"tcsh":    true,
+	"ash":     true,
+	"fish":    true,
+	"busybox": true,
+}
+
+// detectDangerousHeredoc reports why cmd must be refused, or an empty
+// string when the command contains no dangerous heredoc.
+//
+// It returns one of:
+//   - "unquoted heredoc delimiter" — the body is subject to shell expansion
+//   - "heredoc fed to a shell interpreter" — `bash <<EOF`
+//   - "heredoc piped to a shell interpreter" — `cat <<EOF | sh`
+func detectDangerousHeredoc(cmd string) string {
+	for _, op := range scanHeredocOperators(cmd) {
+		if isShellInterpreter(heredocWordBefore(cmd, op.index)) {
+			return "heredoc fed to a shell interpreter"
+		}
+		if sink := heredocPipeSink(cmd, op); sink != "" {
+			return "heredoc piped to a shell interpreter"
+		}
+		if !op.quoted {
+			return "unquoted heredoc delimiter"
+		}
+	}
+	return ""
+}
+
+// scanHeredocOperators returns every heredoc operator in cmd that is
+// outside a quoted region and sits in a position where a shell would read
+// it as a redirection.
+//
+// The scan is quote-aware: single quotes, double quotes, backticks and
+// backslash escapes are skipped, so `<<` inside a string is text, not an
+// operator.
+func scanHeredocOperators(cmd string) []heredocOperator {
+	var out []heredocOperator
+	n := len(cmd)
+	i := 0
+	for i < n {
+		switch cmd[i] {
+		case heredocByteBackslash:
+			i += 2
+			continue
+		case heredocByteSingleQuote:
+			i = skipHeredocQuoted(cmd, i, heredocByteSingleQuote)
+			continue
+		case heredocByteDoubleQuote:
+			i = skipHeredocQuoted(cmd, i, heredocByteDoubleQuote)
+			continue
+		case heredocByteBacktick:
+			i = skipHeredocQuoted(cmd, i, heredocByteBacktick)
+			continue
+		}
+		if cmd[i] == heredocByteLess && i+1 < n && cmd[i+1] == heredocByteLess {
+			// `<<<` is a here-STRING: a distinct operator with no
+			// delimiter and no body. It is deliberately NOT a heredoc.
+			if i+2 < n && cmd[i+2] == heredocByteLess {
+				i += 3
+				continue
+			}
+			if heredocOperatorPosition(cmd, i) {
+				op := parseHeredocOperator(cmd, i)
+				if op.delimiter != "" {
+					out = append(out, op)
+					i = op.next
+					continue
+				}
+			}
+			i += 2
+			continue
+		}
+		i++
+	}
+	return out
+}
+
+// skipHeredocQuoted returns the index just past the quoted region that
+// starts at cmd[start]. A backslash escapes the next byte inside double
+// quotes and backticks, but NOT inside single quotes.
+func skipHeredocQuoted(cmd string, start int, quote byte) int {
+	n := len(cmd)
+	j := start + 1
+	for j < n {
+		if quote != heredocByteSingleQuote && cmd[j] == heredocByteBackslash {
+			j += 2
+			continue
+		}
+		if cmd[j] == quote {
+			return j + 1
+		}
+		j++
+	}
+	return n
+}
+
+// heredocOperatorPosition reports whether the `<<` at index i sits where
+// a shell reads a redirection.
+//
+// A `<<` glued to the end of a word (`cat<<EOF`) is a real heredoc in
+// bash, so it is accepted — EXCEPT when the glued word is a number, which
+// is the bit-shift shape `1<<20`. The corpus contains no glued operator at
+// all, so this branch never fires on real traffic; it exists so that
+// deleting one space cannot bypass the rule.
+func heredocOperatorPosition(cmd string, i int) bool {
+	if i == 0 {
+		return true
+	}
+	prev := cmd[i-1]
+	if isShellTokenBoundary(prev) {
+		return true
+	}
+	if !isHeredocWordByte(prev) {
+		return false
+	}
+	j := i - 1
+	for j >= 0 && isHeredocWordByte(cmd[j]) {
+		j--
+	}
+	glued := cmd[j+1 : i]
+	for k := 0; k < len(glued); k++ {
+		if glued[k] < '0' || glued[k] > '9' {
+			return true
+		}
+	}
+	return false
+}
+
+// parseHeredocOperator reads the operator at index i and its delimiter.
+func parseHeredocOperator(cmd string, i int) heredocOperator {
+	n := len(cmd)
+	op := heredocOperator{index: i}
+
+	j := i + 2
+	if j < n && cmd[j] == heredocByteDash {
+		// `<<-` strips leading tabs from the body. Same danger.
+		j++
+	}
+	for j < n && (cmd[j] == heredocByteSpace || cmd[j] == heredocByteTab) {
+		j++
+	}
+	if j >= n {
+		return op
+	}
+
+	switch cmd[j] {
+	case heredocByteSingleQuote:
+		op.quoted = true
+		op.delimiter, op.next = heredocQuotedContent(cmd, j, heredocByteSingleQuote)
+	case heredocByteDoubleQuote:
+		op.quoted = true
+		op.delimiter, op.next = heredocQuotedContent(cmd, j, heredocByteDoubleQuote)
+	case heredocByteBackslash:
+		// `<<\EOF` quotes the delimiter.
+		op.quoted = true
+		j++
+		start := j
+		for j < n && !isHeredocDelimiterEnd(cmd[j]) {
+			j++
+		}
+		op.delimiter = cmd[start:j]
+		op.next = j
+	default:
+		start := j
+		for j < n && !isHeredocDelimiterEnd(cmd[j]) {
+			j++
+		}
+		op.delimiter = cmd[start:j]
+		op.next = j
+	}
+	return op
+}
+
+// heredocQuotedContent returns the content of the quoted region that
+// starts at cmd[start] and the index just past it.
+func heredocQuotedContent(cmd string, start int, quote byte) (string, int) {
+	end := skipHeredocQuoted(cmd, start, quote)
+	contentEnd := end
+	if contentEnd > 0 && contentEnd <= len(cmd) && cmd[contentEnd-1] == quote {
+		contentEnd--
+	}
+	if contentEnd < start+1 {
+		contentEnd = start + 1
+	}
+	return cmd[start+1 : contentEnd], end
+}
+
+// heredocPipeSink returns the shell interpreter that the heredoc is piped
+// into, or an empty string.
+//
+// The sink is looked for on the operator's OWN line: that is where a pipe
+// can appear. A heredoc body starts on the following line, so a pipe on a
+// later line belongs to a different command.
+//
+// Looking AFTER the operator is deliberate. The earlier measurement that
+// reported "shell-sink = 0" was a blind spot of a detector that only
+// inspected the text BEFORE the `<<`, which cannot see `cat <<EOF | sh`.
+func heredocPipeSink(cmd string, op heredocOperator) string {
+	n := len(cmd)
+	j := op.next
+	for j < n && cmd[j] != heredocByteNewline && cmd[j] != heredocByteCR {
+		if cmd[j] == heredocBytePipe {
+			if j+1 < n && cmd[j+1] == heredocBytePipe {
+				// `||` is a conditional, not a pipe.
+				j += 2
+				continue
+			}
+			word := heredocWordAfter(cmd, j+1)
+			if isShellInterpreter(word) {
+				return word
+			}
+		}
+		j++
+	}
+	return ""
+}
+
+// isShellInterpreter reports whether word names a shell that executes its
+// standard input as a script.
+func isShellInterpreter(word string) bool {
+	if word == "" {
+		return false
+	}
+	if idx := strings.LastIndexByte(word, '/'); idx >= 0 {
+		word = word[idx+1:]
+	}
+	return shellInterpreters[word]
+}
+
+// heredocWordBefore returns the last shell word that ends just before
+// index i.
+func heredocWordBefore(cmd string, i int) string {
+	j := i - 1
+	for j >= 0 && isHeredocSpace(cmd[j]) {
+		j--
+	}
+	if j < 0 {
+		return ""
+	}
+	end := j + 1
+	for j >= 0 && !isHeredocSpace(cmd[j]) && !isHeredocMetaByte(cmd[j]) {
+		j--
+	}
+	return cmd[j+1 : end]
+}
+
+// heredocWordAfter returns the first shell word that starts at or after
+// index i.
+func heredocWordAfter(cmd string, i int) string {
+	n := len(cmd)
+	j := i
+	for j < n && isHeredocSpace(cmd[j]) {
+		j++
+	}
+	start := j
+	for j < n && !isHeredocSpace(cmd[j]) && !isHeredocMetaByte(cmd[j]) {
+		j++
+	}
+	return cmd[start:j]
+}
+
+// isHeredocSpace reports whether b is a whitespace byte.
+func isHeredocSpace(b byte) bool {
+	switch b {
+	case heredocByteSpace, heredocByteTab, heredocByteNewline, heredocByteCR:
+		return true
+	}
+	return false
+}
+
+// isHeredocMetaByte reports whether b is a shell metacharacter that ends
+// a word.
+func isHeredocMetaByte(b byte) bool {
+	switch b {
+	case '|', '&', ';', '<', '>', '(', ')':
+		return true
+	}
+	return false
+}
+
+// isHeredocDelimiterEnd reports whether b ends a delimiter word.
+func isHeredocDelimiterEnd(b byte) bool {
+	if isHeredocSpace(b) {
+		return true
+	}
+	return isHeredocMetaByte(b)
+}
+
+// isHeredocWordByte reports whether b can be part of a shell word.
+func isHeredocWordByte(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z':
+		return true
+	case b >= 'A' && b <= 'Z':
+		return true
+	case b >= '0' && b <= '9':
+		return true
+	case b == '_' || b == '.' || b == '/' || b == '-':
+		return true
+	}
+	return false
+}
+
 // looksLikeDomain returns true when s looks like a DNS domain name:
 // it contains at least one dot, starts with an alphanumeric character,
 // and does not end with a common file extension.
@@ -1435,7 +1901,7 @@ func (t *ExecTool) SetRestrictToWorkspace(restrict bool) {
 func (t *ExecTool) SetAllowPatterns(patterns []string) error {
 	t.allowPatterns = make([]*regexp.Regexp, 0, len(patterns))
 	for _, p := range patterns {
-		re, err := regexp.Compile(p)
+		re, err := compileCaseInsensitive(p)
 		if err != nil {
 			return fmt.Errorf("invalid allow pattern %q: %w", p, err)
 		}

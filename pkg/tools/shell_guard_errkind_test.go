@@ -140,32 +140,85 @@ func TestExecTool_SafetyGuard_WorkspaceEscape_HasErrKind(t *testing.T) {
 	}
 }
 
-// TestExecTool_DenyPattern_HeredocNeverFires documents a REAL (pre-existing,
-// unrelated to this fix) gap found while measuring the guard: the deny
-// pattern `<<\s*EOF` contains an UPPERCASE literal, but guardCommand
-// evaluates every deny pattern against the LOWERCASED command
-// (`lower := strings.ToLower(cmd)`). The pattern therefore can never
-// match and the heredoc deny rule is DEAD.
+// TestExecTool_DenyPattern_HeredocRuleIsAlive records the FIX for a REAL
+// (pre-existing) gap found while measuring the guard: the deny pattern
+// `<<\s*EOF` contains an UPPERCASE literal, but guardCommand used to
+// evaluate every deny pattern against the LOWERCASED command
+// (`lower := strings.ToLower(cmd)`). The pattern therefore could never
+// match and the heredoc deny rule was DEAD — since commit 01d694b9
+// (2026-02-18), i.e. it had never worked.
 //
-// This test documents the CURRENT behaviour so the gap is visible and
-// cannot regress silently. It is NOT part of the ErrKind fix — fixing
-// it would change what the guard blocks, which is a behaviour change
-// that needs its own decision.
+// THE OLD ASSERTION (now inverted):
 //
-// Measured: pattern.MatchString(strings.ToLower(cmd)) == false while
-// pattern.MatchString(cmd) == true.
-func TestExecTool_DenyPattern_HeredocNeverFires(t *testing.T) {
+//	if pat.MatchString(lower) {
+//		t.Fatalf("heredoc deny pattern now matches the lowercased command")
+//	}
+//
+// That assertion pinned the DEFECT: it required the rule to stay dead.
+//
+// The fix has two parts:
+//
+//  1. Patterns are compiled case-insensitively and matched against the
+//     ORIGINAL command, so an uppercase literal is no longer fatal.
+//  2. The heredoc rule moved out of the deny list and into code
+//     (detectDangerousHeredoc), because a pattern cannot be quote-aware
+//     and a pattern inside denyPatterns is bypassable by the custom
+//     allowlist.
+//
+// This test asserts the FIXED behaviour. The behaviour tests live in
+// shell_guard_pattern_case_test.go (T1–T14).
+func TestExecTool_DenyPattern_HeredocRuleIsAlive(t *testing.T) {
 	pat := regexp.MustCompile(`<<\s*EOF`)
 	cmd := "cat >> /tmp/f <<EOF"
 	lower := strings.ToLower(cmd)
 
+	// The pattern matches the RAW command ...
+	if !pat.MatchString(cmd) {
+		t.Fatalf("heredoc deny pattern does not match the raw command — " +
+			"the pattern itself changed; update this test")
+	}
+	// ... and (this is the bug) it does NOT match the lowercased copy.
 	if pat.MatchString(lower) {
-		t.Fatalf("heredoc deny pattern now matches the lowercased command — " +
+		t.Fatalf("heredoc deny pattern matches the lowercased command — " +
 			"the dead-pattern gap was closed upstream; update this test")
 	}
-	if !pat.MatchString(cmd) {
-		t.Fatalf("heredoc deny pattern does not match the raw command either — " +
-			"the pattern itself changed; update this test")
+
+	// The FIX: the guard matches the ORIGINAL command, and the pattern
+	// is compiled case-insensitively.
+	ci := mustCompileCaseInsensitive(`<<\s*EOF`)
+	if !ci.MatchString(cmd) {
+		t.Fatalf("a case-insensitively compiled heredoc pattern must match "+
+			"the original command %q", cmd)
+	}
+	if !ci.MatchString(lower) {
+		t.Fatalf("a case-insensitively compiled heredoc pattern must match " +
+			"a lowercased command too")
+	}
+}
+
+// TestExecTool_DenyPattern_HeredocRuleBlocksUnquotedDelimiter is the
+// positive control for the heredoc rule at the tool level: an unquoted
+// delimiter means the body is subject to shell expansion.
+func TestExecTool_DenyPattern_HeredocRuleBlocksUnquotedDelimiter(t *testing.T) {
+	tool, err := NewExecTool("", false)
+	if err != nil {
+		t.Fatalf("unable to configure exec tool: %v", err)
+	}
+
+	result := tool.Execute(context.Background(), map[string]any{
+		"action":  "run",
+		"command": "cat <<EOF",
+	})
+	if !result.IsError {
+		t.Fatalf("expected the guard to block an unquoted heredoc delimiter, got success: %s",
+			result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "blocked by safety guard") {
+		t.Fatalf("expected a safety-guard message, got %q", result.ForLLM)
+	}
+	if result.ErrKind != ErrInvalidInput {
+		t.Fatalf("safety-guard rejection must carry ErrKind=%q, got %q",
+			ErrInvalidInput, result.ErrKind)
 	}
 }
 
