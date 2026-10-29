@@ -1220,6 +1220,27 @@ func expandPowerShellEnvVars(cmd string) string {
 	})
 }
 
+// commandMatchesAllowPattern reports whether cmd matches any allow
+// pattern — the strict allowlist (tools.exec.allow_patterns) or the
+// additive custom allowlist (tools.exec.custom_allow_patterns).
+//
+// cmd is the ORIGINAL command, not a lowercased copy: the patterns
+// themselves are compiled case-insensitively (compileCaseInsensitive),
+// so the subject keeps its real casing.
+func (t *ExecTool) commandMatchesAllowPattern(cmd string) bool {
+	for _, pattern := range t.allowPatterns {
+		if pattern.MatchString(cmd) {
+			return true
+		}
+	}
+	for _, pattern := range t.customAllowPatterns {
+		if pattern.MatchString(cmd) {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *ExecTool) guardCommand(command, cwd string) string {
 	cmd := strings.TrimSpace(command)
 
@@ -1233,47 +1254,38 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 	// Matching a lowercased copy was the root cause of the dead-rule
 	// bug: a pattern with an UPPERCASE literal could never fire.
 
-	// Custom allow patterns exempt a command from deny checks.
-	explicitlyAllowed := false
-	for _, pattern := range t.customAllowPatterns {
+	// Deny patterns always apply — even when the command matches a
+	// custom allow rule. A custom allow rule may PERMIT a command; it
+	// must never DISABLE a deny rule.
+	//
+	// Upstream sipeed/picoclaw reached the same conclusion in commit
+	// 9721c36e ("fix(exec): keep deny patterns active for custom allow
+	// rules", merged as PR #3161), after issue #3079 showed that an
+	// allow-listed command could read secrets via `jq env`.
+	//
+	// The patterns are matched against the ORIGINAL command; the
+	// patterns themselves are compiled case-insensitively (see
+	// compileCaseInsensitive), so `SUDO` and `sudo` alike are caught.
+	for _, pattern := range t.denyPatterns {
 		if pattern.MatchString(cmd) {
-			explicitlyAllowed = true
-			break
+			return "Command blocked by safety guard (dangerous pattern detected)"
 		}
 	}
 
-	if !explicitlyAllowed {
-		for _, pattern := range t.denyPatterns {
-			if pattern.MatchString(cmd) {
-				return "Command blocked by safety guard (dangerous pattern detected)"
-			}
-		}
-	}
-
-	// The heredoc check runs AFTER the allowlist on purpose.
-	//
-	// A heredoc rule living in denyPatterns would be skipped entirely
-	// for any command that matches custom_allow_patterns (the deny loop
-	// only runs when `!explicitlyAllowed`), so `git apply <<EOF` would
-	// pass while `cat <<EOF` is blocked. As a separate check it cannot
-	// be bypassed that way.
-	//
-	// Cost of that decision, stated plainly: this rule is not switched
-	// off by `tools.exec.enable_deny_patterns: false`. It is a
-	// construct-level rule, not a pattern.
+	// The heredoc check is a construct-level rule, not a pattern: it is
+	// not switched off by `tools.exec.enable_deny_patterns: false`, and
+	// it is not bypassable by a custom allow rule. It runs after the
+	// deny loop so a quoted `<<EOF` inside a legitimate command still
+	// reaches it.
 	if reason := detectDangerousHeredoc(cmd); reason != "" {
 		return "Command blocked by safety guard (" + reason + ")"
 	}
 
+	// The strict allowlist (tools.exec.allow_patterns) is unchanged.
+	// Custom allow patterns stay ADDITIVE: they never turn into a
+	// strict allowlist of their own (upstream ff247b63).
 	if len(t.allowPatterns) > 0 {
-		allowed := false
-		for _, pattern := range t.allowPatterns {
-			if pattern.MatchString(cmd) {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
+		if !t.commandMatchesAllowPattern(cmd) {
 			return "Command blocked by safety guard (not in allowlist)"
 		}
 	}
