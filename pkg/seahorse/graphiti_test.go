@@ -139,6 +139,10 @@ func TestRemember_NoDaemonURL_Drops(t *testing.T) {
 // reset the health cache + client singleton so each test starts clean.
 func TestHealthGate_TTL_Cache(t *testing.T) {
 	var hits int32
+	// NOTE: this fixture serves the LEGACY string shape ("alive").
+	// It is kept as-is on purpose — it pins backward compatibility
+	// with the old daemon shape. The current production shape (bool)
+	// is pinned in graphiti_falkorok_shape_test.go.
 	healthBody := []byte(`{"status":"ready","falkor_ok":"alive","daemon_version":"0.4.0-phase4-test"}`)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != graphitiHealthPath {
@@ -466,13 +470,22 @@ func newMockDaemon() *mockDaemon {
 }
 
 func (md *mockDaemon) handle(w http.ResponseWriter, r *http.Request) {
-	// /health must return falkor_ok: "alive" for daemonHealthOK to
-	// pass. Default mock body is for /episodes; route by path so
-	// callers can override either via md.handler.
+	// /health must return an "alive" falkor_ok for daemonHealthOK to
+	// pass. We serve the CURRENT production shape (bool) here — the
+	// daemon's probe() returns a bool and http_server.py serialises it
+	// directly (live payload: {"status":"ready","falkor_ok":true,...}).
+	//
+	// The mock used to serve the legacy string shape ("alive"); keeping
+	// the mock aligned with production is what stops this file from
+	// silently drifting again. The legacy string shape is still covered
+	// explicitly in graphiti_falkorok_shape_test.go.
+	//
+	// Default mock body is for /episodes; route by path so callers can
+	// override either via md.handler.
 	if r.URL.Path == graphitiHealthPath {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"healthy","falkor_ok":"alive","daemon_version":"0.7.0-test"}`))
+		_, _ = w.Write([]byte(`{"status":"healthy","falkor_ok":true,"daemon_version":"0.7.0-test"}`))
 		return
 	}
 
@@ -549,7 +562,7 @@ func TestSemaphore_TA4_1_CapAt8_50Concurrent(t *testing.T) {
 		if r.URL.Path == graphitiHealthPath {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"status":"healthy","falkor_ok":"alive","daemon_version":"0.7.0-test"}`))
+			_, _ = w.Write([]byte(`{"status":"healthy","falkor_ok":true,"daemon_version":"0.7.0-test"}`))
 			return
 		}
 		cur := atomic.AddInt32(&md.current, 1)
@@ -856,7 +869,7 @@ func TestRemember_HTTP_WireShape(t *testing.T) {
 		if r.URL.Path == graphitiHealthPath {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"status":"healthy","falkor_ok":"alive","daemon_version":"0.7.0-test"}`))
+			_, _ = w.Write([]byte(`{"status":"healthy","falkor_ok":true,"daemon_version":"0.7.0-test"}`))
 			return
 		}
 		md.mu.Lock()
@@ -962,7 +975,8 @@ func TestRememberInGraphiti_GoroutineRecoversFromPanic(t *testing.T) {
 
 	// Stand up a healthy mock daemon. rememberInGraphiti consults
 	// the health gate before reaching postGraphitiEpisodeFn, so
-	// the gate must pass (200 + falkor_ok:alive).
+	// the gate must pass (200 + falkor_ok:true — the current daemon
+	// shape; see graphiti_falkorok_shape_test.go for both shapes).
 	md := newMockDaemon()
 	defer md.Close()
 	withMockDaemon(t, md)

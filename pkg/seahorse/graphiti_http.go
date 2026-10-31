@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -135,10 +136,12 @@ var healthCache graphitiHealthCache
 // the daemon is down, performs a single GET /health with a short
 // timeout (1s — independent of the main HTTP timeout).
 //
-// "Down" is defined as: falkor_ok != "alive" (case-insensitive) OR
-// any network failure. We deliberately do NOT inspect lock.mode here
-// — /health does not expose it (see Verified facts G1 in plan v3).
-// Step 0 handles lock-mode via a separate functional POST probe.
+// "Down" is defined as: falkor_ok is not an "alive" value (see
+// falkorOKAlive — accepts both the bool and the "alive" string
+// shapes) OR any network failure. We deliberately do NOT inspect
+// lock.mode here — /health does not expose it (see Verified facts G1
+// in plan v3). Step 0 handles lock-mode via a separate functional POST
+// probe.
 //
 // A logDebugOnce flag is tracked so we emit at most one warn+debug
 // line per TTL window instead of spamming the log per compaction.
@@ -208,10 +211,29 @@ func daemonHealthOK() (falkor bool, version string) {
 	// Parse minimal JSON: status / falkor_ok / daemon_version.
 	// We intentionally tolerate missing fields — daemon is the source
 	// of truth, not us.
+	//
+	// falkor_ok is decoded as json.RawMessage, NOT as a plain string:
+	// the daemon has shipped two shapes for this field and both are
+	// legitimate.
+	//
+	//   - bool   — current producer (janus-graph daemon
+	//     falkordb_supervisor.probe() returns bool; http_server.py
+	//     serialises it directly). Live payload:
+	//     {"status":"ready","falkor_ok":true,...}
+	//   - string — older producer, where probe() returned the
+	//     ProbeState str-Enum (ALIVE="alive"), which json.dumps
+	//     renders as the string "alive".
+	//
+	// Decoding straight into `string` made the whole /health body fail
+	// to decode ("cannot unmarshal bool into Go struct field ... of
+	// type string"), which was mis-handled as "malformed JSON → daemon
+	// down" → the health gate stayed CLOSED and every compaction was
+	// dropped silently for ~20 days. See plan
+	// picoclaw-graphiti-health-contract-mismatch-falkor-ok-bool-vs-alive-20261030.
 	var payload struct {
-		Status        string `json:"status"`
-		FalkorOK      string `json:"falkor_ok"`
-		DaemonVersion string `json:"daemon_version"`
+		Status        string          `json:"status"`
+		FalkorOK      json.RawMessage `json:"falkor_ok"`
+		DaemonVersion string          `json:"daemon_version"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		// Malformed JSON — treat as down.
@@ -221,11 +243,46 @@ func daemonHealthOK() (falkor bool, version string) {
 		return false, ""
 	}
 
-	falkorOK := payload.FalkorOK == "alive"
+	falkorOK := falkorOKAlive(payload.FalkorOK)
 	healthCache.falkorOK = falkorOK
 	healthCache.version = payload.DaemonVersion
 	healthCache.checkedAt = time.Now()
 	return falkorOK, payload.DaemonVersion
+}
+
+// falkorOKAlive interprets the raw JSON value of the daemon's
+// "falkor_ok" field and reports whether it means "FalkorDB is alive".
+//
+// Accepted shapes (all of them are shapes the daemon has actually
+// produced at some point):
+//
+//	true            → alive
+//	false           → down
+//	"alive"         → alive  (case-insensitive; ProbeState.ALIVE)
+//	"dead"          → down
+//	"warming_up"    → down
+//	absent / null   → down   (missing field = unknown = not proven alive)
+//
+// Any other value (number, object, array, unknown string) → down. The
+// gate is fail-closed by design: only an explicit "alive" opens it.
+func falkorOKAlive(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	// Try the boolean shape first (current producer).
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		// json.Unmarshal of `null` into a bool succeeds and leaves b
+		// false, so null → down. Correct: null is not proof of life.
+		return b
+	}
+	// Then the string shape (older producer, ProbeState str-Enum).
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.EqualFold(strings.TrimSpace(s), "alive")
+	}
+	// Number / object / array / anything else → down (fail-closed).
+	return false
 }
 
 // resetGraphitiHTTPForTest clears the health cache + client singleton
