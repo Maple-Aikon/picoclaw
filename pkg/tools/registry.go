@@ -13,6 +13,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
+	"github.com/sipeed/picoclaw/pkg/phases"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -156,6 +157,54 @@ func (r *ToolRegistry) SetAllowlist(names []string) {
 func (r *ToolRegistry) SetPhase(phase string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.phase = strings.ToLower(strings.TrimSpace(phase))
+}
+
+// SetPhaseAllowlist sets the runtime allowlist AND the goal phase in ONE
+// atomic update (a single write-lock acquisition).
+//
+// WHY (P1 — plan checkpoint-misfire-fix, "Concurrency (P1)" item):
+//
+//	applyPhaseAllowlist used to call SetAllowlist() and then SetPhase() as
+//	two SEPARATE locked operations. SetAllowlist() CLEARS the phase, so
+//	between the two calls the registry sat in a MIXED state — e.g.
+//	allowlist = CHECKPOINT's [goal_progress, complete_goal] with phase = ""
+//	— and a concurrent reader (ToProviderDefs) could observe a projection
+//	that matches NEITHER phase.
+//
+//	Before P1 that window was cosmetic: the projection was deliberately
+//	phase-INDEPENDENT (frozen), so a mixed state changed nothing about
+//	what the LLM saw. After P1 the projection IS phase-dependent, so the
+//	same window can hide the WRONG tool set from the LLM — e.g. a turn
+//	that is really at OPEN could be handed CHECKPOINT's 2 schemas and
+//	then have its domain tools gated out. That is a functional break, not
+//	just a wasted iteration.
+//
+//	One lock acquisition removes the window entirely. It also closes the
+//	pre-existing split-state hazard for the runtime gate, which reads the
+//	same two fields (IsAllowed → toolAllowedLocked).
+//
+//	NOTE: unlike SetAllowlist(nil) — which clears the phase as part of its
+//	"allow-all" contract — SetPhaseAllowlist always applies the phase it
+//	is given, INCLUDING when names is nil (the OPEN-with-no-frontmatter
+//	case: allow-all + phase=open).
+func (r *ToolRegistry) SetPhaseAllowlist(names []string, phase string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if names == nil {
+		r.allowlist = nil
+	} else {
+		allowlist := make(map[string]struct{}, len(names))
+		for _, name := range names {
+			trimmed := strings.ToLower(strings.TrimSpace(name))
+			if trimmed == "" {
+				continue
+			}
+			allowlist[trimmed] = struct{}{}
+		}
+		r.allowlist = allowlist
+	}
 	r.phase = strings.ToLower(strings.TrimSpace(phase))
 }
 
@@ -330,6 +379,41 @@ func (r *ToolRegistry) EffectiveToolCount() int {
 // IsLifecycleToolAllowed directly.
 func isLifecycleToolAllowed(toolName, phase string) bool {
 	return IsLifecycleToolAllowed(toolName, phase)
+}
+
+// projectToolLocked decides whether a tool's SCHEMA is projected to the
+// provider for the active goal phase.
+//
+// P1 (plan checkpoint-misfire-fix): the projection is phase-scoped.
+//
+//   - projectionFrozen == false → the runtime allowlist filters the
+//     projection (the pre-Phase-12.72 behaviour, unchanged).
+//   - projectionFrozen == true and the phase is OPEN or UNSET → the FULL
+//     registry is projected, byte-identical to the pre-P1 behaviour. The
+//     OPEN prompt-cache prefix must not move.
+//   - projectionFrozen == true and the phase is NARROW (set / checkpoint /
+//     final / post_final) → only the phase allowlist is projected, so the
+//     LLM stops seeing ~76 schemas it may not call.
+//   - projectionFrozen == true and the phase is UNKNOWN → fail CLOSED onto
+//     the allowlist. An unrecognised phase must never widen the visible set.
+//
+// The caller must hold r.mu (read). This function does NOT decide what may
+// EXECUTE — toolAllowedLocked does, and pipeline_execute.go's
+// gatePreCheckDeny enforces it independently of the projection.
+func (r *ToolRegistry) projectToolLocked(name string) bool {
+	if !r.projectionFrozen {
+		// Legacy / unfrozen registry: the allowlist filters the projection.
+		return r.toolAllowedLocked(name)
+	}
+	// Frozen projection: OPEN (and the unset-phase backward-compat path)
+	// keeps the FULL registry so the prompt-cache prefix stays byte-stable.
+	if r.phase == "" || r.phase == phases.PhaseOpen {
+		return true
+	}
+	// Narrow phase (set / checkpoint / final / post_final) OR an unknown
+	// phase: project only what the phase allowlist permits. Both cases fail
+	// CLOSED — an unknown phase must never widen the visible set.
+	return r.toolAllowedLocked(name)
 }
 
 func (r *ToolRegistry) toolAllowedLocked(name string) bool {
@@ -899,6 +983,29 @@ func (r *ToolRegistry) GetDefinitions() []map[string]any {
 
 // ToProviderDefs converts tool definitions to provider-compatible format.
 // This is the format expected by LLM provider APIs.
+//
+// P1 (plan checkpoint-misfire-fix, §5 "P1 — Projection theo phase"):
+// the projection is PHASE-SCOPED.
+//
+//   - projectionFrozen == false (legacy / unfrozen registries):
+//     unchanged behaviour — the runtime allowlist filters the projection.
+//   - projectionFrozen == true AND the phase is OPEN or unset:
+//     the FULL registry is projected, byte-identical to the pre-P1
+//     behaviour. The OPEN prompt-cache prefix must not move, or every
+//     OPEN turn pays full uncached input.
+//   - projectionFrozen == true AND the phase is a NARROW phase
+//     (set / checkpoint / final / post_final):
+//     only the phase allowlist is projected. The LLM no longer SEES the
+//     ~76 schemas it is not allowed to call, so it stops picking a tool
+//     that the runtime gate will reject (the "misfire").
+//   - projectionFrozen == true AND the phase is UNKNOWN:
+//     fail CLOSED onto the allowlist. An unrecognised phase must never
+//     WIDEN the visible set.
+//
+// The RUNTIME GATE is untouched by this change: toolAllowedLocked still
+// decides what may EXECUTE, and pipeline_execute.go's gatePreCheckDeny
+// still rejects a blocked call. The projection is a model-visibility /
+// prompt-cache measure, the gate is the execution boundary.
 func (r *ToolRegistry) ToProviderDefs() []providers.ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -906,11 +1013,7 @@ func (r *ToolRegistry) ToProviderDefs() []providers.ToolDefinition {
 	sorted := r.sortedToolNames()
 	definitions := make([]providers.ToolDefinition, 0, len(sorted))
 	for _, name := range sorted {
-		// Phase 11 fix: honour the runtime allowlist when projecting tool
-		// definitions to the provider. In frozen projection mode (for KV prompt caching),
-		// we bypass this filter and project all core/active tools while relying on runtime
-		// gating (isLifecycleToolAllowed/Get) to block execution.
-		if !r.projectionFrozen && !r.toolAllowedLocked(name) {
+		if !r.projectToolLocked(name) {
 			continue
 		}
 

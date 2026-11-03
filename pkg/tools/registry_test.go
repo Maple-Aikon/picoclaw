@@ -325,6 +325,78 @@ func TestToolRegistry_SetAllowlistClearsPhase(t *testing.T) {
 	}
 }
 
+// P1 (plan checkpoint-misfire-fix, "Concurrency (P1)"): SetPhaseAllowlist
+// writes the allowlist AND the phase in ONE locked operation.
+//
+// The reason it exists: SetAllowlist() CLEARS the phase, so the old
+// two-call sequence (SetAllowlist → SetPhase) left a window in which the
+// registry held phase-N's allowlist with phase="" — a state matching
+// NEITHER phase. While the projection was phase-INDEPENDENT that window
+// was cosmetic. After P1 the projection IS phase-dependent, so a
+// concurrent reader could be handed the WRONG tool set (e.g. an OPEN turn
+// seeing only CHECKPOINT's 2 schemas, then having its domain tools gated
+// out). That is a functional break.
+//
+// This test pins the ATOMIC behaviour: after the call, the registry
+// reflects the phase it was given, and the allowlist that goes with it.
+func TestToolRegistry_SetPhaseAllowlist_Atomic(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(newMockTool("goal_progress", "extend"))
+	r.Register(newMockTool("complete_goal", "finalize"))
+	r.Register(newMockTool("exec", "run"))
+	r.SetProjectionFrozen(true)
+
+	// CHECKPOINT: allowlist AND phase land together.
+	r.SetPhaseAllowlist([]string{"goal_progress", "complete_goal"}, "checkpoint")
+
+	if !r.IsAllowed("goal_progress") {
+		t.Error("expected goal_progress to be allowed at CHECKPOINT")
+	}
+	if !r.IsAllowed("complete_goal") {
+		t.Error("expected complete_goal to be allowed at CHECKPOINT")
+	}
+	if r.IsAllowed("exec") {
+		t.Error("expected exec to be blocked at CHECKPOINT")
+	}
+	// The projection must be the CHECKPOINT set — not the "allowlist set
+	// with phase empty" mixed state.
+	defs := r.ToProviderDefs()
+	if len(defs) != 2 {
+		t.Fatalf("expected 2 projected tools at CHECKPOINT, got %d", len(defs))
+	}
+	for _, d := range defs {
+		if d.Function.Name != "goal_progress" && d.Function.Name != "complete_goal" {
+			t.Errorf("unexpected projected tool %q at CHECKPOINT", d.Function.Name)
+		}
+	}
+
+	// A nil allowlist means "allow all" but the phase still applies — this
+	// is the OPEN-with-no-frontmatter case.
+	r.SetPhaseAllowlist(nil, "open")
+	if !r.IsAllowed("exec") {
+		t.Error("expected exec to be allowed at OPEN with a nil allowlist")
+	}
+	// set_goal is NOT allowed at OPEN (the lifecycle gate).
+	if r.IsAllowed("set_goal") {
+		t.Error("expected set_goal to be blocked at OPEN")
+	}
+}
+
+// SetPhaseAllowlist must NOT clear the phase when the allowlist is nil —
+// unlike SetAllowlist(nil), whose "allow-all" contract also clears the
+// phase (Phase 12.5 backward-compat path).
+func TestToolRegistry_SetPhaseAllowlist_NilAllowlistKeepsPhase(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(newMockTool("exec", "run"))
+	r.SetPhaseAllowlist(nil, "post_final")
+
+	// POST-FINAL is the hard guard at the top of toolAllowedLocked: nothing
+	// is executable, no matter the allowlist.
+	if r.IsAllowed("exec") {
+		t.Error("expected exec to be blocked at POST-FINAL even with a nil allowlist")
+	}
+}
+
 func TestToolRegistry_HasRegisteredIncludesHiddenTools(t *testing.T) {
 	r := NewToolRegistry()
 	r.SetAllowlist([]string{"visible", "hidden"})

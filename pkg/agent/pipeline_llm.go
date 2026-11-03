@@ -228,11 +228,18 @@ func (p *Pipeline) CallLLM(
 		//
 		// Phase 12.80: the canary measures the EXECUTABLE tool set
 		// (EffectiveToolCount), NOT the projected schema count. The
-		// projection is frozen (agent_init.go: SetProjectionFrozen(true))
-		// so len(exec.providerToolDefs) is the whole registry at every
-		// phase — comparing it against a per-phase baseline fired on
-		// EVERY call and buried the real signal (measured: 8.430 spurious
-		// OPEN + 732 CHECKPOINT events per log window).
+		// projection USED TO be frozen (agent_init.go:
+		// SetProjectionFrozen(true)) so len(exec.providerToolDefs) was the
+		// whole registry at every phase — comparing it against a
+		// per-phase baseline fired on EVERY call and buried the real signal
+		// (measured: 8.430 spurious OPEN + 732 CHECKPOINT events per log
+		// window).
+		//
+		// P1 (plan checkpoint-misfire-fix) makes the projection
+		// PHASE-SCOPED (narrow phases project only their allowlist), so
+		// the projected count is no longer phase-independent. The canary
+		// still measures the EXECUTABLE set — EffectiveToolCount() —
+		// which is the policy signal and is unchanged by P1.
 		//
 		// The agent-aware variant is used so OPEN can be checked against
 		// the agent's own resolved allowlist (OPEN is a RELATIVE phase).

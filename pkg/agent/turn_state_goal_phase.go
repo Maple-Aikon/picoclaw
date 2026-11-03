@@ -138,7 +138,6 @@ func (ts *turnState) applyPhaseAllowlist(phase GoalPhase) {
 		return
 	}
 	allowlist := resolveAgentToolAllowlistWithPhase(ts.agent.Definition, phase)
-	ts.agent.Tools.SetAllowlist(allowlist)
 	// Phase 12.5: tell the registry which goal phase is active so per-phase
 	// rules inside toolAllowedLocked (e.g. suppress discovery-tool exemption
 	// at GoalPhaseSet / GoalPhaseFinal) take effect. Without this, the
@@ -146,5 +145,15 @@ func (ts *turnState) applyPhaseAllowlist(phase GoalPhase) {
 	// tool_search_tool_bm25 because the unconditional discovery bypass rule
 	// would override it. Threading phase here is the only call site that
 	// knows the active GoalPhase at allowlist time.
-	ts.agent.Tools.SetPhase(string(phase))
+	//
+	// P1 (plan checkpoint-misfire-fix, "Concurrency (P1)"): the allowlist and
+	// the phase are written in ONE locked operation (SetPhaseAllowlist).
+	// SetAllowlist() CLEARS the phase, so the previous two-call sequence
+	// (SetAllowlist → SetPhase) left a window in which the registry held
+	// CHECKPOINT's allowlist with phase="" — a state matching neither phase.
+	// Harmless while the projection was phase-INDEPENDENT; after P1 the
+	// projection IS phase-dependent, so a concurrent reader could be handed
+	// the WRONG tool set (e.g. an OPEN turn seeing only the 2 CHECKPOINT
+	// schemas, then having its domain tools gated out).
+	ts.agent.Tools.SetPhaseAllowlist(allowlist, string(phase))
 }

@@ -20,9 +20,31 @@ func (m *mockTool) Execute(ctx context.Context, args map[string]any) *toolshared
 	return toolshared.NewToolResult("ok")
 }
 
-// TestFrozenToolSchema_InvariantAcrossGoalPhases verifies that when
-// ToolProjectionMode is frozen, ToProviderDefs() returns identical schemas
-// regardless of the active goal phase (SET, OPEN, CHECKPOINT, FINAL).
+// TestFrozenToolSchema_InvariantAcrossGoalPhases verifies the tool-schema
+// projection invariants that hold when ToolProjectionMode is frozen.
+//
+// CONTRACT CHANGE (P1 — plan checkpoint-misfire-fix, contract C8):
+//
+// This test USED TO assert that ToProviderDefs() returns the SAME 5 schemas
+// in EVERY goal phase (SET, OPEN, CHECKPOINT, FINAL). P1 deliberately breaks
+// that invariant at the NARROW phases, because the whole point of P1 is to
+// stop showing the LLM the ~76 schemas it is not allowed to call (the
+// model picks one, the runtime gate rejects it, the turn burns an
+// iteration on a misfire).
+//
+// Per C8 the test is UPDATED, NOT DELETED. What it keeps:
+//
+//	(a) the RUNTIME GATE assertions — the gate is the security boundary and
+//	    P1 must not weaken it;
+//	(b) the OPEN-phase consistency assertion — OPEN keeps the FULL frozen
+//	    projection so the prompt-cache prefix does not move.
+//
+// What it now asserts instead of "identical in every phase":
+//
+//	- OPEN (and the unset-phase backward-compat path) project ALL 5 tools,
+//	  byte-identical to the pre-P1 behaviour;
+//	- the NARROW phases project exactly the tools their phase allowlist
+//	  permits — SET -> 1, CHECKPOINT -> 2, FINAL -> 1.
 func TestFrozenToolSchema_InvariantAcrossGoalPhases(t *testing.T) {
 	reg := tools.NewToolRegistry()
 	reg.SetProjectionFrozen(true)
@@ -34,44 +56,79 @@ func TestFrozenToolSchema_InvariantAcrossGoalPhases(t *testing.T) {
 	reg.Register(&mockTool{name: "read_file"})
 	reg.Register(&mockTool{name: "exec"})
 
-	// Phase SET
-	reg.SetPhase("SET")
-	defsSet := reg.ToProviderDefs()
-
-	// Phase OPEN
+	// --- (b) OPEN keeps the FULL frozen projection (cache stability) -------
+	//
+	// The OPEN prompt-cache prefix is the hot path: it is reused across
+	// turns. If the OPEN projection shrank, every OPEN turn would pay full
+	// uncached input. So OPEN must project ALL registered tools, exactly
+	// as it did before P1.
+	reg.SetAllowlist(nil)
 	reg.SetPhase("OPEN")
+
 	defsOpen := reg.ToProviderDefs()
-
-	// Phase CHECKPOINT
-	reg.SetPhase("CHECKPOINT")
-	defsCheckpoint := reg.ToProviderDefs()
-
-	// Phase FINAL
-	reg.SetPhase("FINAL")
-	defsFinal := reg.ToProviderDefs()
-
-	if len(defsSet) != 5 || len(defsOpen) != 5 || len(defsCheckpoint) != 5 || len(defsFinal) != 5 {
-		t.Fatalf("expected 5 tools projected in all phases, got Set=%d, Open=%d, Checkpoint=%d, Final=%d",
-			len(defsSet), len(defsOpen), len(defsCheckpoint), len(defsFinal))
+	if len(defsOpen) != 5 {
+		t.Fatalf("OPEN phase must keep the full frozen projection (5 tools), got %d", len(defsOpen))
 	}
-
-	// Verify names are identical and in same sorted order
-	for i := 0; i < len(defsSet); i++ {
-		if defsSet[i].Function.Name != defsOpen[i].Function.Name ||
-			defsSet[i].Function.Name != defsCheckpoint[i].Function.Name ||
-			defsSet[i].Function.Name != defsFinal[i].Function.Name {
-			t.Errorf("mismatch at index %d across phases: set=%s, open=%s, checkpoint=%s, final=%s",
-				i, defsSet[i].Function.Name, defsOpen[i].Function.Name,
-				defsCheckpoint[i].Function.Name, defsFinal[i].Function.Name)
+	openNames := map[string]bool{}
+	for _, d := range defsOpen {
+		openNames[d.Function.Name] = true
+	}
+	for _, want := range []string{"set_goal", "goal_progress", "complete_goal", "read_file", "exec"} {
+		if !openNames[want] {
+			t.Errorf("OPEN projection lost %q — the prompt-cache prefix would move", want)
 		}
 	}
 
-	// Runtime Gate must still enforce phase restrictions!
-	// At SET phase, 'read_file' must be blocked at execution time
+	// --- The NARROW phases project only their allowlist -------------------
+	//
+	// These are the ABSOLUTE phase rows from pkg/tools/phase_policy_table.go.
+	// Each phase's allowlist is pinned by the policy table, so the expected
+	// projected set is exact.
+	narrowCases := []struct {
+		phase     string
+		allowlist []string
+		want      []string
+	}{
+		{"SET", []string{"set_goal"}, []string{"set_goal"}},
+		{"CHECKPOINT", []string{"goal_progress", "complete_goal"}, []string{"goal_progress", "complete_goal"}},
+		{"FINAL", []string{"complete_goal"}, []string{"complete_goal"}},
+	}
+
+	for _, tc := range narrowCases {
+		t.Run(tc.phase, func(t *testing.T) {
+			reg.SetAllowlist(tc.allowlist)
+			reg.SetPhase(tc.phase)
+
+			defs := reg.ToProviderDefs()
+			if len(defs) != len(tc.want) {
+				t.Fatalf("%s phase must project exactly %v (%d tools), got %d",
+					tc.phase, tc.want, len(tc.want), len(defs))
+			}
+			got := map[string]bool{}
+			for _, d := range defs {
+				got[d.Function.Name] = true
+			}
+			for _, want := range tc.want {
+				if !got[want] {
+					t.Errorf("%s phase did not project %q (got %v)", tc.phase, want, got)
+				}
+			}
+		})
+	}
+
+	// --- (a) Runtime Gate must still enforce phase restrictions! ----------
+	//
+	// P1 changes what the LLM SEES. It must NOT change what the LLM is
+	// allowed to RUN. At SET phase, 'read_file' must be blocked at
+	// execution time even though (in the frozen legacy projection) its
+	// schema was visible.
 	reg.SetAllowlist([]string{"set_goal"})
 	reg.SetPhase("SET")
 	if reg.IsAllowed("read_file") {
 		t.Errorf("runtime execution gate failed: 'read_file' should not be accessible at SET phase")
+	}
+	if reg.IsAllowed("exec") {
+		t.Errorf("runtime execution gate failed: 'exec' should not be accessible at SET phase")
 	}
 	if !reg.IsAllowed("set_goal") {
 		t.Errorf("runtime execution gate failed: 'set_goal' should be accessible at SET phase")

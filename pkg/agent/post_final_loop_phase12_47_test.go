@@ -54,20 +54,33 @@ func TestPhase12_47_T8_CompleteGoalThenPostFinalIter(t *testing.T) {
 	// Post-12.50 F3: tools_total field is now registry count (Tools.Count),
 	// NOT post-allowlist projected.
 	//
-	// Phase 12.72 Fix #1: agent.Tools.ProjectionFrozen() == true (wired
-	// at end of registerSharedTools, agent_init.go:442). ToProviderDefs
-	// projects the FULL registry under frozen projection — runtime gating
-	// (toolAllowedLocked) is what enforces post_final isolation. So
-	// ToProviderDefs no longer returns 0 visible; it returns the full
-	// set, but POST-FINAL phase allowlist is [] → runtime gate blocks
-	// every tool. Lock the new wire contract:
-	if defs := agent.Tools.ToProviderDefs(); len(defs) == 0 {
-		t.Fatalf("Phase 12.72 Fix #1: frozen projection must project full registry (len > 0); got 0 — wire may not be active")
+	// CONTRACT CHANGE (P1 — plan checkpoint-misfire-fix):
+	//
+	//	Phase 12.72 Fix #1 froze the projection so ToProviderDefs() returned
+	//	the FULL registry at POST-FINAL, on the theory that the runtime
+	//	gate alone enforces the isolation. P1 makes the projection
+	//	PHASE-SCOPED, so at POST-FINAL the projection is now EMPTY —
+	//	which is what this test's own header always asserted
+	//	("LLM request tools_visible=0"). The POST-FINAL policy row pins
+	//	the allowlist to [] and toolAllowedLocked hard-returns false for
+	//	every tool at that phase, so "projected == executable == 0" is the
+	//	exact-match state (invariant I2 of the P1 test suite).
+	//
+	//	The POST-FINAL isolation guarantee is unchanged and still enforced
+	//	by the RUNTIME GATE — that assertion is kept below.
+	if defs := agent.Tools.ToProviderDefs(); len(defs) != 0 {
+		t.Fatalf("POST-FINAL projection must be empty (phase allowlist = []); got %d tools — "+
+			"P1 narrows the projection per phase, and the runtime gate below is what enforces isolation",
+			len(defs))
 	}
-	// Runtime gate must still block complete_goal at POST-FINAL despite
-	// full projection (this is what enforces isolation now).
+	// Runtime gate must still block complete_goal at POST-FINAL (this is
+	// what enforces isolation now, and after P1).
 	if agent.Tools.IsAllowed("complete_goal") {
-		t.Errorf("Phase 12.72 Fix #1 contract: POST-FINAL runtime gate must block complete_goal; got IsAllowed=true (allowlist enforcement broken)")
+		t.Errorf("POST-FINAL runtime gate must block complete_goal; got IsAllowed=true (allowlist enforcement broken)")
+	}
+	// Nothing at all is executable at POST-FINAL.
+	if got := agent.Tools.EffectiveToolCount(); got != 0 {
+		t.Errorf("POST-FINAL EffectiveToolCount = %d, want 0", got)
 	}
 
 	// --- iter 5 body: LLM text-only final report (strip fire —

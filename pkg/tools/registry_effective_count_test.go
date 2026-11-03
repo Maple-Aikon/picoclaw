@@ -79,14 +79,31 @@ func TestEffectiveToolCount_CheckpointPhase(t *testing.T) {
 		t.Errorf("EffectiveToolCount() at CHECKPOINT = %d, want 2", got)
 	}
 
-	// And the FROZEN projection is the whole registry — this is exactly the
-	// divergence that made the old canary fire on every call.
+	// P1 (plan checkpoint-misfire-fix): the FROZEN projection used to be the
+	// WHOLE registry at every phase — that phase-INDEPENDENCE was the
+	// artifact that made the old canary fire on every call (it compared the
+	// projected count against a per-phase baseline).
+	//
+	// P1 makes the projection PHASE-SCOPED: at a NARROW phase the frozen
+	// projection is narrowed to the phase allowlist, so it now MATCHES the
+	// executable set (2 tools) instead of diverging from it (4 tools).
+	//
+	// The canary itself is unaffected: canary_drift.go measures
+	// EffectiveToolCount() (the EXECUTABLE set), never the projected count.
 	reg.SetProjectionFrozen(true)
-	if got := len(reg.ToProviderDefs()); got != 4 {
-		t.Errorf("frozen projection = %d tools, want 4 (whole registry)", got)
+	if got := len(reg.ToProviderDefs()); got != 2 {
+		t.Errorf("frozen projection at CHECKPOINT = %d tools, want 2 (phase allowlist)", got)
 	}
 	if got := reg.EffectiveToolCount(); got != 2 {
 		t.Errorf("EffectiveToolCount() at CHECKPOINT (frozen) = %d, want 2", got)
+	}
+
+	// The OPEN phase keeps the FULL frozen projection — the prompt-cache
+	// prefix must not move, or every OPEN turn pays full uncached input.
+	reg.SetAllowlist(nil)
+	reg.SetPhase("open")
+	if got := len(reg.ToProviderDefs()); got != 4 {
+		t.Errorf("frozen projection at OPEN = %d tools, want 4 (whole registry)", got)
 	}
 }
 
