@@ -101,6 +101,15 @@ func (ts *turnState) maybeRebuildPromptForStateChange(
 		ts.media,
 		cfg,
 	)
+	// Phase 12.80: pin the request's Iteration to the iteration this rebuild
+	// is FOR. promptBuildRequestForTurn reads ts.currentIteration(), which
+	// normally equals `iteration` in production (turn_coord.go sets the
+	// iteration before calling this hook) — but the hook's own contract is
+	// "rebuild for THIS iteration" (it records ts.lastBuiltPromptIteration
+	// = iteration). Pinning it keeps the rendered banner's iter attribute
+	// truthful even when the two diverge, and keeps the request consistent
+	// with the state the hook writes back.
+	rebuildPromptReq.Iteration = iteration
 
 	// Build new messages via BuildMessagesFromPrompt (preserves summary +
 	// history + current user). We take only newMessages[0] (the rebuilt
@@ -126,6 +135,27 @@ func (ts *turnState) maybeRebuildPromptForStateChange(
 	newMessages = append(newMessages, rebuiltSystem)
 	if len(messages) > 1 {
 		newMessages = append(newMessages, messages[1:]...)
+	}
+	// Phase 12.80 (Gói A / P2): refresh the goal-phase banner in the
+	// CURRENT turn's user message.
+	//
+	// The banner lives in the user message tail (not the system prompt),
+	// so replacing messages[0] alone leaves the LLM reading the banner
+	// rendered at the turn's FIRST iteration — always `phase="SET"`.
+	// The runtime allowlist had meanwhile moved to CHECKPOINT, so the
+	// banner contradicted the wire (measured misfire: 52.9% of tool
+	// choices at CHECKPOINT were gate-rejected).
+	//
+	// The banner is refreshed HERE (not inside BuildMessagesFromPrompt)
+	// because the rebuild path deliberately keeps messages[1:] — the
+	// already-built user message with its media metadata — instead of
+	// re-appending it. Refresh in place instead.
+	//
+	// currentTurnStart is exec.currentTurnStart: the index of the first
+	// message belonging to this turn. Messages before it are history and
+	// must not be touched.
+	if banner := formatDynamicGoalPhaseBanner(rebuildPromptReq); banner != "" {
+		newMessages = refreshGoalPhaseBannerInMessages(newMessages, exec.currentTurnStart, banner)
 	}
 	ts.lastBuiltPromptPhase = currentPhase
 	ts.lastBuiltPromptIteration = iteration

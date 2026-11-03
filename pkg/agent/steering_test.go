@@ -735,7 +735,10 @@ func TestAgentLoop_Steering_InitialPoll(t *testing.T) {
 	// Look for the steering message in the captured messages
 	found := false
 	for _, m := range msgs {
-		if m.Content == "pre-enqueued steering" {
+		// Phase 12.80: the turn's root user message also carries the
+		// goal-phase banner (appended at its tail), so compare by
+		// containment rather than by exact equality.
+		if strings.Contains(m.Content, "pre-enqueued steering") {
 			found = true
 			break
 		}
@@ -857,7 +860,10 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 
 	foundLateMessage := false
 	for _, msg := range secondMessages {
-		if msg.Role == "user" && msg.Content == "late append" {
+		// Phase 12.80: the turn's root user message also carries the
+		// goal-phase banner (appended at its tail), so compare by
+		// containment rather than by exact equality.
+		if msg.Role == "user" && strings.Contains(msg.Content, "late append") {
 			foundLateMessage = true
 			break
 		}
@@ -1156,10 +1162,13 @@ func TestAgentLoop_Run_PendingStopStillContinuesQueuedFollowUp(t *testing.T) {
 
 	foundFollowUp := false
 	for _, msg := range secondMessages {
-		if msg.Role == "user" && msg.Content == "run this instead" {
+		// Phase 12.80: the turn's root user message also carries the
+		// goal-phase banner (appended at its tail), so compare by
+		// containment rather than by exact equality.
+		if msg.Role == "user" && strings.Contains(msg.Content, "run this instead") {
 			foundFollowUp = true
 		}
-		if msg.Role == "user" && msg.Content == "skip this turn" {
+		if msg.Role == "user" && strings.Contains(msg.Content, "skip this turn") {
 			t.Fatalf("unexpected canceled message in continuation context: %q", msg.Content)
 		}
 	}

@@ -230,8 +230,8 @@ func (t *SetGoalTool) Parameters() map[string]any {
 			},
 			"success_criteria": map[string]any{
 				"type":        "array",
-				"items":       map[string]any{"type": "string"},
 				"minItems":    1,
+				"items":       map[string]any{"type": "string"},
 				"description": "List of testable criteria that prove the goal is met. Each item is a separate bullet in the rendered header.",
 			},
 			"in_scope": map[string]any{
@@ -287,10 +287,10 @@ func (t *SetGoalTool) Execute(ctx context.Context, args map[string]any) *toolsha
 	}
 
 	g := &Goal{
-		Name:        name,
-		Status:      StatusActive,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		Name:      name,
+		Status:    StatusActive,
+		CreatedAt: now,
+		UpdatedAt: now,
 		Description: Description{
 			Objective:       objective,
 			SuccessCriteria: successCriteria,
@@ -471,13 +471,13 @@ When to use:
 When NOT to use:
 - When your work is done and the user has no pending decision — call complete_goal instead.
 - When you need to wait for user approval, decision, or review before continuing — call complete_goal with a summary describing the wait state. complete_goal accepts any 1-1000 char summary; "Waiting for Maple to review X" is a valid summary even when goal work is not yet complete.
-- Calling goal_progress with empty remaining_steps is rejected to prevent "log then complete_goal at next iter" cycles.
+- Calling goal_progress with an empty remaining_steps records the progress entry but grants NO extra iterations (only a non-empty remaining_steps extends the cap). If your work is finished, or you need the user to decide/review before continuing, call complete_goal instead.
 
-Required field: remaining_steps MUST be non-empty (>= 1 entry). The runtime only grants more iterations when this field is populated.
+remaining_steps drives the iteration budget: non-empty (>= 1 entry) = the runtime grants more iterations so you can keep working within this turn; empty = progress is still logged, but no iteration budget is granted.
 
 - completed_steps: things finished this turn
 - blockers: anything blocking forward progress
-- remaining_steps: REQUIRED. Explicit list of what's still pending — lets the agent continue within this turn
+- remaining_steps: list of what's still pending. Non-empty = the agent can continue within this turn; empty = logged, but no iteration budget granted
 - drift_detected: set true when the work is no longer aligned with the original objective
 - next_action: one sentence describing the next concrete step (MUST be present if drift_detected is true)`
 }
@@ -498,9 +498,8 @@ func (t *GoalProgressTool) Parameters() map[string]any {
 			},
 			"remaining_steps": map[string]any{
 				"type":        "array",
-				"minItems":    1,
 				"items":       map[string]any{"type": "string"},
-				"description": "REQUIRED. Non-empty list of what's still pending — drives iteration-cap extension so the agent can keep working within this turn. Empty or missing is rejected. If your work is done or you need user approval/decision before continuing, call complete_goal instead.",
+				"description": "List of what is still pending. Non-empty = the runtime grants more iterations so you can keep working within this turn. Empty = the progress entry is still logged, but no iteration budget is granted and you should call complete_goal instead.",
 			},
 			"drift_detected": map[string]any{
 				"type":        "boolean",
@@ -532,17 +531,28 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 	if drift && next == "" {
 		return invalidInputForLLM("goal_progress: when drift_detected=true you MUST also provide next_action describing how to realign")
 	}
-	// Phase 12.20: remaining_steps is REQUIRED. Empty/missing list means the
-	// LLM is signalling "nothing more to do right now" — which is exactly
-	// the case where complete_goal should be called instead. We previously
-	// allowed empty remaining_steps + blockers/next_action as a "wait for
-	// user" primitive, but in practice this caused LLM to log progress and
-	// then call complete_goal at the next iteration (extra round-trip with
-	// no real work). Strict rule: any goal_progress call must extend the
-	// iteration cap, which only happens when remaining_steps is non-empty.
-	if len(remaining) == 0 {
-		return invalidInputForLLM("goal_progress: remaining_steps is required and must be non-empty. If your work is finished or you need user approval/decision before continuing, call complete_goal instead (the summary field accepts a 'Waiting for X to review Y' message).")
-	}
+	// Phase 12.80 (Goi A): remaining_steps is NO LONGER rejected when
+	// empty. It is still REQUIRED for the iteration-cap extension - an
+	// empty list cannot grant more iterations, because the extension is
+	// what makes "keep working" meaningful. But rejecting the call
+	// outright was a real defect, with two measured costs:
+	//
+	//  1. The LLM lost a whole round-trip. The rejected call produced no
+	//     progress entry, so the completed_steps / blockers / next_action
+	//     the model had carefully written were discarded. The model then
+	//     had to re-emit them in the next iteration.
+	//  2. The rejection is typed ErrInvalidInput, and pipeline_execute.go
+	//     counts ErrInvalidInput on a lifecycle tool as a phase-stuck
+	//     strike (recordPhaseStuckToolFail -> goalProgressAttemptCount).
+	//     Two such rejections are enough to archive the goal with the
+	//     "checkpoint stuck" reason - i.e. a pure ARGUMENT-SHAPE mistake
+	//     could kill an otherwise healthy goal.
+	//
+	// So: log the entry (nothing is lost), do NOT extend the cap (the
+	// "no free iteration" invariant is preserved), and tell the LLM
+	// exactly what to do next. The cap-extension semantics below are
+	// unchanged - they are already gated on len(remaining) > 0.
+	noRemainingSteps := len(remaining) == 0
 
 	store := newStoreFromCtx(ctx, t.workspace)
 	g, err := store.Read(sessionKey)
@@ -600,6 +610,19 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 			// cap-free notice so the LLM doesn't re-attempt extend.
 			summary += "\nNo further extension is possible this turn."
 		}
+
+	}
+
+	// Phase 12.80 (Goi A): explain what an empty remaining_steps means
+	// for the caller. The progress entry IS recorded - nothing was lost -
+	// but no iteration budget was granted, because the extension is what
+	// "keep working" means in this lifecycle.
+	if noRemainingSteps {
+		summary += "Progress recorded, but no iteration budget was granted: remaining_steps was empty, " +
+			"only a non-empty remaining_steps can extend the cap. " +
+			"To keep working, call goal_progress again with at least one concrete remaining step. " +
+			"If the work is finished, or you need the user to decide/review before continuing, " +
+			"call complete_goal instead (its summary accepts a 'Waiting for X to review Y' message)."
 	}
 
 	// Phase 12.23: self-extend the turn's iteration cap so the agent

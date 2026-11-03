@@ -116,8 +116,14 @@ func TestPhaseChangeRebuild_SamePhase_IterChange_TriggersRebuild(t *testing.T) {
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages (rebuilt system + userMsg1), got %d", len(result))
 	}
-	if result[1].Content != "userMsg1" {
-		t.Errorf("expected messages[1] preserved (userMsg1), got %q", result[1].Content)
+	// Phase 12.80: the user message keeps its original text AND carries the
+	// refreshed goal-phase banner (the banner lives in the user message
+	// tail, not the system prompt).
+	if !strings.Contains(result[1].Content, "userMsg1") {
+		t.Errorf("expected messages[1] to preserve userMsg1, got %q", result[1].Content)
+	}
+	if got := bannerPhase(result[1].Content); got != "OPEN" {
+		t.Errorf("expected refreshed banner phase = OPEN, got %q in %q", got, result[1].Content)
 	}
 }
 
@@ -141,8 +147,15 @@ func TestPhaseChangeRebuild_OpenToCheckpoint_TriggersRebuild(t *testing.T) {
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages (rebuilt system + userMsg1), got %d: %v", len(result), result)
 	}
-	if result[1].Content != "userMsg1" {
-		t.Errorf("expected messages[1] preserved (userMsg1), got %q", result[1].Content)
+	// Phase 12.80: the user message keeps its original text AND carries the
+	// refreshed goal-phase banner. Before the fix the banner stayed at the
+	// turn's first-iteration phase (always SET) because only messages[0]
+	// was rebuilt.
+	if !strings.Contains(result[1].Content, "userMsg1") {
+		t.Errorf("expected messages[1] to preserve userMsg1, got %q", result[1].Content)
+	}
+	if got := bannerPhase(result[1].Content); got != "CHECKPOINT" {
+		t.Errorf("expected refreshed banner phase = CHECKPOINT, got %q in %q", got, result[1].Content)
 	}
 	if result[0].Content == "ORIGINAL_SYSTEM_PROMPT" {
 		t.Errorf("expected messages[0] rebuilt, still ORIGINAL_SYSTEM_PROMPT")
@@ -174,9 +187,19 @@ func TestPhaseChangeRebuild_CheckpointToOpen_TriggersRebuild(t *testing.T) {
 	}
 	tailStart := len(result) - len(expected)
 	for i, exp := range expected {
-		if result[tailStart+i].Content != exp {
-			t.Errorf("expected result[%d].Content = %q, got %q", tailStart+i, exp, result[tailStart+i].Content)
+		got := result[tailStart+i].Content
+		if !strings.Contains(got, exp) {
+			t.Errorf("expected result[%d].Content to contain %q, got %q", tailStart+i, exp, got)
 		}
+	}
+	// Phase 12.80: the banner belongs to the current turn's ROOT user
+	// message (the first user message of the turn) - the same message
+	// that carried the banner when the turn was built. It is NOT the
+	// tail-most user message: steering messages also have Role=="user"
+	// and are appended after the root.
+	if got := bannerPhase(result[tailStart].Content); got != "OPEN" {
+		t.Errorf("expected refreshed banner phase = OPEN on the current-turn root user message, got %q in %q",
+			got, result[tailStart].Content)
 	}
 }
 

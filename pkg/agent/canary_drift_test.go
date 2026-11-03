@@ -119,16 +119,26 @@ func TestCanaryCheckToolsVisible_HealthyNoIter(t *testing.T) {
 
 // TestCanary_AllPhasesBaseline — sanity check the per-phase baseline map.
 //
-// Phase 12.50 §3.5b F1: OPEN phase baseline updated 82 → 83 to account for
-// media-gen MCP server addition (production registry 87, hidden 2, lifecycle
-// blocked 2 = 83 visible). Pre-12.50 baseline 82 is stale.
+// Phase 12.80: OPEN is no longer a constant. The OPEN policy is RELATIVE
+// (allowlist = the agent's own frontmatter `tools:` declaration ∪ the
+// policy's BaseAdds), so its expected count depends on the agent and on
+// which tools are registered right now. Measured across 8 log files
+// (2026-10-27 → 11-03) the executable count moved 69 → 75 → 76 as tools
+// were added/promoted/expired — a hardcoded constant went stale within
+// days. The constant helper therefore returns 0 for OPEN ("no numeric
+// expectation"); the agent-aware variant
+// (canaryExpectedToolsVisibleForAgent) computes it per-agent.
+//
+// The ABSOLUTE phases keep exact constants because the phase policy table
+// pins their allowlists.
 func TestCanary_AllPhasesBaseline(t *testing.T) {
 	cases := []struct {
 		phase       string
 		wantVisible int
 	}{
 		{"set", 1},
-		{"open", 82},
+		// OPEN: RELATIVE phase — expected count is agent-dependent.
+		{"open", 0},
 		{"checkpoint", 2},
 		{"final", 1},
 		{"post_final", 0},
@@ -143,19 +153,25 @@ func TestCanary_AllPhasesBaseline(t *testing.T) {
 	}
 }
 
-// TestCanaryCheckToolsVisible_OpenPhase_82IsHealthy — T12 cell 1.
-// Production baseline for OPEN phase is 82 (post-media-gen, 2026-08-06
-// live verified; registry total=86 - 2 hidden media-gen - 2 lifecycle
-// blocked). When tools_total=86 (full registry) AND tools_visible=82
-// (post-allowlist), NO drift event fires. This is the "healthy" baseline.
-func TestCanaryCheckToolsVisible_OpenPhase_82IsHealthy(t *testing.T) {
+// TestCanaryCheckToolsVisible_OpenPhase_NoConstantBaseline — Phase 12.80.
+//
+// OPEN has no constant expectation, so the plain (agent-agnostic) check
+// must be a NO-OP for OPEN: it can neither fire nor silence a real
+// drift. The agent-aware variant
+// (CanaryCheckToolsVisibleForAgent) is what the production call sites use.
+//
+// This pins the fix for the measured noise: the old constant baseline
+// (82) could never match the frozen projection (~75-76), so the canary
+// fired on every OPEN call — 8.430 spurious events per log window.
+func TestCanaryCheckToolsVisible_OpenPhase_NoConstantBaseline(t *testing.T) {
 	captured := redirectLoggerForTest(t)
 
-	// Healthy: tools_visible=82 matches baseline 82 → no drift
-	CanaryCheckToolsVisible("open", 86, 82, 0, "ok_turn", "ok_session")
+	// OPEN has no constant expectation → the plain check must not fire,
+	// whatever the visible count is.
+	CanaryCheckToolsVisible("open", 97, 76, 0, "ok_turn", "ok_session")
 
 	if bytes.Contains(captured.Bytes(), []byte("canary_drift")) {
-		t.Errorf("expected NO canary_drift for healthy 82 baseline, got: %s", captured.Bytes())
+		t.Errorf("expected NO canary_drift for OPEN without an agent-aware expectation, got: %s", captured.Bytes())
 	}
 }
 
@@ -187,27 +203,39 @@ func TestPhaseStart_ToolsTotalMatchesRegistryCount(t *testing.T) {
 	t.Log("F3 swap verification: turn_coord.go:358 must call Tools.Count(), not len(ToProviderDefs())")
 	t.Log("Live verify: gateway.log grep 'event=phase_start tools_total=N' should show registry count")
 }
-// TestCanaryCheckToolsVisible_OpenPhase_Visible83IsDrift — regression
-// sentinel for "baseline drifted to wrong value" bug class. If a future
-// change accidentally reverts baseline to 83 (the plan §3.5b F1 stale
-// value), this test will detect the bug by failing the "no drift when
-// visible=82" expectation.
+// TestCanaryCheckToolsVisible_CheckpointPhase_Visible2IsHealthy — Phase 12.80.
 //
-// Catches the "forgot to update baseline" bug class. Before this fix
-// (2026-08-06 main-turn-1 live verify), the live baseline was 82 but
-// the code said 83, causing every OPEN iter to fire canary_drift warn.
-func TestCanaryCheckToolsVisible_OpenPhase_Visible83IsDrift(t *testing.T) {
+// The ABSOLUTE phases still have exact constant expectations, because the
+// phase policy table pins their allowlists. CHECKPOINT pins
+// {goal_progress, complete_goal} → expected 2.
+//
+// This is the check that was previously masked: the old code compared the
+// FROZEN PROJECTION count (~75-76) against the constant 2, so the canary
+// fired on every CHECKPOINT call — 732 spurious events per log window.
+// With the executable count the comparison is exact again.
+func TestCanaryCheckToolsVisible_CheckpointPhase_Visible2IsHealthy(t *testing.T) {
 	captured := redirectLoggerForTest(t)
 
-	// If baseline were wrongly 83, visible=82 (the actual production value)
-	// would drift. With correct baseline 82, visible=82 → no drift.
-	// To prove the test catches a reverted baseline, assert that visible=83
-	// DOES drift against baseline 82.
-	CanaryCheckToolsVisible("open", 86, 83, 0, "drift_turn", "drift_session")
+	// Healthy: 2 executable tools at CHECKPOINT → no drift
+	CanaryCheckToolsVisible("checkpoint", 97, 2, 0, "ok_turn", "ok_session")
+
+	if bytes.Contains(captured.Bytes(), []byte("canary_drift")) {
+		t.Errorf("expected NO canary_drift for healthy CHECKPOINT baseline, got: %s", captured.Bytes())
+	}
+}
+
+// TestCanaryCheckToolsVisible_CheckpointPhase_Visible76IsDrift — the
+// regression sentinel for the CHECKPOINT baseline: a drifted executable
+// count at an ABSOLUTE phase MUST still fire.
+func TestCanaryCheckToolsVisible_CheckpointPhase_Visible76IsDrift(t *testing.T) {
+	captured := redirectLoggerForTest(t)
+
+	// 76 executable tools at CHECKPOINT means the phase gate leaked → drift.
+	CanaryCheckToolsVisible("checkpoint", 97, 76, 0, "drift_turn", "drift_session")
 
 	got := captured.Bytes()
 	if !bytes.Contains(got, []byte("canary_drift")) {
-		t.Errorf("expected canary_drift when visible=83 against baseline 82 (regression sentinel), got: %s", got)
+		t.Errorf("expected canary_drift when 76 tools are executable at CHECKPOINT, got: %s", got)
 	}
 }
 

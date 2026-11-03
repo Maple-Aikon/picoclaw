@@ -940,11 +940,13 @@ func TestGoalProgressTool_CheckpointExtend_AtCeiling_NoExtend(t *testing.T) {
 }
 
 func TestGoalProgressTool_NoExtend_WhenNoRemainingSteps(t *testing.T) {
-	// Phase 12.20: remaining_steps is REQUIRED non-empty; Phase 12.23
-	// additionally requires that empty remaining_steps does NOT trigger
-	// extension even when remaining>0 + canExtend=true. Regression guard
-	// after dropping the RemainingIterations() > 0 guard — the only
-	// remaining gate is len(remaining) > 0.
+	// Phase 12.23 + 12.80: an empty remaining_steps does NOT trigger the
+	// extension even when remaining>0 and canExtend=true. The only gate
+	// on the extend wire is len(remaining) > 0.
+	//
+	// Phase 12.80 changed WHY the call is not rejected: the progress
+	// entry is now recorded (nothing is lost), but the cap is still not
+	// extended - "no free iteration" is preserved.
 	ws := tempWorkspace(t)
 	ctx := ctxWithSession("sess-noremaining-extend", "agent")
 	NewSetGoalTool(ws).Execute(ctx, map[string]any{
@@ -956,29 +958,44 @@ func TestGoalProgressTool_NoExtend_WhenNoRemainingSteps(t *testing.T) {
 	ext := &fakeExtender{remaining: 5, canExtend: true}
 	ctx = WithIterationExtender(ctx, ext)
 
-	// Note: empty remaining_steps — but Phase 12.20 returns ErrInvalidInput
-	// BEFORE the extend wire fires, so the test asserts callCount==0 by
-	// the time the Execute returns. We rely on the Phase 12.20 reject
-	// message; we still want a positive control showing the wire is
-	// gated on remaining_steps non-empty, which it is (the IsError short-
-	// circuits the extension block).
+	// remaining_steps intentionally absent.
 	res := NewGoalProgressTool(ws).Execute(ctx, map[string]any{
 		"completed_steps": []string{"write code"},
 		"next_action":     "wait for user",
-		// remaining_steps intentionally absent — Phase 12.20 reject.
 	})
-	if !res.IsError {
-		t.Fatalf("expected error (Phase 12.20 empty remaining_steps), got success")
+	if res.IsError {
+		t.Fatalf("expected no error (Phase 12.80 accepts empty remaining_steps), got error: %q", res.ForLLM)
 	}
 	if ext.callCount() != 0 {
 		t.Errorf("expected 0 ExtendIterationCap calls when remaining_steps empty, got %d", ext.callCount())
 	}
+	// The progress entry must still be recorded.
+	store := newStoreFromCtx(ctx, ws)
+	g, err := store.Read("sess-noremaining-extend")
+	if err != nil || g == nil {
+		t.Fatalf("read goal after progress: err=%v goal=%v", err, g)
+	}
+	if len(g.Progress) != 1 {
+		t.Errorf("expected 1 progress entry recorded, got %d", len(g.Progress))
+	}
 }
 
-func TestGoalProgressTool_RejectsWhenRemainingStepsEmpty(t *testing.T) {
-	// Phase 12.20: remaining_steps is REQUIRED. Empty list is rejected
-	// regardless of other populated fields (completed/blockers/next_action).
-	// LLM must call complete_goal instead when there's no more tool work.
+func TestGoalProgressTool_AcceptsWhenRemainingStepsEmpty(t *testing.T) {
+	// Phase 12.80 (Gói A): an empty remaining_steps is NO LONGER rejected.
+	//
+	// The Phase 12.20 strict rule cost two things that were measured:
+	//   1. A whole round-trip was lost — the rejected call produced no
+	//      progress entry, so the completed_steps / blockers / next_action
+	//      the model wrote were discarded and had to be re-emitted.
+	//   2. The rejection is typed ErrInvalidInput, which pipeline_execute.go
+	//      counts as a phase-stuck strike on a lifecycle tool. Two
+	//      rejections were enough to archive the goal with the
+	//      "checkpoint stuck" reason — a pure argument-shape mistake could
+	//      kill a healthy goal.
+	//
+	// New contract: the progress entry IS recorded, the iteration cap is
+	// NOT extended (the "no free iteration" invariant is preserved), and
+	// the tool result explains exactly what to do next.
 	ws := tempWorkspace(t)
 	ctx := ctxWithSession("sess-noremaining", "agent")
 	NewSetGoalTool(ws).Execute(ctx, map[string]any{
@@ -994,13 +1011,40 @@ func TestGoalProgressTool_RejectsWhenRemainingStepsEmpty(t *testing.T) {
 		"completed_steps": []string{"write code", "run tests"},
 		"next_action":     "done",
 		"blockers":        []string{"waiting for Maple review"},
-		// no remaining_steps → must be rejected per Phase 12.20 strict rule.
+		// no remaining_steps → accepted, but no cap extension.
 	})
-	if !res.IsError || res.ErrKind != toolshared.ErrInvalidInput {
-		t.Errorf("expected invalid_input when remaining_steps empty, got isErr=%v kind=%q", res.IsError, res.ErrKind)
+	if res.IsError {
+		t.Errorf("expected NO error when remaining_steps empty (Phase 12.80), got isErr=%v kind=%q forLLM=%q",
+			res.IsError, res.ErrKind, res.ForLLM)
 	}
 	if ext.callCount() != 0 {
-		t.Errorf("expected 0 ExtendIterationCap calls when rejected, got %d", ext.callCount())
+		t.Errorf("expected 0 ExtendIterationCap calls when remaining_steps empty, got %d", ext.callCount())
+	}
+	// The entry must be recorded — nothing is lost.
+	store := newStoreFromCtx(ctx, ws)
+	g, err := store.Read("sess-noremaining")
+	if err != nil || g == nil {
+		t.Fatalf("read goal after progress: err=%v goal=%v", err, g)
+	}
+	if len(g.Progress) != 1 {
+		t.Fatalf("expected 1 progress entry recorded, got %d", len(g.Progress))
+	}
+	entry := g.Progress[0]
+	if len(entry.CompletedSteps) != 2 {
+		t.Errorf("expected 2 completed_steps preserved, got %v", entry.CompletedSteps)
+	}
+	if len(entry.Blockers) != 1 {
+		t.Errorf("expected 1 blocker preserved, got %v", entry.Blockers)
+	}
+	if entry.NextAction != "done" {
+		t.Errorf("expected next_action preserved, got %q", entry.NextAction)
+	}
+	// The result must tell the caller what to do next.
+	if !strings.Contains(res.ForLLM, "remaining_steps was empty") {
+		t.Errorf("expected the result to explain the empty remaining_steps case, got: %q", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "complete_goal") {
+		t.Errorf("expected the result to point at complete_goal, got: %q", res.ForLLM)
 	}
 }
 

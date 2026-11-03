@@ -225,7 +225,27 @@ func (p *Pipeline) CallLLM(
 		// Emits a warn-level event when tools_visible deviates from the
 		// per-phase baseline (Plan §3.5 + §4.20 L2). Production canary
 		// for the strict-mode rollout.
-		CanaryCheckToolsVisible(string(ts.currentGoalPhase()), ts.agent.Tools.Count(), len(exec.providerToolDefs), iteration, ts.turnID, ts.sessionKey)
+		//
+		// Phase 12.80: the canary measures the EXECUTABLE tool set
+		// (EffectiveToolCount), NOT the projected schema count. The
+		// projection is frozen (agent_init.go: SetProjectionFrozen(true))
+		// so len(exec.providerToolDefs) is the whole registry at every
+		// phase — comparing it against a per-phase baseline fired on
+		// EVERY call and buried the real signal (measured: 8.430 spurious
+		// OPEN + 732 CHECKPOINT events per log window).
+		//
+		// The agent-aware variant is used so OPEN can be checked against
+		// the agent's own resolved allowlist (OPEN is a RELATIVE phase).
+		CanaryCheckToolsVisibleForAgent(
+			ts.agent.Definition,
+			string(ts.currentGoalPhase()),
+			ts.agent.Tools.Count(),
+			ts.agent.Tools.EffectiveToolCount(),
+			iteration,
+			ts.turnID,
+			ts.sessionKey,
+			ts.agent.Tools,
+		)
 		exec.response, err = p.callLLMCore(ctx, turnCtx, ts, exec, exec.callMessages, exec.providerToolDefs, iteration)
 		if err == nil {
 			// Phase 12.30: log LLM response with tool call summary.
@@ -1583,7 +1603,19 @@ func (p *Pipeline) RecallLLM(
 		}
 		// Phase 12.49 §3.5: canary drift check (replay path).
 		// Phase 12.50 F2: pass iter for grep correlation.
-		CanaryCheckToolsVisible(string(ts.currentGoalPhase()), ts.agent.Tools.Count(), len(exec.providerToolDefs), iteration, ts.turnID, ts.sessionKey)
+		// Phase 12.80: measures the EXECUTABLE tool set, not the frozen
+		// projected schema count (see the non-replay call site for the
+		// full rationale).
+		CanaryCheckToolsVisibleForAgent(
+			ts.agent.Definition,
+			string(ts.currentGoalPhase()),
+			ts.agent.Tools.Count(),
+			ts.agent.Tools.EffectiveToolCount(),
+			iteration,
+			ts.turnID,
+			ts.sessionKey,
+			ts.agent.Tools,
+		)
 
 		resp, callErr := p.callLLMCore(ctx, turnCtx, ts, exec, exec.callMessages, exec.providerToolDefs, iteration)
 		if callErr == nil {

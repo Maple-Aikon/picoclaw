@@ -289,6 +289,41 @@ func (r *ToolRegistry) IsAllowed(name string) bool {
 	return r.toolAllowedLocked(name)
 }
 
+// EffectiveToolCount returns the number of tools that would actually be
+// EXECUTABLE right now — i.e. registered, not TTL-expired, and passing the
+// runtime allowlist / lifecycle gate for the active phase.
+//
+// This is NOT the same as len(ToProviderDefs()): when the projection is
+// frozen (Phase 12.72 Fix #1, agent_init.go) ToProviderDefs() emits the
+// WHOLE registry on every phase so the LLM-facing schema prefix stays
+// byte-identical for prompt-cache reuse. The runtime gate still enforces
+// execution correctness via IsAllowed().
+//
+// The canary drift check (pkg/agent/canary_drift.go) must use THIS number,
+// not the projected one: the projected count is a cache-stability artifact
+// that is identical across phases by design, so comparing it against a
+// per-phase baseline fires on EVERY call and buries real drift.
+//
+// A nil allowlist means "allow all" — every registered, non-expired tool
+// is executable.
+func (r *ToolRegistry) EffectiveToolCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	count := 0
+	for name, entry := range r.tools {
+		// TTL-expired non-core tools are not executable (and not projected).
+		if !entry.IsCore && entry.TTL <= 0 {
+			continue
+		}
+		if !r.toolAllowedLocked(name) {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 // isLifecycleToolAllowed — thin shim to IsLifecycleToolAllowed (Plan §3.3
 // site 2 rewrite, T4). Kept for in-package callers that do not want to
 // re-route through the public helper. New code should call
