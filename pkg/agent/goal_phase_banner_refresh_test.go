@@ -35,9 +35,19 @@ func bannerPhase(content string) string {
 	return rest[:end]
 }
 
-// bannerIter extracts the iter attribute from a <goal_phase ...> block.
+// bannerIter extracts the phase_start_iter attribute from a
+// <goal_phase ...> block.
+//
+// H2 (2026-11-09): the banner no longer carries the LIVE iteration —
+// that value changed on every iteration and pinned the provider prefix
+// cache. It carries phase_start_iter instead, so the banner is
+// byte-stable for the whole phase.
+//
+// NOTE the needle: `phase_start_iter="` does NOT contain ` iter="`
+// (the preceding character is `_`, not a space), so the old marker
+// silently returned an empty string after H2.
 func bannerIter(content string) string {
-	const marker = ` iter="`
+	const marker = ` phase_start_iter="`
 	start := strings.Index(content, marker)
 	if start < 0 {
 		return ""

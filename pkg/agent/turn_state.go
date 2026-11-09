@@ -273,6 +273,19 @@ type turnState struct {
 	// 0 = no rebuild has happened yet.
 	lastBuiltPromptIteration int
 
+	// H2 (2026-11-09): iteration at which the CURRENT goal phase began.
+	//
+	// The turn-tail <goal_phase> banner renders this value (instead of the
+	// live iteration) so its bytes stay IDENTICAL for every iteration inside
+	// the same phase. Any byte change in the MIDDLE of the request pins the
+	// provider prefix cache — measured: cache_read frozen at 37.632 tokens
+	// while uncached grew linearly (plan cache-hit research sections 3.4-3.6).
+	//
+	// Reset to 0 whenever the phase changes (the rebuild hook re-seeds it);
+	// 0 = "not yet tracked" — the banner then falls back to the live
+	// iteration (legacy behaviour).
+	phaseStartIter int
+
 	// Replay counter: bound AfterLLM hook replay attempts within a single iteration.
 	// Replay attempts are recovery retries (e.g. malformed tool-call recovery)
 	// that shouldn't consume an iteration slot in iterationCap. See plan
@@ -545,6 +558,45 @@ func (ts *turnState) currentIteration() int {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 	return ts.iteration
+}
+
+// currentPhaseStartIter returns the iteration at which the current goal
+// phase began (H2, 2026-11-09).
+//
+// Returns 0 when the phase has not been seeded yet — the banner then falls
+// back to the live iteration. Threaded into PromptBuildRequest.PhaseStartIter
+// so formatDynamicGoalPhaseBanner renders a phase-scoped counter instead of
+// the live one.
+func (ts *turnState) currentPhaseStartIter() int {
+	if ts == nil {
+		return 0
+	}
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.phaseStartIter
+}
+
+// setPhaseStartIter records the iteration at which the current goal phase
+// began (H2, 2026-11-09).
+//
+// The phase-start iteration is the ONLY iteration number rendered inside
+// the cached prompt prefix (the turn-tail goal-phase banner). It must be
+// stable for every iteration of the phase, so the caller writes it
+// exactly once — at the phase transition — and never touches it again
+// until the next transition.
+//
+// The caller (the phase-change rebuild hook) owns the transition
+// decision; this setter is deliberately dumb so the two cannot disagree.
+func (ts *turnState) setPhaseStartIter(iteration int) {
+	if ts == nil {
+		return
+	}
+	if iteration <= 0 {
+		return
+	}
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.phaseStartIter = iteration
 }
 
 // resetReplayCount zeroes the per-iteration replay counter. Called by the

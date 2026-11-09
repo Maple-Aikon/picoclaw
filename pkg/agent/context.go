@@ -1734,6 +1734,31 @@ func wrapDynamicContext(dyn, userMessage string) string {
 
 // formatDynamicGoalPhaseBanner constructs the per-turn dynamic GOAL_PHASE_BANNER XML block
 // injected into the tail of the active user message.
+//
+// ---------------------------------------------------------------------------
+// H2 — PHASE-STABLE BANNER (2026-11-09)
+// ---------------------------------------------------------------------------
+// The banner MUST be byte-identical for every iteration inside the SAME goal
+// phase.
+//
+// Why (measured, plan cache-hit research sections 3.4-3.6): the banner is
+// rendered into the user message that OPENS the turn, i.e. in the MIDDLE of
+// the request. The old banner carried the LIVE iteration (iter=162), so its
+// bytes changed on every iteration. Any byte change in the middle of the
+// prompt pins the provider-side prefix cache: the production trace showed
+// cache_read frozen at 37.632 tokens while uncached grew linearly (82 ->
+// 5.102 over 6 iterations), and the rebuild hook fired 1312/1312 times with
+// rebuild_needed=true.
+//
+// So the dynamic counter is rendered as phase_start_iter — the iteration at
+// which the CURRENT phase began — instead of the live iteration. max and
+// next_checkpoint are phase-scoped constants. The banner is refreshed
+// exactly once per phase transition (SET -> OPEN -> CHECKPOINT -> FINAL) by
+// the phase-change rebuild hook (turn_state_phase_rebuild.go).
+//
+// The live iteration is still available to the model through the user-facing
+// tool-feedback line (main-turn-20, #3/250), so no information is lost —
+// it simply stops living inside the cached prefix.
 func formatDynamicGoalPhaseBanner(req PromptBuildRequest) string {
 	if req.SuppressDefaultSystemPrompt {
 		return ""
@@ -1742,9 +1767,24 @@ func formatDynamicGoalPhaseBanner(req PromptBuildRequest) string {
 	if phase == "" {
 		return ""
 	}
-	iter := req.Iteration
-	if iter <= 0 {
-		iter = 1
+	// Phase-start iteration: the iteration at which the current phase began.
+	// Falls back to the live iteration for legacy callers that do not thread
+	// PhaseStartIter (tests, EstimateSystemTokens), then to 1.
+	//
+	// H2 (2026-11-09): the banner lives in the user message that OPENS the
+	// turn, i.e. in the MIDDLE of the request. The old banner carried the
+	// LIVE iteration, so its bytes changed every iteration and pinned the
+	// provider prefix cache (measured: cache_read frozen at 37.632 tokens
+	// while uncached grew linearly; rebuild hook fired 1312/1312 times).
+	// Rendering the phase-start iteration keeps the banner byte-identical
+	// for every iteration inside the same phase. The live iteration is
+	// still surfaced to the model via the tool-feedback line (#3/250).
+	phaseStartIter := req.PhaseStartIter
+	if phaseStartIter <= 0 {
+		phaseStartIter = req.Iteration
+	}
+	if phaseStartIter <= 0 {
+		phaseStartIter = 1
 	}
 	maxIter := req.MaxIterationsCap
 	if maxIter <= 0 {
@@ -1754,7 +1794,7 @@ func formatDynamicGoalPhaseBanner(req PromptBuildRequest) string {
 	var sb strings.Builder
 	switch phase {
 	case GoalPhaseSet:
-		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"SET\" iter=\"%d\" max=\"%d\">\n", iter, maxIter))
+		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"SET\" phase_start_iter=\"%d\" max=\"%d\">\n", phaseStartIter, maxIter))
 		sb.WriteString("[HARD GUARD] Goal phase: SET. You MUST call `set_goal` to declare your objective before using any domain tools. All execution tools are locked.\n")
 		sb.WriteString("</goal_phase>")
 	case GoalPhaseOpen:
@@ -1762,15 +1802,15 @@ func formatDynamicGoalPhaseBanner(req PromptBuildRequest) string {
 		if nextCheckpoint <= 0 {
 			nextCheckpoint = 25
 		}
-		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"OPEN\" iter=\"%d\" max=\"%d\" next_checkpoint=\"%d\">\n", iter, maxIter, nextCheckpoint))
-		sb.WriteString(fmt.Sprintf("Goal phase: OPEN (iter %d / total %d turn iters). Next CHECKPOINT phase will be at iter %d.\n", iter, maxIter, nextCheckpoint))
+		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"OPEN\" phase_start_iter=\"%d\" max=\"%d\" next_checkpoint=\"%d\">\n", phaseStartIter, maxIter, nextCheckpoint))
+		sb.WriteString(fmt.Sprintf("Goal phase: OPEN (phase started at iter %d, total %d turn iters). Next CHECKPOINT phase will be at iter %d.\n", phaseStartIter, maxIter, nextCheckpoint))
 		sb.WriteString("</goal_phase>")
 	case GoalPhaseCheckpoint:
-		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"CHECKPOINT\" iter=\"%d\" max=\"%d\">\n", iter, maxIter))
+		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"CHECKPOINT\" phase_start_iter=\"%d\" max=\"%d\">\n", phaseStartIter, maxIter))
 		sb.WriteString("[HARD STOP] Goal phase: CHECKPOINT. Iteration cap reached. Domain tools are locked. Call `goal_progress` with remaining steps to extend, or `complete_goal` to finalize.\n")
 		sb.WriteString("</goal_phase>")
 	case GoalPhaseFinal:
-		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"FINAL\" iter=\"%d\" max=\"%d\">\n", iter, maxIter))
+		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"FINAL\" phase_start_iter=\"%d\" max=\"%d\">\n", phaseStartIter, maxIter))
 		sb.WriteString("[HARD STOP] Goal phase: FINAL. This is the terminal iteration. Call `complete_goal` to submit your final report.\n")
 		sb.WriteString("</goal_phase>")
 	default:

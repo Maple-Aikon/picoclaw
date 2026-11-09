@@ -70,8 +70,38 @@ func (ts *turnState) maybeRebuildPromptForStateChange(
 	iteration int,
 ) []providers.Message {
 	currentPhase := string(ts.currentGoalPhase())
-	stateChanged := ts.lastBuiltPromptPhase != currentPhase ||
-		ts.lastBuiltPromptIteration != iteration
+
+	// H2 (2026-11-09) — phase-scoped rebuild trigger.
+	//
+	// Before H2 the rebuild fired on EVERY iteration (measured: 1312/1312
+	// rebuild_needed=true in production; the rebuild hook also rewrote the
+	// turn-tail goal-phase banner with the LIVE iteration, changing bytes
+	// in the MIDDLE of the request and pinning the provider prefix cache —
+	// cache_read frozen at 37.632 tokens while uncached grew linearly).
+	//
+	// Now:
+	//
+	//   - CACHEABLE phases (OPEN): the system prompt is byte-constant
+	//     across iterations (Phase 12.72 Fix #2 moved the dynamic header
+	//     out of the system block), so only a PHASE CHANGE may trigger a
+	//     rebuild. The banner is phase-stable too, so its bytes do not
+	//     move within the phase.
+	//   - NON-CACHEABLE phases (SET / CHECKPOINT / FINAL / POST_FINAL):
+	//     the system hint text embeds the live iteration (for example
+	//     'Goal phase: CHECKPOINT (iter N)'), so the rebuild must still
+	//     follow the iteration to keep that text truthful. These phases
+	//     bypass the prompt cache anyway (isCacheableGoalPhase) and span
+	//     only a handful of iterations, so the extra rebuild costs nothing
+	//     in cache terms.
+	cacheablePhase := isCacheableGoalPhase(currentPhase)
+	// phaseChanged is computed from lastBuiltPromptPhase BEFORE it is
+	// overwritten below — it is the transition signal that drives both
+	// the rebuild and the phase-start-iteration seeding.
+	phaseChanged := ts.lastBuiltPromptPhase != currentPhase
+	stateChanged := phaseChanged
+	if !cacheablePhase {
+		stateChanged = stateChanged || ts.lastBuiltPromptIteration != iteration
+	}
 
 	if IsAgentDebugEnabled() {
 		agentDebugf("prompt_cache", map[string]any{
@@ -92,6 +122,18 @@ func (ts *turnState) maybeRebuildPromptForStateChange(
 	// rebuild we provide the SAME skills to the LLM — recording again would
 	// duplicate entries in AttemptedSkills (Phase 12.33 regression: observed
 	// [observe-skill missing-skill] in TestEvolutionBridge).
+
+	// H2 (2026-11-09): seed the iteration at which this phase began
+	// BEFORE the request is built — promptBuildRequestForTurn reads
+	// PhaseStartIter from ts, so seeding afterwards would render the
+	// previous phase's start iteration.
+	//
+	// The seed happens on a phase TRANSITION only. Inside a phase the
+	// value stays put, which is what keeps the banner byte-identical
+	// across iterations.
+	if phaseChanged || ts.currentPhaseStartIter() <= 0 {
+		ts.setPhaseStartIter(iteration)
+	}
 
 	rebuildPromptReq := promptBuildRequestForTurn(
 		ts,

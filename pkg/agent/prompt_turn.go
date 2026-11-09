@@ -36,6 +36,12 @@ func promptBuildRequestForTurn(
 		// reused at later iters) and goalPhaseSetHintContributor can refer
 		// to the actual iter instead of hardcoding "(iter 1)".
 		Iteration: ts.currentIteration(),
+		// H2 (2026-11-09): the iteration at which the CURRENT goal phase
+		// began. The turn-tail <goal_phase> banner renders this instead of
+		// the live iteration so its bytes stay identical for every
+		// iteration inside the same phase (byte changes in the MIDDLE of
+		// the request pin the provider prefix cache).
+		PhaseStartIter: ts.currentPhaseStartIter(),
 		// Phase 12.38 §4: thread iteration cap dims so the OPEN-phase hint
 		// renders the per-iter cap compass. ts.iterationCap is the mutable
 		// cap (extended via goal_progress); ts.maxIterationsCap is the

@@ -28,7 +28,7 @@ func TestTurnGoalPhaseInjection_UserMessageTail(t *testing.T) {
 			phase:        GoalPhaseSet,
 			iter:         1,
 			maxIter:      250,
-			expectedTag:  `<goal_phase phase="SET" iter="1" max="250">`,
+			expectedTag:  `<goal_phase phase="SET" phase_start_iter="1" max="250">`,
 			expectedText: "[HARD GUARD] Goal phase: SET.",
 		},
 		{
@@ -37,15 +37,15 @@ func TestTurnGoalPhaseInjection_UserMessageTail(t *testing.T) {
 			iter:           3,
 			maxIter:        250,
 			nextCheckpoint: 25,
-			expectedTag:    `<goal_phase phase="OPEN" iter="3" max="250" next_checkpoint="25">`,
-			expectedText:   "Goal phase: OPEN (iter 3 / total 250 turn iters).",
+			expectedTag:    `<goal_phase phase="OPEN" phase_start_iter="3" max="250" next_checkpoint="25">`,
+			expectedText:   "Goal phase: OPEN (phase started at iter 3, total 250 turn iters).",
 		},
 		{
 			name:         "CHECKPOINT Phase",
 			phase:        GoalPhaseCheckpoint,
 			iter:         25,
 			maxIter:      250,
-			expectedTag:  `<goal_phase phase="CHECKPOINT" iter="25" max="250">`,
+			expectedTag:  `<goal_phase phase="CHECKPOINT" phase_start_iter="25" max="250">`,
 			expectedText: "[HARD STOP] Goal phase: CHECKPOINT.",
 		},
 	}
@@ -55,6 +55,7 @@ func TestTurnGoalPhaseInjection_UserMessageTail(t *testing.T) {
 			req := PromptBuildRequest{
 				GoalPhase:        string(tc.phase),
 				Iteration:        tc.iter,
+				PhaseStartIter:   tc.iter,
 				MaxIterationsCap: tc.maxIter,
 				IterationCap:     tc.nextCheckpoint,
 				CurrentMessage:   "Hello PicoClaw",

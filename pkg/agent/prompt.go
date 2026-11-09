@@ -154,6 +154,22 @@ type PromptBuildRequest struct {
 	// callers, tests, EstimateSystemTokens).
 	Iteration int
 
+	// PhaseStartIter is the iteration at which the CURRENT goal phase began
+	// (1-indexed). H2 (2026-11-09): the turn-tail <goal_phase> banner
+	// renders this value instead of the live `Iteration` so the banner
+	// bytes stay IDENTICAL for every iteration inside the same phase.
+	//
+	// Why: the banner lives in the user message that OPENS the turn — in
+	// the middle of the request. Any byte change there pins the provider
+	// prefix cache (measured: cache_read frozen at 37.632 tokens while
+	// uncached grew linearly). The live iteration is still surfaced to the
+	// model through the user-facing tool-feedback line ("#3/250"), so no
+	// information is lost.
+	//
+	// 0 = unknown (legacy callers / tests) — formatDynamicGoalPhaseBanner
+	// then falls back to `Iteration`, then to 1.
+	PhaseStartIter int
+
 	// GoalFinalized is true after a successful complete_goal tool call
 	// (Phase 11 turnState.goalFinalized). Used by formatIterCompass in
 	// GoalPhaseFinal to distinguish ceiling-reason ("This is the last iter")

@@ -93,38 +93,74 @@ func TestPhaseChangeRebuild_SamePhase_NoRebuild(t *testing.T) {
 }
 
 // =====================================================================
-// T2b: Same phase + DIFFERENT iteration → rebuild (compass must always
-// reflect the current iter — Phase 12.67b)
+// T2b (H2, 2026-11-09): Same phase + DIFFERENT iteration.
+//
+// Pre-H2 (Phase 12.67b) this ALWAYS rebuilt, because the dynamic
+// compass carried the live iteration. H2 removed the live iteration
+// from the banner (phase_start_iter replaces it), so the outcome now
+// depends on whether the phase's SYSTEM prompt is byte-constant:
+//
+//   - OPEN is CACHEABLE (isCacheableGoalPhase) and its system prompt
+//     is byte-constant across iterations ⇒ an iteration change alone
+//     must NOT rebuild. Rebuilding it every iteration is what pinned
+//     the provider prefix cache (measured: cache_read frozen at
+//     37.632 tokens while uncached grew linearly).
+//   - CHECKPOINT is NOT cacheable and its hint text embeds the live
+//     iteration ("Goal phase: CHECKPOINT (iter N)") ⇒ an iteration
+//     change MUST still rebuild, or that text goes stale.
 // =====================================================================
 
 func TestPhaseChangeRebuild_SamePhase_IterChange_TriggersRebuild(t *testing.T) {
-	ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhaseOpen), 2, GoalPhaseOpen)
+	t.Run("cacheable_phase_no_rebuild", func(t *testing.T) {
+		ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhaseOpen), 2, GoalPhaseOpen)
 
-	messages = append(messages, providers.Message{Role: "user", Content: "userMsg1"})
+		messages = append(messages, providers.Message{Role: "user", Content: "userMsg1"})
 
-	result := ts.maybeRebuildPromptForStateChange(messages, exec, nil, 5)
+		result := ts.maybeRebuildPromptForStateChange(messages, exec, nil, 5)
 
-	if ts.lastBuiltPromptPhase != string(GoalPhaseOpen) {
-		t.Errorf("expected lastBuiltPromptPhase = %q, got %q", string(GoalPhaseOpen), ts.lastBuiltPromptPhase)
-	}
-	if ts.lastBuiltPromptIteration != 5 {
-		t.Errorf("expected lastBuiltPromptIteration = 5, got %d", ts.lastBuiltPromptIteration)
-	}
-	if result[0].Content == "ORIGINAL_SYSTEM_PROMPT" {
-		t.Errorf("expected messages[0] rebuilt (iter changed), still ORIGINAL_SYSTEM_PROMPT")
-	}
-	if len(result) != 2 {
-		t.Fatalf("expected 2 messages (rebuilt system + userMsg1), got %d", len(result))
-	}
-	// Phase 12.80: the user message keeps its original text AND carries the
-	// refreshed goal-phase banner (the banner lives in the user message
-	// tail, not the system prompt).
-	if !strings.Contains(result[1].Content, "userMsg1") {
-		t.Errorf("expected messages[1] to preserve userMsg1, got %q", result[1].Content)
-	}
-	if got := bannerPhase(result[1].Content); got != "OPEN" {
-		t.Errorf("expected refreshed banner phase = OPEN, got %q in %q", got, result[1].Content)
-	}
+		if ts.lastBuiltPromptPhase != string(GoalPhaseOpen) {
+			t.Errorf("expected lastBuiltPromptPhase = %q, got %q", string(GoalPhaseOpen), ts.lastBuiltPromptPhase)
+		}
+		if ts.lastBuiltPromptIteration != 2 {
+			t.Errorf("expected lastBuiltPromptIteration unchanged (2), got %d", ts.lastBuiltPromptIteration)
+		}
+		if result[0].Content != "ORIGINAL_SYSTEM_PROMPT" {
+			t.Errorf("expected NO rebuild for a cacheable phase on iter change, got %q", result[0].Content)
+		}
+		if len(result) != 2 {
+			t.Fatalf("expected 2 messages (untouched system + userMsg1), got %d", len(result))
+		}
+		if !strings.Contains(result[1].Content, "userMsg1") {
+			t.Errorf("expected messages[1] to preserve userMsg1, got %q", result[1].Content)
+		}
+	})
+
+	t.Run("non_cacheable_phase_rebuilds", func(t *testing.T) {
+		ts, exec, messages := newPhaseRebuildTestFixture(t, string(GoalPhaseCheckpoint), 25, GoalPhaseCheckpoint)
+
+		messages = append(messages, providers.Message{Role: "user", Content: "userMsg1"})
+
+		result := ts.maybeRebuildPromptForStateChange(messages, exec, nil, 26)
+
+		if ts.lastBuiltPromptIteration != 26 {
+			t.Errorf("expected lastBuiltPromptIteration = 26, got %d", ts.lastBuiltPromptIteration)
+		}
+		if result[0].Content == "ORIGINAL_SYSTEM_PROMPT" {
+			t.Errorf("expected messages[0] rebuilt for a non-cacheable phase on iter change, still ORIGINAL_SYSTEM_PROMPT")
+		}
+		if len(result) != 2 {
+			t.Fatalf("expected 2 messages (rebuilt system + userMsg1), got %d", len(result))
+		}
+		if !strings.Contains(result[1].Content, "userMsg1") {
+			t.Errorf("expected messages[1] to preserve userMsg1, got %q", result[1].Content)
+		}
+		// Phase 12.80: the user message keeps its original text AND carries
+		// the refreshed goal-phase banner (the banner lives in the user
+		// message tail, not the system prompt).
+		if got := bannerPhase(result[1].Content); got != "CHECKPOINT" {
+			t.Errorf("expected refreshed banner phase = CHECKPOINT, got %q in %q", got, result[1].Content)
+		}
+	})
 }
 
 
