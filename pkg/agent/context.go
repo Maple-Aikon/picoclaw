@@ -1756,9 +1756,11 @@ func wrapDynamicContext(dyn, userMessage string) string {
 // exactly once per phase transition (SET -> OPEN -> CHECKPOINT -> FINAL) by
 // the phase-change rebuild hook (turn_state_phase_rebuild.go).
 //
-// The live iteration is still available to the model through the user-facing
-// tool-feedback line (main-turn-20, #3/250), so no information is lost —
-// it simply stops living inside the cached prefix.
+// The live iteration is NOT visible to the model at OPEN phase. The
+// user-facing tool-feedback line does show it, but that line is
+// display-only metadata that never reaches the provider (see
+// protocoltypes.Message.IterContext — "providers ignore it"). The banner
+// carries phase_start_iter.
 func formatDynamicGoalPhaseBanner(req PromptBuildRequest) string {
 	if req.SuppressDefaultSystemPrompt {
 		return ""
@@ -1777,8 +1779,9 @@ func formatDynamicGoalPhaseBanner(req PromptBuildRequest) string {
 	// provider prefix cache (measured: cache_read frozen at 37.632 tokens
 	// while uncached grew linearly; rebuild hook fired 1312/1312 times).
 	// Rendering the phase-start iteration keeps the banner byte-identical
-	// for every iteration inside the same phase. The live iteration is
-	// still surfaced to the model via the tool-feedback line (#3/250).
+	// for every iteration inside the same phase. NOTE: the live iteration
+	// is not surfaced to the model — the tool-feedback line is display-only
+	// metadata that providers ignore.
 	phaseStartIter := req.PhaseStartIter
 	if phaseStartIter <= 0 {
 		phaseStartIter = req.Iteration

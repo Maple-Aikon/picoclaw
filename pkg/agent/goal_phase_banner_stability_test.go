@@ -26,8 +26,10 @@ import (
 //     cacheable phase (OPEN), but still fires for non-cacheable phases
 //     whose system hint text embeds the live iteration.
 //
-// The live iteration is NOT lost: it stays available through the
-// user-facing tool-feedback line. The banner carries phase_start_iter.
+// The live iteration is NOT visible to the model: the banner carries
+// phase_start_iter. (The user-facing tool-feedback line does show the live
+// iteration, but that line is display-only metadata and never reaches the
+// provider — see the note on PromptBuildRequest.PhaseStartIter.)
 
 // bannerPhaseStartIter extracts the phase_start_iter attribute from a
 // <goal_phase ...> block.

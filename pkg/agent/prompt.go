@@ -162,9 +162,17 @@ type PromptBuildRequest struct {
 	// Why: the banner lives in the user message that OPENS the turn — in
 	// the middle of the request. Any byte change there pins the provider
 	// prefix cache (measured: cache_read frozen at 37.632 tokens while
-	// uncached grew linearly). The live iteration is still surfaced to the
-	// model through the user-facing tool-feedback line ("#3/250"), so no
-	// information is lost.
+	// uncached grew linearly).
+	//
+	// NOTE (2026-11-09, verified against code): the live iteration is NOT
+	// surfaced to the model through the tool-feedback line. That line is
+	// display-only metadata — `protocoltypes.Message.IterContext` is
+	// documented as "display-only ... providers ignore it" and is never
+	// added to the tool result content the provider receives (tool results
+	// carry only `ToolResult.ContentForLLM()`). So at OPEN phase, where the
+	// compass header is intentionally empty, the model no longer sees the
+	// live iteration anywhere: the banner carries phase_start_iter only.
+	// Callers that need the live iteration must thread `Iteration` explicitly.
 	//
 	// 0 = unknown (legacy callers / tests) — formatDynamicGoalPhaseBanner
 	// then falls back to `Iteration`, then to 1.
