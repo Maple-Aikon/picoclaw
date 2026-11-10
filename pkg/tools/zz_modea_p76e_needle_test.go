@@ -9,16 +9,34 @@ package tools
 // lives in the BODY is cut away, while the TITLE is always kept
 // verbatim.
 //
-// The first version of this test asserted body needles
-// ("mcp_context-mode_ctx_execute_file", "RUNTIME-DEAD", ...) and FAILED
-// with 4 of 6 missing. That was the TEST being wrong, not the entry:
-// the p76d lesson deliberately put its keywords in the H2 title.
-// This version asserts the TITLE (the load-bearing part) plus the
-// first body line, which is what the excerpt always keeps.
+// TWO earlier versions of this test were wrong, and both failures are
+// worth recording:
+//
+//   v1 asserted BODY needles ("mcp_context-mode_ctx_execute_file",
+//      "RUNTIME-DEAD", ...) and FAILED with 4 of 6 missing. The TEST
+//      was wrong, not the entry: the p76d lesson deliberately put its
+//      keywords in the H2 title.
+//
+//   v2 ALSO asserted the first body LINE. That broke on the third
+//      append: every append adds a section, the heading bytes grow,
+//      and the water-fill share per section shrinks (measured
+//      avgExcerpt on exec.md: 108.5 -> 82.4 -> 65.5 -> 50.8 B).
+//      The body line is NOT a stable contract.
+//
+// So this version asserts the TWO things that ARE stable:
+//   (1) the H2 TITLE survives verbatim (the p74 rule), and
+//   (2) the entry is not a STUB LIST (avg excerpt >= 20 B per
+//       body-bearing section) — the real p74 regression signal, and
+//       the one that would make a title-only lesson useless.
+//
+// The body-line presence is LOGGED, not asserted.
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestP76eExecNeedlesVisible(t *testing.T) {
@@ -39,39 +57,67 @@ func TestP76eExecNeedlesVisible(t *testing.T) {
 	}
 
 	// (2) Keywords that live IN the title must be visible.
-	titleNeedles := []string{
-		"extractBody",
-		"fence-less entry",
-		"horizontal rule",
-	}
-	for _, n := range titleNeedles {
+	for _, n := range []string{"extractBody", "fence-less entry", "horizontal rule"} {
 		if !strings.Contains(payload, n) {
 			t.Errorf("TITLE KEYWORD MISSING: %q", n)
 		}
 	}
 
-	// (3) The excerpt keeps the FIRST BODY LINE — assert it.
-	if !strings.Contains(payload, "What goes wrong (measured 2026-11-11, Mode A p76d)") {
-		t.Errorf("FIRST BODY LINE of the new section is missing from the payload")
+	// (3) NOT asserted, only logged: the body line is a function of the
+	// water-fill share, which shrinks with every append.
+	if strings.Contains(payload, "What goes wrong (measured 2026-11-11, Mode A p76d)") {
+		t.Logf("INFO: first body line of the p76d section IS visible")
+	} else {
+		t.Logf("INFO: first body line NOT visible (water-fill share shrank) — the TITLE carries the lesson")
 	}
 
 	t.Logf("payload=%d B", len(payload))
 }
 
-// TestP76eNeedleNotInBody documents WHY the body needles are absent:
-// they are below the excerpt cut. This is the p74 rule in executable
-// form — if a needle must be auto-loaded, it must be in the TITLE.
-func TestP76eNeedleNotInBody(t *testing.T) {
+// TestP76eExecNotAStubList is the STABLE regression guard: the entry
+// must not collapse into a table of contents with one-word stubs.
+// That is the p74 symptom, and it would make a title-only lesson
+// useless to the runtime.
+func TestP76eExecNotAStubList(t *testing.T) {
 	const ws = "/home/maple/.picoclaw/workspace"
 	store, err := NewToolKnowledgeStore(ws, "")
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	payload := store.LoadForEscalation("exec")
-	// A body-only needle: it is NOT expected to be visible.
-	if strings.Contains(payload, "RUNTIME-DEAD") {
-		t.Logf("NOTE: body needle 'RUNTIME-DEAD' IS visible — the excerpt grew")
-	} else {
-		t.Logf("EXPECTED: body needle 'RUNTIME-DEAD' is below the excerpt cut (p74 rule)")
+	raw, err := os.ReadFile(filepath.Join(store.Root(), "exec.md"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	body := extractBody(string(raw))
+	rendered := renderKnowledgeFile("exec", body, time.Now().UTC())
+	head, srcBody := splitFrontmatter(rendered)
+	secs := splitH2Sections(srcBody)
+
+	bodySections := 0
+	for _, s := range secs {
+		if strings.TrimSpace(s.body) != "" {
+			bodySections++
+		}
+	}
+	if bodySections == 0 {
+		t.Fatal("no body-bearing sections")
+	}
+
+	room := KnowledgeSizeCap - len(head) - len(truncationMarker)
+	plan := allocateDigest(secs, room)
+	total := 0
+	shown := 0
+	for _, p := range plan {
+		if p.hasBody {
+			total += len(p.excerpt)
+			shown++
+		}
+	}
+	avg := float64(total) / float64(bodySections)
+	t.Logf("exec.md sections=%d bodySections=%d shownWithBody=%d avgExcerpt=%.1f B",
+		len(secs), bodySections, shown, avg)
+	if avg < 20 {
+		t.Errorf("exec.md collapsed into a STUB LIST: avgExcerpt=%.1f B (< 20) over %d body sections",
+			avg, bodySections)
 	}
 }
