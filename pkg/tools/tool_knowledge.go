@@ -391,11 +391,40 @@ func renderKnowledgeFile(tool, body string, now time.Time) string {
 }
 
 // extractBody returns the body portion (everything after the closing "---").
+//
+// Phase 12.64 (2026-11-11, Mode A p76d): the frontmatter is only
+// recognised when the content STARTS with the fence.
+//
+// The previous implementation searched for the marker ANYWHERE:
+//
+//	idx := strings.Index(content[start:], marker)
+//
+// with start=0 whenever the content did not begin with the fence.
+// A file without a frontmatter block that contains a HORIZONTAL RULE
+// in its body therefore lost everything before that rule. Measured on
+// the live store: 8 of 113 entries had no leading fence, and 2 of them
+// lost real content:
+//
+//	code-review.packet-format         13 H2 ->  8 H2 (2 710 B lost)
+//	mcp_context-mode_ctx_execute_file  23 H2 -> 20 H2 (3 363 B lost)
+//
+// The second one is an R1 entry (its name is EXACTLY a runtime tool
+// name), so the loss was LIVE: LoadForEscalation digested the
+// truncated body and the auto-loaded payload did not contain the
+// entry first three sections at all.
+//
+// This mirrors splitFrontmatter, which already had the starts-with
+// guard -- the two functions disagreed about where the body begins.
 // If no frontmatter is present, returns the input verbatim.
 func extractBody(content string) string {
 	const marker = "\n---\n"
 	// Skip the opening "---\n" if present.
 	start := 0
+	if !strings.HasPrefix(content, "---") {
+		// No frontmatter at all. The body is the WHOLE content:
+		// a horizontal rule inside it is CONTENT, not a fence.
+		return strings.TrimSpace(content)
+	}
 	if strings.HasPrefix(content, "---\n") {
 		start = 4
 	}
