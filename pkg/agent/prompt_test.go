@@ -466,10 +466,10 @@ func TestContextBuilder_CollectsRegisteredPromptContributors(t *testing.T) {
 func TestContextBuilder_MCPServerDeferredAvailability_PhaseAware(t *testing.T) {
 	t.Setenv("PICOCLAW_BUILTIN_SKILLS", t.TempDir())
 	tests := []struct {
-		name             string
-		phase            GoalPhase
-		wantContains     []string
-		wantNotContains  []string
+		name            string
+		phase           GoalPhase
+		wantContains    []string
+		wantNotContains []string
 	}{
 		{"Open_default_text", GoalPhaseOpen,
 			[]string{"hidden behind tool discovery until unlocked"}, nil},
@@ -496,11 +496,12 @@ func TestContextBuilder_MCPServerDeferredAvailability_PhaseAware(t *testing.T) {
 			if err != nil {
 				t.Fatalf("RegisterPromptContributor() error = %v", err)
 			}
-			messages := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+			// LEVER (a) - 2026-11-10: the phase-scoped MCP availability
+			// line moved OUT of the system prompt into the phase channel.
+			full := phaseChannelOf(t, cb, PromptBuildRequest{
 				CurrentMessage: "hello",
 				GoalPhase:      string(tc.phase),
 			})
-			full := messages[0].Content
 			for _, want := range tc.wantContains {
 				if !strings.Contains(full, want) {
 					t.Errorf("expected MCP content to contain %q, got: %q", want, full)

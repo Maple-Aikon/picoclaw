@@ -129,33 +129,23 @@ func TestGoalPhaseSetHint_Integration_BuildSystemPromptParts(t *testing.T) {
 
 	parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
 		IncludeToolUseRule: true,
-		GoalPhase:           string(GoalPhaseSet),
+		GoalPhase:          string(GoalPhaseSet),
 		// Phase 12.16.1: iter must be populated for the hint header to
 		// render "(iter N)" correctly. Tests typically run as iter 1.
-		Iteration:           1,
+		Iteration: 1,
 	})
-	// Hunt for our hint part by ID (stable identifier, no race on text edits).
-	found := false
+	// LEVER (a) - 2026-11-10: the phase hints moved OUT of the system
+	// prompt into the phase channel. The system prompt must NOT carry the
+	// SET affordance any more; the phase channel must.
 	for _, p := range parts {
 		if p.Source.ID == PromptSourceGoalPhaseSetHint {
-			found = true
-			if !strings.Contains(p.Content, "set_goal") {
-				t.Errorf("GoalPhaseSet hint part missing set_goal reference; got:\n%s", p.Content)
-			}
-			if !strings.Contains(p.Content, "respond directly") {
-				t.Errorf("GoalPhaseSet hint part missing no-tool reply path; got:\n%s", p.Content)
-			}
-			break
+			t.Errorf("GoalPhaseSet hint must NOT be in the system prompt (lever (a)); got part %q", p.ID)
 		}
 	}
-	if !found {
-		// Print part IDs to aid debugging if the wiring breaks.
-		ids := make([]string, 0, len(parts))
-		for _, p := range parts {
-			ids = append(ids, string(p.Source.ID))
-		}
-		t.Fatalf("expected hint part %q in prompt parts; got parts: %v", PromptSourceGoalPhaseSetHint, ids)
-	}
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseSet), 1, ""),
+		"set_goal", "SET hint must reach the LLM via the phase channel")
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseSet), 1, ""),
+		"respond directly", "SET hint must reach the LLM via the phase channel")
 }
 
 // TestGoalPhaseSetHint_Integration_OpenPhase_NotInjected confirms the hint is
@@ -170,8 +160,8 @@ func TestGoalPhaseSetHint_Integration_OpenPhase_NotInjected(t *testing.T) {
 	} {
 		parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
 			IncludeToolUseRule: true,
-			GoalPhase:           phase,
-			Iteration:           0,
+			GoalPhase:          phase,
+			Iteration:          0,
 		})
 		for _, p := range parts {
 			if p.Source.ID == PromptSourceGoalPhaseSetHint {
@@ -180,6 +170,7 @@ func TestGoalPhaseSetHint_Integration_OpenPhase_NotInjected(t *testing.T) {
 		}
 	}
 }
+
 // TestGoalPhaseSetHint_IterationHeaderReflectsReq (Phase 12.16.1): the hint
 // header must show the actual iter from the request, not a hardcoded
 // "(iter 1)". Without this fix the iter 1 prompt was cached and reused at
@@ -204,20 +195,18 @@ func TestGoalPhaseSetHint_IterationHeaderReflectsReq(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
 				IncludeToolUseRule: true,
-				GoalPhase:           string(GoalPhaseSet),
-				Iteration:           tc.iter,
+				GoalPhase:          string(GoalPhaseSet),
+				Iteration:          tc.iter,
 			})
 
-			var hint *PromptPart
-			for i := range parts {
-				if parts[i].ID == "capability.goal_phase_set_hint" {
-					hint = &parts[i]
-					break
+			// LEVER (a) - 2026-11-10: the SET hint moved out of the
+			// system prompt into the phase channel.
+			for _, p := range parts {
+				if p.ID == "capability.goal_phase_set_hint" {
+					t.Fatalf("GoalPhaseSet hint must NOT be in the system prompt (lever (a))")
 				}
 			}
-			if hint == nil {
-				t.Fatalf("GoalPhaseSet hint part not found in parts for iter=%d", tc.iter)
-			}
+			hint := &PromptPart{Content: phaseChannelOf(t, cb, phaseChannelReq(string(GoalPhaseSet), tc.iter, ""))}
 
 			expectedIter := tc.iter
 			if expectedIter == 0 {

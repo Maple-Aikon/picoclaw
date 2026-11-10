@@ -154,9 +154,9 @@ func TestGoalPhaseHint_AllThreeAreLayerSeparated(t *testing.T) {
 		t.Fatal("expected all 3 hints to fire in their own phase")
 	}
 	ids := map[PromptSourceID]bool{
-		set.Source.ID:  true,
-		cph.Source.ID:  true,
-		fin.Source.ID:  true,
+		set.Source.ID: true,
+		cph.Source.ID: true,
+		fin.Source.ID: true,
 	}
 	if len(ids) != 3 {
 		t.Errorf("expected 3 distinct Source.IDs, got %v", ids)
@@ -279,9 +279,9 @@ func TestGoalPhaseCheckpointHint_NoSnapshotBackwardCompat(t *testing.T) {
 // "iter 0" (real signal, not silent fixup).
 func TestGoalPhaseCheckpointHint_IterationPlaceholderRendered(t *testing.T) {
 	tests := []struct {
-		name     string
-		iter     int
-		wantSub  string
+		name    string
+		iter    int
+		wantSub string
 	}{
 		{"iter_5", 5, "iter 5"},
 		{"iter_25", 25, "iter 25"},
@@ -380,19 +380,16 @@ func TestGoalPhaseCheckpointHint_Integration_GoalSnapshotFlowsThrough(t *testing
 		GoalSnapshot:       snapshot,
 	})
 
-	var hint *PromptPart
-	for i := range parts {
-		if parts[i].Source.ID == PromptSourceGoalPhaseCheckpointHint {
-			hint = &parts[i]
-			break
+	// LEVER (a) - 2026-11-10: the checkpoint hint moved OUT of the system
+	// prompt into the phase channel.
+	for _, p := range parts {
+		if p.Source.ID == PromptSourceGoalPhaseCheckpointHint {
+			t.Fatalf("checkpoint hint must NOT be in the system prompt (lever (a))")
 		}
 	}
-	if hint == nil {
-		ids := make([]string, 0, len(parts))
-		for _, p := range parts {
-			ids = append(ids, string(p.Source.ID))
-		}
-		t.Fatalf("expected checkpoint hint part in prompt parts; got: %v", ids)
+	hint := &PromptPart{Content: phaseChannelOf(t, cb, phaseChannelReq(string(GoalPhaseCheckpoint), 25, snapshot))}
+	if strings.TrimSpace(hint.Content) == "" {
+		t.Fatalf("expected the checkpoint hint in the phase channel; got none")
 	}
 
 	// Snapshot must be prepended into the rendered hint content (wiring
@@ -400,11 +397,19 @@ func TestGoalPhaseCheckpointHint_Integration_GoalSnapshotFlowsThrough(t *testing
 	if !strings.Contains(hint.Content, snapshot) {
 		t.Errorf("GoalSnapshot not threaded into emitted hint; got:\n%s", hint.Content)
 	}
-	// Snapshot must be PREPENDED (before the decision tree block).
+	// Snapshot must be PREPENDED (before the decision block).
+	//
+	// LEVER (a) - 2026-11-10: the block moved into the phase channel, and
+	// the production wording is "Decision rule" (Phase 12.67 renamed the
+	// legacy "Decision tree" heading — the legacy heading only renders on
+	// the MaxIterationsCap=0 fallback path).
 	snapIdx := strings.Index(hint.Content, snapshot)
-	dtIdx := strings.Index(hint.Content, "Decision tree")
+	dtIdx := strings.Index(hint.Content, "Decision rule")
+	if dtIdx < 0 {
+		dtIdx = strings.Index(hint.Content, "Decision tree")
+	}
 	if snapIdx < 0 || dtIdx < 0 || snapIdx > dtIdx {
-		t.Errorf("GoalSnapshot should be prepended before Decision tree; snap_idx=%d dt_idx=%d", snapIdx, dtIdx)
+		t.Errorf("GoalSnapshot should be prepended before the decision block; snap_idx=%d dt_idx=%d", snapIdx, dtIdx)
 	}
 }
 
@@ -424,12 +429,15 @@ func TestGoalPhaseCheckpointHint_BuildSystemPromptWithSnapshot_WirePath(t *testi
 		25,    // iter
 		snapshot,
 	)
-	if !strings.Contains(got, snapshot) {
-		t.Errorf("BuildSystemPromptWithSnapshot should embed GoalSnapshot in CHECKPOINT hint; got:\n%s", got)
+	// LEVER (a) - 2026-11-10: the CHECKPOINT hint (and with it the
+	// GoalSnapshot) moved out of the system prompt into the phase channel.
+	if strings.Contains(got, snapshot) {
+		t.Errorf("system prompt must NOT embed GoalSnapshot (lever (a)); got:\n%s", got)
 	}
-	if !strings.Contains(got, "Goal phase: CHECKPOINT (iter 25)") {
-		t.Errorf("CHECKPOINT hint should show iter placeholder; got:\n%s", got)
-	}
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseCheckpoint), 25, snapshot),
+		snapshot, "GoalSnapshot must reach the LLM via the phase channel")
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseCheckpoint), 25, snapshot),
+		"Goal phase: checkpoint (iter 25", "CHECKPOINT hint must show the iter")
 }
 
 // TestGoalPhaseCheckpointHint_BuildSystemPromptWithCacheAndSnapshot_WirePath
@@ -445,9 +453,12 @@ func TestGoalPhaseCheckpointHint_BuildSystemPromptWithCacheAndSnapshot_WirePath(
 		25,
 		snapshot,
 	)
-	if !strings.Contains(got, snapshot) {
-		t.Errorf("BuildSystemPromptWithCacheAndSnapshot should embed GoalSnapshot in CHECKPOINT hint; got:\n%s", got)
+	// LEVER (a) - 2026-11-10: assert against the phase channel.
+	if strings.Contains(got, snapshot) {
+		t.Errorf("system prompt must NOT embed GoalSnapshot (lever (a)); got:\n%s", got)
 	}
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseCheckpoint), 25, snapshot),
+		snapshot, "GoalSnapshot must reach the LLM via the phase channel (cache path)")
 }
 
 // Phase 12.47 (T5): the FINAL-phase hint must NOT fire at POST-FINAL — the
@@ -455,7 +466,7 @@ func TestGoalPhaseCheckpointHint_BuildSystemPromptWithCacheAndSnapshot_WirePath(
 // report hint owns that slot.
 func TestGoalPhaseFinalHint_NilAtPostFinal(t *testing.T) {
 	if got := goalPhaseFinalHintContributor(PromptBuildRequest{
-		GoalPhase:           string(GoalPhasePostFinal),
+		GoalPhase:              string(GoalPhasePostFinal),
 		PostCompleteGoalReport: true,
 	}); got != nil {
 		t.Fatalf("FINAL hint must be nil at post_final, got part %q", got.ID)

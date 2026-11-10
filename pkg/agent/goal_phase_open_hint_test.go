@@ -96,10 +96,10 @@ func TestGoalPhaseOpenHint_PlacementCapabilityTooling(t *testing.T) {
 // header AND retains the static body. See plan §15 T1.7.
 func TestGoalPhaseOpenHint_DynamicHeaderWithCap(t *testing.T) {
 	part := goalPhaseOpenHintContributor(PromptBuildRequest{
-		GoalPhase:         string(GoalPhaseOpen),
-		Iteration:         5,
-		IterationCap:      15,
-		MaxIterationsCap:  15,
+		GoalPhase:        string(GoalPhaseOpen),
+		Iteration:        5,
+		IterationCap:     15,
+		MaxIterationsCap: 15,
 	})
 	if part == nil {
 		t.Fatal("hint must fire at OPEN phase")
@@ -142,29 +142,20 @@ func TestGoalPhaseOpenHint_Integration_BuildSystemPromptParts(t *testing.T) {
 
 	parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
 		IncludeToolUseRule: true,
-		GoalPhase:           string(GoalPhaseOpen),
-		Iteration:           2,
+		GoalPhase:          string(GoalPhaseOpen),
+		Iteration:          2,
 	})
-	found := false
+	// LEVER (a) - 2026-11-10: the phase hints moved OUT of the system
+	// prompt into the phase channel.
 	for _, p := range parts {
 		if p.Source.ID == PromptSourceGoalPhaseOpenHint {
-			found = true
-			if !strings.Contains(p.Content, "goal_progress") {
-				t.Errorf("GoalPhaseOpen hint part missing goal_progress reference; got:\n%s", p.Content)
-			}
-			if !strings.Contains(p.Content, "CHECKPOINT") {
-				t.Errorf("GoalPhaseOpen hint part missing CHECKPOINT reference; got:\n%s", p.Content)
-			}
-			break
+			t.Errorf("GoalPhaseOpen hint must NOT be in the system prompt (lever (a)); got part %q", p.ID)
 		}
 	}
-	if !found {
-		ids := make([]string, 0, len(parts))
-		for _, p := range parts {
-			ids = append(ids, string(p.Source.ID))
-		}
-		t.Fatalf("expected hint part %q in prompt parts; got parts: %v", PromptSourceGoalPhaseOpenHint, ids)
-	}
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseOpen), 2, ""),
+		"goal_progress", "OPEN hint must reach the LLM via the phase channel")
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseOpen), 2, ""),
+		"CHECKPOINT", "OPEN hint must reach the LLM via the phase channel")
 }
 
 // T7 — Integration: hint must NOT bleed into other phases.
@@ -180,8 +171,8 @@ func TestGoalPhaseOpenHint_Integration_OtherPhases_NotInjected(t *testing.T) {
 	} {
 		parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
 			IncludeToolUseRule: true,
-			GoalPhase:           phase,
-			Iteration:           0,
+			GoalPhase:          phase,
+			Iteration:          0,
 		})
 		for _, p := range parts {
 			if p.Source.ID == PromptSourceGoalPhaseOpenHint {

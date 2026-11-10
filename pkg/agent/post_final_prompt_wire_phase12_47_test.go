@@ -1,12 +1,12 @@
 // Phase 12.47 (T7) — Wire test: BuildMessagesFromPrompt at post_final + report.
 // Verifies:
-//   (1) the report hint fires (PART with PromptSourceGoalCompleteReportHint + "POST-FINAL")
-//   (2) ABSENCE assertions: SET/OPEN/CHECKPOINT/FINAL hints all ABSENT
-//   (3) cache bypass — bypass for non-Open, md5 differs per call
+//
+//	(1) the report hint fires (PART with PromptSourceGoalCompleteReportHint + "POST-FINAL")
+//	(2) ABSENCE assertions: SET/OPEN/CHECKPOINT/FINAL hints all ABSENT
+//	(3) cache bypass — bypass for non-Open, md5 differs per call
 package agent
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -24,18 +24,22 @@ func TestPostFinal_PromptBuild_Wire_F5(t *testing.T) {
 		seen[p.Source.ID] = true
 	}
 
-	// Present: report hint
-	if !seen[PromptSourceGoalCompleteReportHint] {
-		ids := make([]string, 0, len(parts))
-		for _, p := range parts { ids = append(ids, string(p.Source.ID)) }
-		t.Fatalf("report hint ABSENT at post_final; got %v", ids)
+	// LEVER (a) - 2026-11-10: the report hint moved OUT of the system
+	// prompt into the phase channel. The system prompt must NOT carry it
+	// (that is what keeps the prefix byte-constant across transitions).
+	if seen[PromptSourceGoalCompleteReportHint] {
+		t.Fatalf("report hint must NOT be in the system prompt (lever (a))")
 	}
-	for _, p := range parts {
-		if p.Source.ID == PromptSourceGoalCompleteReportHint &&
-			!strings.Contains(p.Content, "Goal phase: POST-FINAL") {
-			t.Fatalf("report hint missing POST-FINAL header; got:\n%s", p.Content)
-		}
-	}
+	// The report hint must still reach the LLM - via the phase channel.
+	assertPhaseChannelContains(t, cb, PromptBuildRequest{
+		GoalPhase:              string(GoalPhasePostFinal),
+		PostCompleteGoalReport: true,
+		Iteration:              2,
+		IterationCap:           25,
+		MaxIterationsCap:       300,
+		PhaseStartIter:         2,
+		CurrentMessage:         "do the thing",
+	}, "Goal phase: POST-FINAL", "post-final report hint must reach the LLM via the phase channel")
 
 	// Absent: 4 phase hints
 	for _, missing := range []PromptSourceID{

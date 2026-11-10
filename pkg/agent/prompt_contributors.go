@@ -35,11 +35,26 @@ func (c toolDiscoveryPromptContributor) ContributePrompt(
 	if !useBM25 && !useRegex {
 		return nil, nil
 	}
+	// LEVER (a) - 2026-11-10: the discovery rule text is PHASE-DEPENDENT
+	// (formatToolDiscoveryRule returns policy.DiscoveryRuleText for
+	// SET/CHECKPOINT/FINAL/POST_FINAL and a generic rule at OPEN). Keeping
+	// it in the SYSTEM prompt made the system prefix change on every phase
+	// transition, which killed the provider prefix cache for the whole
+	// request (measured on production: cache_read 1.536 at the
+	// OPEN->CHECKPOINT transition vs 104.192 at steady OPEN).
+	//
+	// It now lives in the PHASE CHANNEL (goal_phase_channel.go ::
+	// phaseToolDiscoveryNote) and is NOT rendered into the system prompt
+	// when a phase is known. The phase == "" path (legacy callers / test
+	// fixtures) keeps the system-prompt rendering, because there is no
+	// phase channel to carry it.
+	if GoalPhase(req.GoalPhase) != "" {
+		return nil, nil
+	}
 	content := formatToolDiscoveryRule(useBM25, useRegex, GoalPhase(req.GoalPhase))
 	if strings.TrimSpace(content) == "" {
 		return nil, nil
 	}
-
 	return []PromptPart{
 		{
 			ID:      "capability.tool_discovery",
@@ -93,6 +108,20 @@ func (c mcpServerPromptContributor) ContributePrompt(
 		// unlockable-default falls through to "available as native tools".
 		// `GoalPhaseLock` is the same constant value as `GoalPhaseSet`
 		// — PhasePolicyFor normalizes the alias (case-insensitive lookup).
+		//
+		// LEVER (a) - 2026-11-10: the MCPAvailText row is
+		// PHASE-DEPENDENT ("available as native tools" at OPEN vs
+		// "locked at this phase..." elsewhere). Keeping it in the SYSTEM
+		// prompt made the system prefix change on every phase transition,
+		// which killed the provider prefix cache for the whole request.
+		//
+		// When a phase is known the whole line moves to the PHASE CHANNEL
+		// (goal_phase_channel.go :: phaseMCPNote), so the system prompt
+		// carries nothing phase-dependent. The phase == "" path (legacy
+		// callers / test fixtures) keeps the old behaviour.
+		if GoalPhase(req.GoalPhase) != "" {
+			return nil, nil
+		}
 		policy := PhasePolicyFor(GoalPhase(req.GoalPhase))
 		if policy != nil {
 			availability = policy.MCPAvailText

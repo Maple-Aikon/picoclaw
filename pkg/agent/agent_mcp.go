@@ -315,6 +315,12 @@ func registerMCPServerPromptContributor(
 	if agent == nil || agent.ContextBuilder == nil || toolCount <= 0 {
 		return
 	}
+	// LEVER (a) - 2026-11-10: the phase-scoped MCP availability line is
+	// rendered by the phase channel, which needs to know WHICH servers are
+	// deferred (their tools hidden behind tool discovery).
+	if registerAsHidden {
+		agent.ContextBuilder.addDeferredMCPServer(serverName)
+	}
 	if err := agent.ContextBuilder.RegisterPromptContributor(mcpServerPromptContributor{
 		serverName: serverName,
 		toolCount:  toolCount,

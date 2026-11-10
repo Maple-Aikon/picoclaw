@@ -368,13 +368,20 @@ func TestCacheInvalidationOnGoalPhaseChange(t *testing.T) {
 
 	// Different phase → cache miss, new prompt. The GoalPhaseSet hint
 	// contributor fires only when goalPhase="set".
+	//
+	// LEVER (a) - 2026-11-10: the phase hints moved OUT of the system
+	// prompt into the phase channel, so the SET system prompt is now
+	// IDENTICAL to the OPEN one — that is the whole point: the system
+	// prefix stays byte-constant across transitions. The phase affordance
+	// is asserted against the phase channel instead.
 	promptSet := cb.BuildSystemPromptWithCache("set", false, 0)
-	if promptSet == promptOpen {
-		t.Errorf("cache hit across goalPhase transition — GoalPhaseSet hint would never fire")
+	if promptSet != promptOpen {
+		t.Errorf("system prompt changed across goalPhase transition - lever (a) requires a byte-identical system prefix")
 	}
-	if !strings.Contains(promptSet, "set_goal") || !strings.Contains(promptSet, "locked") {
-		t.Errorf("GoalPhaseSet prompt missing expected hint text (no 'set_goal' / 'locked' keyword)")
-	}
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseSet), 0, ""),
+		"set_goal", "SET phase affordance must reach the LLM via the phase channel")
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseSet), 0, ""),
+		"locked", "SET phase affordance must reach the LLM via the phase channel")
 }
 
 // TestCacheHitOnSameGoalPhase verifies that BuildSystemPromptWithCache
@@ -426,29 +433,35 @@ func TestCacheInvalidationOnIterationChange(t *testing.T) {
 	if promptIter1 != promptIter1Again {
 		t.Errorf("cache miss for same iter=1: builds produced different strings")
 	}
-	if !strings.Contains(promptIter1, "(iter 1)") {
-		t.Errorf("iter=1 prompt missing '(iter 1)' reference in GoalPhaseSet hint header; got:\n%s", promptIter1[:intMin(500, len(promptIter1))])
-	}
+	// LEVER (a) - 2026-11-10: the "(iter N)" header moved to the phase
+	// channel; the system prompt is byte-identical across iters (that is
+	// the point of lever (a) - the system prefix must not change).
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseSet), 1, ""),
+		"(iter 1)", "SET hint header must reflect iter 1")
 
-	// Different iter → cache miss, new prompt with iter 17 in the hint header.
+	// Different iter → the ITER HEADER moves to the phase channel.
 	// This is the exact regression scenario from main-turn-4.
+	//
+	// LEVER (a) - 2026-11-10: the system prompt no longer carries the
+	// iter, so it is byte-identical across iters BY DESIGN (that is the
+	// point: the system prefix must not change). The iter-dependent text
+	// now lives in the phase channel, which is rebuilt per request.
 	promptIter17 := cb.BuildSystemPromptWithCache("set", false, 17)
-	if promptIter17 == promptIter1 {
-		t.Errorf("cache hit across iter change — iter-1 prompt would be reused at iter 17 (Phase 12.16.1 regression)")
+	if promptIter17 != promptIter1 {
+		t.Errorf("system prompt changed across iter change - lever (a) requires a byte-identical system prefix")
 	}
-	if !strings.Contains(promptIter17, "(iter 17)") {
-		t.Errorf("iter=17 prompt missing '(iter 17)' reference in GoalPhaseSet hint header; hint would still say '(iter 1)' (the bug). Got:\n%s", promptIter17[:intMin(500, len(promptIter17))])
-	}
+	// LEVER (a) - 2026-11-10: assert against the phase channel.
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseSet), 17, ""),
+		"(iter 17)", "SET hint header must reflect iter 17 (the Phase 12.16.1 regression)")
 
 	// After iter 17 build, iter 1 build is back to cache miss (iter key
 	// mismatch). Iter 1 prompt has its own iter=1 header.
 	promptIter1Again2 := cb.BuildSystemPromptWithCache("set", false, 1)
-	if promptIter1Again2 == promptIter17 {
-		t.Errorf("cache hit across iter change (reverse direction)")
+	if promptIter1Again2 != promptIter17 {
+		t.Errorf("system prompt changed across iter change (reverse direction) - lever (a) requires a byte-identical system prefix")
 	}
-	if !strings.Contains(promptIter1Again2, "(iter 1)") {
-		t.Errorf("iter=1 prompt missing '(iter 1)' reference after iter 17 cache flip")
-	}
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseSet), 1, ""),
+		"(iter 1)", "SET hint header must reflect iter 1 after the iter-17 cache flip")
 }
 
 // intMin helper for substring slicing above (avoids name collision with
@@ -508,12 +521,14 @@ func TestNonOpenPhasesBypassCache(t *testing.T) {
 			// header MUST reflect the actual iter (Phase 12.16.1 fix).
 			// Rebuild at iter 17 → prompt contains "(iter 17)".
 			if phase == string(GoalPhaseSet) {
-				p17 := cb.BuildSystemPromptWithCache(phase, false, 17)
-				if !strings.Contains(p17, "(iter 17)") {
-					t.Errorf("Set phase rebuild at iter=17 missing '(iter 17)' hint header — Phase 12.16.1 regression")
+				// LEVER (a) - 2026-11-10: the iter header moved to the
+				// phase channel; the system prompt stays byte-constant.
+				ch := phaseChannelOf(t, cb, phaseChannelReq(string(GoalPhaseSet), 17, ""))
+				if !strings.Contains(ch, "(iter 17)") {
+					t.Errorf("Set phase channel at iter=17 missing '(iter 17)' hint header - Phase 12.16.1 regression")
 				}
-				if strings.Contains(p17, "(iter 1)") {
-					t.Errorf("Set phase rebuild at iter=17 still contains '(iter 1)' — Phase 12.16.1 stale-text regression")
+				if strings.Contains(ch, "(iter 1)") {
+					t.Errorf("Set phase channel at iter=17 still contains '(iter 1)' - Phase 12.16.1 stale-text regression")
 				}
 			}
 
@@ -950,6 +965,7 @@ func TestBuildMessages_IncludesMediaOnlyCurrentMessage(t *testing.T) {
 		t.Fatalf("userMsg.Media = %#v, want image payload", userMsg.Media)
 	}
 }
+
 // TestCache_EstimateSystemTokensDoesNotCorruptCache verifies that
 // EstimateSystemTokens (called from computeContextUsage at turn finalization)
 // does NOT write through the cache.
@@ -986,9 +1002,13 @@ func TestCache_EstimateSystemTokensDoesNotCorruptCache(t *testing.T) {
 	// Phase 12.16.1: Set-phase build BYPASSES cache. The rebuild still
 	// includes the GoalPhaseSet hint, but doesn't write to the cache slot.
 	withHint := cb.BuildSystemPromptWithCache("set", false, 1)
-	if !strings.Contains(withHint, "Goal phase: SET") {
-		t.Fatal("setup: hint should be present after BuildSystemPromptWithCache(set)")
+	// LEVER (a) - 2026-11-10: the SET hint moved to the phase channel; the
+	// system prompt is byte-constant across phases.
+	if strings.Contains(withHint, "Goal phase: SET") {
+		t.Fatal("setup: system prompt must NOT carry the phase hint (lever (a))")
 	}
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseSet), 1, ""),
+		"Goal phase: SET", "SET hint must reach the LLM via the phase channel")
 	// Cache slot must NOT have been written to by a Set-phase call.
 	// Phase 12.16.1: this is expected — non-Open phases never write
 	// to cache. The cachedSystemPromptGoalPhase stays "" (unwritten).
@@ -1021,9 +1041,12 @@ func TestCache_EstimateSystemTokensDoesNotCorruptCache(t *testing.T) {
 	// Set-phase rebuild must still return the hint (deterministic rebuild
 	// via BuildSystemPrompt with phase="set").
 	setAgain := cb.BuildSystemPromptWithCache("set", false, 1)
-	if !strings.Contains(setAgain, "Goal phase: SET") {
-		t.Fatal("Set-phase rebuild after EstimateSystemTokens lost GoalPhaseSet hint")
+	// LEVER (a) - 2026-11-10: the SET hint moved to the phase channel.
+	if strings.Contains(setAgain, "Goal phase: SET") {
+		t.Fatal("Set-phase system prompt must NOT carry the phase hint (lever (a))")
 	}
+	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseSet), 1, ""),
+		"Goal phase: SET", "SET hint must reach the LLM via the phase channel after EstimateSystemTokens")
 
 	// Open-phase next call must hit the cache (still valid).
 	openAgain := cb.BuildSystemPromptWithCache("open", false, 1)

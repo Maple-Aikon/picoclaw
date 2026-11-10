@@ -46,28 +46,28 @@ const (
 type PromptSourceID string
 
 const (
-	PromptSourceKernel         PromptSourceID = "runtime.kernel"
-	PromptSourceHierarchy      PromptSourceID = "runtime.hierarchy"
-	PromptSourceWorkspace      PromptSourceID = "workspace.definition"
-	PromptSourceRuntime        PromptSourceID = "runtime.context"
-	PromptSourceSummary        PromptSourceID = "context.summary"
-	PromptSourceMemory         PromptSourceID = "memory:workspace"
-	PromptSourceSkillCatalog   PromptSourceID = "skill:index"
-	PromptSourceActiveSkills   PromptSourceID = "skill:active"
-	PromptSourceAgentDiscovery PromptSourceID = "agent:discovery"
-	PromptSourceToolRegistry   PromptSourceID = "tool_registry:native"
-	PromptSourceToolDiscovery  PromptSourceID = "tool_registry:discovery"
-	PromptSourceOutputPolicy   PromptSourceID = "runtime.output"
-	PromptSourceSubTurnProfile PromptSourceID = "subturn.profile"
-	PromptSourceUserMessage    PromptSourceID = "turn:user_message"
-	PromptSourceSteering       PromptSourceID = "turn:steering"
-	PromptSourceSubTurnResult  PromptSourceID = "turn:subturn_result"
-	PromptSourceToolResult     PromptSourceID = "turn:tool_result"
-	PromptSourceInterrupt      PromptSourceID = "turn:interrupt"
-	PromptSourceRecovery        PromptSourceID = "turn:recovery"
+	PromptSourceKernel                  PromptSourceID = "runtime.kernel"
+	PromptSourceHierarchy               PromptSourceID = "runtime.hierarchy"
+	PromptSourceWorkspace               PromptSourceID = "workspace.definition"
+	PromptSourceRuntime                 PromptSourceID = "runtime.context"
+	PromptSourceSummary                 PromptSourceID = "context.summary"
+	PromptSourceMemory                  PromptSourceID = "memory:workspace"
+	PromptSourceSkillCatalog            PromptSourceID = "skill:index"
+	PromptSourceActiveSkills            PromptSourceID = "skill:active"
+	PromptSourceAgentDiscovery          PromptSourceID = "agent:discovery"
+	PromptSourceToolRegistry            PromptSourceID = "tool_registry:native"
+	PromptSourceToolDiscovery           PromptSourceID = "tool_registry:discovery"
+	PromptSourceOutputPolicy            PromptSourceID = "runtime.output"
+	PromptSourceSubTurnProfile          PromptSourceID = "subturn.profile"
+	PromptSourceUserMessage             PromptSourceID = "turn:user_message"
+	PromptSourceSteering                PromptSourceID = "turn:steering"
+	PromptSourceSubTurnResult           PromptSourceID = "turn:subturn_result"
+	PromptSourceToolResult              PromptSourceID = "turn:tool_result"
+	PromptSourceInterrupt               PromptSourceID = "turn:interrupt"
+	PromptSourceRecovery                PromptSourceID = "turn:recovery"
 	PromptSourceGoalLifecycleProtocol   PromptSourceID = "capability:goal_lifecycle_protocol"
 	PromptSourceGoalPhaseSetHint        PromptSourceID = "capability:goal_phase_set_hint"
-	PromptSourceGoalPhaseOpenHint      PromptSourceID = "capability:goal_phase_open_hint" // Phase 12.32
+	PromptSourceGoalPhaseOpenHint       PromptSourceID = "capability:goal_phase_open_hint" // Phase 12.32
 	PromptSourceGoalPhaseCheckpointHint PromptSourceID = "capability:goal_phase_checkpoint_hint"
 	PromptSourceGoalPhaseFinalHint      PromptSourceID = "capability:goal_phase_final_hint"
 	PromptSourceGoalCompleteReportHint  PromptSourceID = "capability:goal_complete_report_hint"
@@ -138,6 +138,24 @@ type PromptBuildRequest struct {
 	// Empty means "no phase info available" (e.g. legacy callers / tests).
 	// Phase 12.3 contributors use this to inject phase-specific hints.
 	GoalPhase string
+
+	// ToolDiscoveryBM25 / ToolDiscoveryRegex — whether the tool-discovery
+	// search tools are enabled for this request. Threaded so the
+	// phase-scoped discovery rule can be rendered into the TURN-TAIL
+	// phase channel instead of the system prompt (lever (a), 2026-11-10).
+	//
+	// Before lever (a) these lived in the registry contributor
+	// (toolDiscoveryPromptContributor), whose text is PHASE-DEPENDENT
+	// (policy.DiscoveryRuleText) — which made the system prompt change
+	// on every phase transition and killed the provider prefix cache.
+	ToolDiscoveryBM25  bool
+	ToolDiscoveryRegex bool
+
+	// DeferredMCPServers lists the MCP servers whose tools are hidden
+	// behind tool discovery (deferred). Their availability text is
+	// PHASE-DEPENDENT (policy.MCPAvailText) — same reason as above.
+	// Empty = nothing deferred = nothing phase-specific to render.
+	DeferredMCPServers []string
 
 	// PostCompleteGoalReport is true when this prompt is being built for the
 	// post-complete_goal final-report iter (Phase 12.7). One extra iteration

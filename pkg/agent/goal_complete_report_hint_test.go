@@ -11,7 +11,7 @@ import (
 
 func TestGoalCompleteReportHint_FiresWhenPostFlagSet(t *testing.T) {
 	got := goalCompleteReportHintContributor(PromptBuildRequest{
-		GoalPhase:               string(GoalPhaseFinal),
+		GoalPhase:              string(GoalPhaseFinal),
 		PostCompleteGoalReport: true,
 	})
 	if got == nil {
@@ -27,7 +27,7 @@ func TestGoalCompleteReportHint_FiresWhenPostFlagSet(t *testing.T) {
 
 func TestGoalCompleteReportHint_SuppressedWhenFlagFalse(t *testing.T) {
 	got := goalCompleteReportHintContributor(PromptBuildRequest{
-		GoalPhase:               string(GoalPhaseFinal),
+		GoalPhase:              string(GoalPhaseFinal),
 		PostCompleteGoalReport: false,
 	})
 	if got != nil {
@@ -109,26 +109,29 @@ func TestGoalCompleteReportHint_WirePath_ReachesPromptParts(t *testing.T) {
 		GoalPhase:              string(GoalPhaseFinal),
 		PostCompleteGoalReport: true,
 	})
-	found := false
+	// LEVER (a) - 2026-11-10: the report hint moved OUT of the system
+	// prompt into the phase channel. The system prompt must NOT carry it
+	// (that is what keeps the prefix byte-constant across transitions),
+	// but the hint MUST still reach the LLM.
 	for _, p := range parts {
 		if p.Source.ID == PromptSourceGoalCompleteReportHint {
-			found = true
-			if !strings.Contains(p.Content, "ONLY one whose text reaches the user") {
-				t.Errorf("wired hint missing 'ONLY one whose text reaches the user' marker; got:\n%s", p.Content)
-			}
-			if !strings.Contains(p.Content, "FULL ANSWER") {
-				t.Errorf("wired hint missing 5-section template; got:\n%s", p.Content)
-			}
-			break
+			t.Fatalf("report hint must NOT be in the system prompt (lever (a))")
 		}
 	}
-	if !found {
-		ids := make([]string, 0, len(parts))
-		for _, p := range parts {
-			ids = append(ids, string(p.Source.ID))
-		}
-		t.Fatalf("expected hint part %q in prompt parts (rejected by ValidatePart?); got parts: %v",
-			PromptSourceGoalCompleteReportHint, ids)
+	ch := phaseChannelOf(t, cb, PromptBuildRequest{
+		GoalPhase:              string(GoalPhaseFinal),
+		PostCompleteGoalReport: true,
+		Iteration:              2,
+		IterationCap:           25,
+		MaxIterationsCap:       300,
+		PhaseStartIter:         2,
+		CurrentMessage:         "do the thing",
+	})
+	if !strings.Contains(ch, "ONLY one whose text reaches the user") {
+		t.Errorf("wired hint missing 'ONLY one whose text reaches the user' marker; got:\n%s", ch)
+	}
+	if !strings.Contains(ch, "FULL ANSWER") {
+		t.Errorf("wired hint missing 5-section template; got:\n%s", ch)
 	}
 }
 
@@ -159,24 +162,23 @@ func TestGoalCompleteReportHint_PostFinalHeader_WirePath(t *testing.T) {
 		GoalPhase:              string(GoalPhasePostFinal),
 		PostCompleteGoalReport: true,
 	})
-	found := false
+	// LEVER (a) - 2026-11-10: the report hint moved into the phase channel.
 	for _, p := range parts {
 		if p.Source.ID == PromptSourceGoalCompleteReportHint {
-			found = true
-			if !strings.Contains(p.Content, "Goal phase: POST-FINAL") {
-				t.Errorf("report hint missing 'Goal phase: POST-FINAL' header; got:\n%s", p.Content)
-			}
-			break
+			t.Fatalf("report hint must NOT be in the system prompt (lever (a))")
 		}
 	}
-	if !found {
-		ids := make([]string, 0, len(parts))
-		for _, p := range parts {
-			ids = append(ids, string(p.Source.ID))
-		}
-		t.Fatalf("expected report hint at post_final; got parts: %v", ids)
-	}
+	assertPhaseChannelContains(t, cb, PromptBuildRequest{
+		GoalPhase:              string(GoalPhasePostFinal),
+		PostCompleteGoalReport: true,
+		Iteration:              2,
+		IterationCap:           25,
+		MaxIterationsCap:       300,
+		PhaseStartIter:         2,
+		CurrentMessage:         "do the thing",
+	}, "Goal phase: POST-FINAL", "post-final report header must reach the LLM via the phase channel")
 }
+
 // Phase 12.68 — Option B (anh Maple, 2026-08-10): the post-final hint must
 // tell the LLM that earlier-iteration text (incl. the complete_goal
 // explanation) was NOT delivered to the user, and that this iteration is the

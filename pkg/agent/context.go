@@ -54,9 +54,38 @@ type ContextBuilder struct {
 	// build time. This catches nested file creations/deletions/mtime changes
 	// that may not update the top-level skill root directory mtime.
 	skillFilesAtCache map[string]time.Time
+
+	// LEVER (a) - 2026-11-10: the phase-scoped tool-discovery rule and the
+	// phase-scoped MCP availability lines moved OUT of the system prompt
+	// into the phase channel. The builder keeps the state needed to render
+	// them: which discovery search tools are enabled, and which MCP servers
+	// are deferred (their tools hidden behind tool discovery).
+	toolDiscoveryBM25  bool
+	toolDiscoveryRegex bool
+	deferredMCPServers []string
+}
+
+// addDeferredMCPServer records that an MCP server's tools are hidden
+// behind tool discovery. LEVER (a) - 2026-11-10: the phase-scoped
+// availability line for these servers is rendered by the phase channel.
+func (cb *ContextBuilder) addDeferredMCPServer(name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	for _, existing := range cb.deferredMCPServers {
+		if existing == name {
+			return
+		}
+	}
+	cb.deferredMCPServers = append(cb.deferredMCPServers, name)
 }
 
 func (cb *ContextBuilder) WithToolDiscovery(useBM25, useRegex bool) *ContextBuilder {
+	// LEVER (a) - 2026-11-10: remember the flags so the phase channel can
+	// render the phase-scoped discovery rule.
+	cb.toolDiscoveryBM25 = useBM25
+	cb.toolDiscoveryRegex = useRegex
 	if useBM25 || useRegex {
 		if err := cb.RegisterPromptContributor(toolDiscoveryPromptContributor{
 			useBM25:  useBM25,
@@ -130,6 +159,13 @@ func NewContextBuilder(workspace string) *ContextBuilder {
 }
 
 func (cb *ContextBuilder) RegisterPromptContributor(contributor PromptContributor) error {
+	// LEVER (a) - 2026-11-10: a DEFERRED MCP server's phase-scoped
+	// availability line is rendered by the phase channel, which needs to
+	// know WHICH servers are deferred. Hook the registration so every
+	// registration path (agent_mcp.go and direct calls) is covered.
+	if mcp, ok := contributor.(mcpServerPromptContributor); ok && mcp.deferred {
+		cb.addDeferredMCPServer(mcp.serverName)
+	}
 	err := cb.promptRegistryOrDefault().RegisterContributor(contributor)
 	if err == nil {
 		cb.InvalidateCache()
@@ -470,46 +506,26 @@ Each part separated by the marker will be sent as an independent message.`,
 		Cache:   PromptCacheEphemeral,
 	})
 
-	// Phase 12.7 — Post-complete_goal final-report hint. Fires when the
-	// post-complete_goal final-report iter is active (one extra iter after
-	// complete_goal with phase=GoalPhaseFinal, tool allowlist=[]). Tells LLM
-	// this is its LAST CHANCE to provide a final user-facing report for this
-	// goal. See plan file
-	// ~/.picoclaw/workspace/memory/plan/picoclaw-phase12.7-post-complete-goal-final-report-iter-20260724.md §3.2.
-	if hintPart := goalCompleteReportHintContributor(PromptBuildRequest{GoalPhase: opts.GoalPhase, PostCompleteGoalReport: opts.PostCompleteGoalReport}); hintPart != nil {
-		add(*hintPart)
-	}
-
-	// Per-phase lifecycle hints (Phase 12.3 / 12.32 / 12.39). Each
-	// contributor returns nil for any phase other than its own, so the
-	// same hint code can also be called from buildSystemPromptParts
-	// without bleeding. The phase-specific text contains the iter (for
-	// SET) or per-phase tool allowlist semantics (OPEN/CHECKPOINT/FINAL)
-	// that the LLM MUST see on every prompt build — moving it to the
-	// user[0] turn-tail would break legacy wire paths that read the hint
-	// from the system prompt directly. Cache invalidation across
-	// (phase, iter, cap) dims already handles per-iter prompt mutation
-	// without invalidating the OPEN-phase cache key when unnecessary
-	// (Phase 12.16.1 / 12.38 §4).
-	for _, buildHint := range []func(PromptBuildRequest) *PromptPart{
-		goalPhaseSetHintContributor,
-		goalPhaseOpenHintContributor,
-		goalPhaseCheckpointHintContributor,
-		goalPhaseFinalHintContributor,
-	} {
-		hintPart := buildHint(PromptBuildRequest{
-			GoalPhase:              opts.GoalPhase,
-			Iteration:              opts.Iteration,
-			PostCompleteGoalReport: opts.PostCompleteGoalReport,
-			IterationCap:           opts.IterationCap,
-			MaxIterationsCap:       opts.MaxIterationsCap,
-			GoalFinalized:          opts.GoalFinalized,
-			GoalSnapshot:           opts.GoalSnapshot,
-		})
-		if hintPart != nil {
-			add(*hintPart)
-		}
-	}
+	// LEVER (a) — 2026-11-10: the phase hints MOVED OUT of the system
+	// prompt into the TURN-TAIL phase channel (goal_phase_channel.go).
+	//
+	// Why: their text is PHASE-DEPENDENT (SET/OPEN/CHECKPOINT/FINAL bodies
+	// differ, CHECKPOINT embeds the goal snapshot, the compass embeds the
+	// live iteration). A phase-dependent system prompt changes the system
+	// prefix on every phase transition, which kills the provider prefix
+	// cache for the WHOLE request.
+	//
+	// Measured on production (gateway.log, 2026-11-10): the OPEN→CHECKPOINT
+	// transition reported cache_read 1.536 with input 80.808 — a ~81K token
+	// tax for ONE call — versus 104.192 cached tokens at steady OPEN.
+	//
+	// The affordance itself is NOT lost: the same text is rendered into the
+	// phase channel, which rides along in the turn's user message (the same
+	// place the <goal_phase> banner already lives) so the system prefix
+	// stays byte-constant across transitions.
+	// The contributor list lives in goal_phase_channel.go
+	// (phaseHintContributors) — it is the single place that knows which
+	// hints exist.
 
 	stack.Seal()
 	return stack.Parts()
@@ -1396,6 +1412,38 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 			userContent = banner
 		}
 	}
+	// LEVER (a) - 2026-11-10: the phase channel carries the phase-specific
+	// affordance (phase hint + goal snapshot + compass + tool-discovery/MCP
+	// note) that used to live in the SYSTEM prompt.
+	//
+	// The discovery / MCP state lives on the builder (it is registered once
+	// per agent), so seed it onto the request before rendering the channel.
+	if !req.ToolDiscoveryBM25 && !req.ToolDiscoveryRegex {
+		req.ToolDiscoveryBM25 = cb.toolDiscoveryBM25
+		req.ToolDiscoveryRegex = cb.toolDiscoveryRegex
+	}
+	if len(req.DeferredMCPServers) == 0 {
+		req.DeferredMCPServers = cb.deferredMCPServers
+	}
+	//
+	// It rides in the SAME user message as the goal_phase banner (the
+	// turn's root user message) so:
+	//   - the system prefix stays byte-constant across phase transitions
+	//     (the whole point of lever (a): measured ~81K token cache tax at
+	//     the OPEN->CHECKPOINT transition before this change);
+	//   - the turn loop's message bookkeeping (currentTurnStart, persisted
+	//     turn tail, media resolution) is untouched - no new message is
+	//     introduced into the array.
+	//
+	// The channel is rendered AFTER the banner so the LLM reads the
+	// phase-specific instructions LAST (closest to the generation point).
+	if channel := buildPhaseChannel(req); channel != "" {
+		if strings.TrimSpace(userContent) != "" {
+			userContent = userContent + "\n\n" + channel
+		} else {
+			userContent = channel
+		}
+	}
 	if strings.TrimSpace(userContent) != "" || len(req.Media) > 0 {
 		messages = append(messages, userPromptMessage(userContent, req.Media))
 	}
@@ -1730,7 +1778,6 @@ func wrapDynamicContext(dyn, userMessage string) string {
 	sb.WriteString(userMessage)
 	return sb.String()
 }
-
 
 // formatDynamicGoalPhaseBanner constructs the per-turn dynamic GOAL_PHASE_BANNER XML block
 // injected into the tail of the active user message.
