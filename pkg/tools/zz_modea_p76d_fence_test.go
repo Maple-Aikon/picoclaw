@@ -36,7 +36,7 @@ func p76dCountH2(s string) int {
 }
 
 func TestP76dFenceAudit(t *testing.T) {
-	const ws = "/home/maple/.picoclaw/workspace"
+	ws := liveStoreWorkspace(t)
 	store, err := NewToolKnowledgeStore(ws, "")
 	if err != nil {
 		t.Fatalf("store: %v", err)

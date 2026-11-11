@@ -89,7 +89,7 @@ func TestP76dExtractBodyStillStripsFrontmatter(t *testing.T) {
 // TestP76dLiveStoreLosesNothing is the store-wide acceptance: after
 // the fix, NO entry loses an H2 section through extractBody.
 func TestP76dLiveStoreLosesNothing(t *testing.T) {
-	const ws = "/home/maple/.picoclaw/workspace"
+	ws := liveStoreWorkspace(t)
 	store, err := NewToolKnowledgeStore(ws, "")
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -121,7 +121,7 @@ func TestP76dLiveStoreLosesNothing(t *testing.T) {
 // gone: the R1 entry mcp_context-mode_ctx_execute_file must auto-load
 // with its first sections present.
 func TestP76dR1EntryAutoLoadRestored(t *testing.T) {
-	const ws = "/home/maple/.picoclaw/workspace"
+	ws := liveStoreWorkspace(t)
 	store, err := NewToolKnowledgeStore(ws, "")
 	if err != nil {
 		t.Fatalf("store: %v", err)

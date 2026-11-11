@@ -39,8 +39,34 @@ import (
 	"time"
 )
 
+// TestP76eExecNeedlesVisible asserts the STABLE contract for the exec
+// entry: every keyword that carries a lesson must be visible in an H2
+// TITLE, not merely somewhere in the payload.
+//
+// ## WHY THIS IS NOT A LITERAL TITLE MATCH
+//
+// The original assertion hardcoded the whole title string:
+//
+//	"## extractBody truncates a fence-less entry at its first horizontal rule"
+//
+// That title no longer exists verbatim in the live store: the store
+// reads "at its horizontal rule" (no "first"), and a later regroup
+// MERGED several sections into that one H2, so the title now
+// continues with "; R1 vs TOPIC (RUNTIME-DEAD); Deploy != live ...".
+//
+// A literal full-title match therefore fails on a HEALTHY store the
+// moment anyone edits that H2 — the same brittleness that made the
+// four sibling asserts fail (volatile proxy vs stable contract).
+//
+// THE CONTRACT THAT MATTERS (from the p76e lesson):
+//
+//	needle phải nằm trong TIÊU ĐỀ H2
+//
+// So: locate the H2 that owns the extractBody lesson by PREFIX (the
+// stable part of the title), then assert that the needles live in
+// THAT TITLE rather than only in the body.
 func TestP76eExecNeedlesVisible(t *testing.T) {
-	const ws = "/home/maple/.picoclaw/workspace"
+	ws := liveStoreWorkspace(t)
 	store, err := NewToolKnowledgeStore(ws, "")
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -50,10 +76,21 @@ func TestP76eExecNeedlesVisible(t *testing.T) {
 		t.Fatal("empty payload")
 	}
 
-	// (1) The H2 TITLE must survive verbatim — it carries the keywords.
-	title := "## extractBody truncates a fence-less entry at its first horizontal rule"
-	if !strings.Contains(payload, title) {
-		t.Errorf("H2 TITLE MISSING from exec auto-load payload: %q", title)
+	// The stable part of the owning H2 title.
+	const ownerPrefix = "## extractBody truncates a fence-less entry at its"
+
+	// (1) The owning H2 must be present, matched by PREFIX so that a
+	// later regroup (which appends to the title) does not break this.
+	owner := ""
+	for _, line := range strings.Split(payload, p76dNL) {
+		if strings.HasPrefix(line, ownerPrefix) {
+			owner = line
+			break
+		}
+	}
+	if owner == "" {
+		t.Fatalf("OWNING H2 TITLE MISSING (prefix %q); payload titles:%s%s",
+			ownerPrefix, p76dNL, p76eTitles(payload))
 	}
 
 	// (2) Keywords that live IN the title must be visible.
@@ -63,7 +100,17 @@ func TestP76eExecNeedlesVisible(t *testing.T) {
 		}
 	}
 
-	// (3) NOT asserted, only logged: the body line is a function of the
+	// (3) THE CONTRACT: the needles must be in the TITLE itself, not
+	// only in the body. A body-only needle is invisible to the
+	// runtime whenever the body excerpt is starved.
+	for _, n := range []string{"R1 vs TOPIC", "RUNTIME-DEAD", "FIRST BODY LINE"} {
+		if !strings.Contains(owner, n) {
+			t.Errorf("NEEDLE NOT IN THE H2 TITLE (body-only needle is invisible at runtime): %q owner=%q",
+				n, owner)
+		}
+	}
+
+	// (4) NOT asserted, only logged: the body line is a function of the
 	// water-fill share, which shrinks with every append.
 	if strings.Contains(payload, "What goes wrong (measured 2026-11-11, Mode A p76d)") {
 		t.Logf("INFO: first body line of the p76d section IS visible")
@@ -71,15 +118,42 @@ func TestP76eExecNeedlesVisible(t *testing.T) {
 		t.Logf("INFO: first body line NOT visible (water-fill share shrank) — the TITLE carries the lesson")
 	}
 
-	t.Logf("payload=%d B", len(payload))
+	t.Logf("payload=%d B owner=%q", len(payload), owner)
+}
+
+// p76eTitles lists the H2 titles present in a payload, for diagnostics.
+func p76eTitles(payload string) string {
+	var out []string
+	for _, line := range strings.Split(payload, p76dNL) {
+		if strings.HasPrefix(line, "## ") {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, p76dNL)
 }
 
 // TestP76eExecNotAStubList is the STABLE regression guard: the entry
 // must not collapse into a table of contents with one-word stubs.
 // That is the p74 symptom, and it would make a title-only lesson
 // useless to the runtime.
+//
+// THE STABLE CONTRACT IS "NO SECTION LOST ITS BODY" (ZERO_BODY = 0).
+//
+// The original assertion was `avgExcerpt >= 20` bytes. That is a
+// VOLATILE proxy: the water-fill share of every section shrinks
+// whenever ANY entry in the live store grows, so the average is a
+// property of the whole store, not of this file. Measured 2026-11-11
+// the average was 15.4 B on a HEALTHY store (zero starved sections)
+// and the test fired anyway.
+//
+// The regression this test actually exists for is the p74 STARVED
+// symptom: a section whose excerpt is EMPTY, so its body is
+// invisible to the runtime. That is what `shown != bodySections`
+// detects. The MEMORY note records this as the correct yardstick:
+//
+//	thước đo đúng = ZERO_BODY=0, không phải avg excerpt
 func TestP76eExecNotAStubList(t *testing.T) {
-	const ws = "/home/maple/.picoclaw/workspace"
+	ws := liveStoreWorkspace(t)
 	store, err := NewToolKnowledgeStore(ws, "")
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -116,8 +190,8 @@ func TestP76eExecNotAStubList(t *testing.T) {
 	avg := float64(total) / float64(bodySections)
 	t.Logf("exec.md sections=%d bodySections=%d shownWithBody=%d avgExcerpt=%.1f B",
 		len(secs), bodySections, shown, avg)
-	if avg < 20 {
-		t.Errorf("exec.md collapsed into a STUB LIST: avgExcerpt=%.1f B (< 20) over %d body sections",
-			avg, bodySections)
+	if shown != bodySections {
+		t.Errorf("exec.md collapsed into a STUB LIST: shown=%d bodySections=%d (a section lost its body)",
+			shown, bodySections)
 	}
 }

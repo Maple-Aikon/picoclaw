@@ -30,7 +30,7 @@ const zzTAB byte = 9
 // one file), so a heading-keyed map silently collapses them and
 // compares the wrong pair.
 func TestZZLiveMeasure(t *testing.T) {
-	const ws = "/home/maple/.picoclaw/workspace"
+	ws := liveStoreWorkspace(t)
 	store, err := NewToolKnowledgeStore(ws, "")
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -183,7 +183,7 @@ func TestZZLiveMeasure(t *testing.T) {
 }
 
 func TestZZDebugOne(t *testing.T) {
-	const ws = "/home/maple/.picoclaw/workspace"
+	ws := liveStoreWorkspace(t)
 	store, err := NewToolKnowledgeStore(ws, "")
 	if err != nil {
 		t.Fatal(err)
