@@ -391,15 +391,28 @@ func isLifecycleToolAllowed(toolName, phase string) bool {
 //   - projectionFrozen == true and the phase is OPEN or UNSET → the FULL
 //     registry is projected, byte-identical to the pre-P1 behaviour. The
 //     OPEN prompt-cache prefix must not move.
-//   - projectionFrozen == true and the phase is NARROW (set / checkpoint /
-//     final / post_final) → only the phase allowlist is projected, so the
-//     LLM stops seeing ~76 schemas it may not call.
+//   - projectionFrozen == true and the phase is CHECKPOINT → the FULL
+//     registry is projected too. LEVER (b), plan §20 (anh chốt
+//     2026-11-11 07:58 ICT): the OPEN→CHECKPOINT transition rewrites the
+//     tool-schema prefix, so every transition paid full uncached input.
+//     Making the CHECKPOINT wire identical to the OPEN wire keeps that
+//     prefix byte-stable across the transition.
+//   - projectionFrozen == true and the phase is NARROW (set / final /
+//     post_final) → only the phase allowlist is projected.
 //   - projectionFrozen == true and the phase is UNKNOWN → fail CLOSED onto
 //     the allowlist. An unrecognised phase must never widen the visible set.
 //
 // The caller must hold r.mu (read). This function does NOT decide what may
 // EXECUTE — toolAllowedLocked does, and pipeline_execute.go's
 // gatePreCheckDeny enforces it independently of the projection.
+//
+// LEVER (b) SAFETY: widening the CHECKPOINT projection does NOT widen the
+// executable set. At CHECKPOINT the phase allowlist is still
+// {goal_progress, complete_goal}, so every domain tool stays blocked at
+// execution time by toolAllowedLocked + gatePreCheckDeny. The projection
+// is model-visibility (a prompt-cache measure); the gate is the execution
+// boundary. Do NOT "simplify" this by folding CHECKPOINT into the
+// allowlist branch — that would silently delete the gate too.
 func (r *ToolRegistry) projectToolLocked(name string) bool {
 	if !r.projectionFrozen {
 		// Legacy / unfrozen registry: the allowlist filters the projection.
@@ -407,12 +420,13 @@ func (r *ToolRegistry) projectToolLocked(name string) bool {
 	}
 	// Frozen projection: OPEN (and the unset-phase backward-compat path)
 	// keeps the FULL registry so the prompt-cache prefix stays byte-stable.
-	if r.phase == "" || r.phase == phases.PhaseOpen {
+	// CHECKPOINT joins OPEN under lever (b) — see the comment above.
+	if r.phase == "" || r.phase == phases.PhaseOpen || r.phase == phases.PhaseCheckpoint {
 		return true
 	}
-	// Narrow phase (set / checkpoint / final / post_final) OR an unknown
-	// phase: project only what the phase allowlist permits. Both cases fail
-	// CLOSED — an unknown phase must never widen the visible set.
+	// Narrow phase (set / final / post_final) OR an unknown phase: project
+	// only what the phase allowlist permits. Both cases fail CLOSED — an
+	// unknown phase must never widen the visible set.
 	return r.toolAllowedLocked(name)
 }
 
@@ -993,8 +1007,16 @@ func (r *ToolRegistry) GetDefinitions() []map[string]any {
 //     the FULL registry is projected, byte-identical to the pre-P1
 //     behaviour. The OPEN prompt-cache prefix must not move, or every
 //     OPEN turn pays full uncached input.
+//   - projectionFrozen == true AND the phase is CHECKPOINT:
+//     the FULL registry is projected too. LEVER (b), plan §20 (anh chốt
+//     2026-11-11 07:58 ICT): the OPEN→CHECKPOINT transition rewrites the
+//     tool-schema prefix, so every transition paid full uncached input.
+//     Keeping the CHECKPOINT wire identical to the OPEN wire makes that
+//     prefix byte-stable across the transition. The EXECUTABLE set at
+//     CHECKPOINT is unchanged (still {goal_progress, complete_goal}) —
+//     only the advertised schema set widened.
 //   - projectionFrozen == true AND the phase is a NARROW phase
-//     (set / checkpoint / final / post_final):
+//     (set / final / post_final):
 //     only the phase allowlist is projected. The LLM no longer SEES the
 //     ~76 schemas it is not allowed to call, so it stops picking a tool
 //     that the runtime gate will reject (the "misfire").

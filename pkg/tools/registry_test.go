@@ -360,12 +360,21 @@ func TestToolRegistry_SetPhaseAllowlist_Atomic(t *testing.T) {
 	}
 	// The projection must be the CHECKPOINT set — not the "allowlist set
 	// with phase empty" mixed state.
+	//
+	// LEVER (b), plan §20 (anh chốt 2026-11-11 07:58 ICT): the CHECKPOINT
+	// projection is the WHOLE registry (same as OPEN) so the
+	// OPEN→CHECKPOINT transition does not move the prompt-cache prefix.
+	// What the atomicity test actually pins here is that the phase DID
+	// land: the projected set is the registry-wide one (3 tools), not the
+	// 2-tool allowlist. If the phase had been cleared by SetAllowlist, the
+	// projection would have fallen back to the allowlist filter and
+	// produced 2 tools — the exact mixed state this test exists to catch.
 	defs := r.ToProviderDefs()
-	if len(defs) != 2 {
-		t.Fatalf("expected 2 projected tools at CHECKPOINT, got %d", len(defs))
+	if len(defs) != 3 {
+		t.Fatalf("expected 3 projected tools at CHECKPOINT (whole registry), got %d", len(defs))
 	}
 	for _, d := range defs {
-		if d.Function.Name != "goal_progress" && d.Function.Name != "complete_goal" {
+		if d.Function.Name != "goal_progress" && d.Function.Name != "complete_goal" && d.Function.Name != "exec" {
 			t.Errorf("unexpected projected tool %q at CHECKPOINT", d.Function.Name)
 		}
 	}

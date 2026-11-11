@@ -42,7 +42,7 @@ func TestPhase12_39_Wire_Open_Iter4_NextCheckpointAt5(t *testing.T) {
 }
 
 // W2 — CHECKPOINT at iter 5, cap 5/15 → rendered prompt contains
-// "Goal phase: checkpoint (iter 5 / total 15 turn iters)" + "Only goal_progress/complete_goal available"
+// "Goal phase: checkpoint (iter 5 / total 15 turn iters)" + "Only 2 lifecycle tools can actually be executed"
 // AND does NOT contain "extend the iteration cap by 1" (regression-proof).
 func TestPhase12_39_Wire_Checkpoint_Iter5_NoExtendBy1(t *testing.T) {
 	cb := NewContextBuilder(t.TempDir())
@@ -53,11 +53,11 @@ func TestPhase12_39_Wire_Checkpoint_Iter5_NoExtendBy1(t *testing.T) {
 	// system prompt to the phase channel. The system prompt must NOT
 	// carry it any more (that is what keeps the prefix byte-constant).
 	mustNotContain(t, prompt, "Goal phase: checkpoint", "CHECKPOINT affordance must NOT be in the system prompt (lever (a))")
-	mustNotContain(t, prompt, "Only goal_progress/complete_goal available", "CHECKPOINT affordance must NOT be in the system prompt (lever (a))")
+	mustNotContain(t, prompt, "Only 2 lifecycle tools can actually be executed", "CHECKPOINT affordance must NOT be in the system prompt (lever (a))")
 	assertPhaseChannelContains(t, cb, phaseChannelReqCaps(string(GoalPhaseCheckpoint), 5, "", 5, 15),
 		"Goal phase: checkpoint (iter 5 / total 15 turn iters)", "CHECKPOINT base header")
 	assertPhaseChannelContains(t, cb, phaseChannelReqCaps(string(GoalPhaseCheckpoint), 5, "", 5, 15),
-		"Only goal_progress/complete_goal available", "CHECKPOINT affordance")
+		"Only 2 lifecycle tools can actually be executed", "CHECKPOINT affordance")
 	assertPhaseChannelAbsent(t, cb, phaseChannelReqCaps(string(GoalPhaseCheckpoint), 5, "", 5, 15),
 		"extend the iteration cap by 1", "Decision tree (a) extend-by-1 wording must be gone")
 }

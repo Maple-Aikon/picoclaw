@@ -85,14 +85,18 @@ func TestEffectiveToolCount_CheckpointPhase(t *testing.T) {
 	// projected count against a per-phase baseline).
 	//
 	// P1 makes the projection PHASE-SCOPED: at a NARROW phase the frozen
-	// projection is narrowed to the phase allowlist, so it now MATCHES the
-	// executable set (2 tools) instead of diverging from it (4 tools).
+	// projection is narrowed to the phase allowlist.
+	//
+	// LEVER (b), plan §20 (anh chốt 2026-11-11 07:58 ICT): CHECKPOINT
+	// joins OPEN — the frozen projection there is the WHOLE registry again,
+	// so the OPEN→CHECKPOINT transition no longer moves the prompt-cache
+	// prefix. The EXECUTABLE set is unchanged: still exactly 2.
 	//
 	// The canary itself is unaffected: canary_drift.go measures
 	// EffectiveToolCount() (the EXECUTABLE set), never the projected count.
 	reg.SetProjectionFrozen(true)
-	if got := len(reg.ToProviderDefs()); got != 2 {
-		t.Errorf("frozen projection at CHECKPOINT = %d tools, want 2 (phase allowlist)", got)
+	if got := len(reg.ToProviderDefs()); got != 4 {
+		t.Errorf("frozen projection at CHECKPOINT = %d tools, want 4 (whole registry, lever (b))", got)
 	}
 	if got := reg.EffectiveToolCount(); got != 2 {
 		t.Errorf("EffectiveToolCount() at CHECKPOINT (frozen) = %d, want 2", got)

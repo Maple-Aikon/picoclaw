@@ -134,6 +134,21 @@ func TestP1_EmptyPhaseKeepsFullProjection(t *testing.T) {
 }
 
 // --- C2/C3/C4/C5: narrow phases expose ONLY their allowlist ---------------
+//
+// LEVER (b), plan §20 (anh chốt 2026-11-11 07:58 ICT): CHECKPOINT is no
+// longer a NARROW phase. Its projection is the WHOLE registry — identical
+// to OPEN — so the OPEN→CHECKPOINT transition does not move the
+// prompt-cache prefix (that transition used to cost full uncached input).
+//
+// The contract below is therefore:
+//   - SET       -> exactly {set_goal}          (unchanged)
+//   - CHECKPOINT -> the whole registry          (CHANGED by lever (b))
+//   - FINAL     -> exactly {complete_goal}      (unchanged)
+//   - POST-FINAL -> empty                      (unchanged)
+//
+// The CHECKPOINT row keeps an assertion of its own: the projection must
+// CONTAIN the executable set (so the model can still call the 2 lifecycle
+// tools it is allowed to run).
 
 func TestP1_NarrowPhasesProjectOnlyTheirAllowlist(t *testing.T) {
 	cases := []struct {
@@ -142,7 +157,6 @@ func TestP1_NarrowPhasesProjectOnlyTheirAllowlist(t *testing.T) {
 		want      []string
 	}{
 		{"set", []string{"set_goal"}, []string{"set_goal"}},
-		{"checkpoint", []string{"goal_progress", "complete_goal"}, []string{"complete_goal", "goal_progress"}},
 		{"final", []string{"complete_goal"}, []string{"complete_goal"}},
 		{"post_final", []string{}, []string{}},
 	}
@@ -163,6 +177,40 @@ func TestP1_NarrowPhasesProjectOnlyTheirAllowlist(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestP1_CheckpointProjectsWholeRegistry — LEVER (b), plan §20.
+//
+// CHECKPOINT projects the whole registry, exactly like OPEN. The
+// executable set stays {goal_progress, complete_goal} — the projection
+// and the gate are two different sets.
+func TestP1_CheckpointProjectsWholeRegistry(t *testing.T) {
+	openReg := p1Registry()
+	openReg.SetAllowlist(nil)
+	openReg.SetPhase("open")
+	openNames := p1Names(openReg.ToProviderDefs())
+
+	reg := p1Registry()
+	reg.SetAllowlist([]string{"goal_progress", "complete_goal"})
+	reg.SetPhase("checkpoint")
+	names := p1Names(reg.ToProviderDefs())
+
+	if len(names) != len(openNames) {
+		t.Fatalf("lever (b) violated: CHECKPOINT projected %v (%d), OPEN projected %v (%d) — "+
+			"the CHECKPOINT wire must match the OPEN wire", names, len(names), openNames, len(openNames))
+	}
+	for _, want := range openNames {
+		if !p1Contains(names, want) {
+			t.Fatalf("lever (b) violated: CHECKPOINT projection %v is missing %q (OPEN has it)", names, want)
+		}
+	}
+	// The 2 executable lifecycle tools must still be advertised — the
+	// model must be able to call them.
+	for _, want := range []string{"goal_progress", "complete_goal"} {
+		if !p1Contains(names, want) {
+			t.Fatalf("lever (b) violated: CHECKPOINT projection %v lost the executable tool %q", names, want)
+		}
 	}
 }
 
@@ -259,10 +307,18 @@ func TestP1_UnknownPhaseFailsClosed(t *testing.T) {
 //	I1  projected ⊇ executable — a tool the gate allows must be advertised,
 //	    or the LLM cannot call it at all.
 //
-//	I2  At a NARROW phase (set / checkpoint / final / post_final) and at an
+//	I2  At a NARROW phase (set / final / post_final) and at an
 //	    UNKNOWN phase, projected == executable EXACTLY. This is the
 //	    anti-misfire property of P1: the LLM must never be offered a tool
 //	    the runtime will refuse.
+//
+//	    LEVER (b), plan §20: CHECKPOINT is no longer narrow — its
+//	    projection is the whole registry (like OPEN) so the
+//	    OPEN→CHECKPOINT transition does not move the prompt-cache
+//	    prefix. At CHECKPOINT the projection is therefore a SUPERSET of
+//	    the executable set, exactly like OPEN. The gate still refuses
+//	    everything outside {goal_progress, complete_goal}; only the
+//	    ADVERTISED set widened.
 //
 //	At OPEN the projection is deliberately a SUPERSET (the whole registry,
 //	    byte-identical to the pre-P1 frozen projection so the prompt-cache
@@ -284,7 +340,7 @@ func TestP1_ProjectionInvariants(t *testing.T) {
 		{"", nil, true},
 		{"open", nil, false}, // superset by design (cache stability)
 		{"set", []string{"set_goal"}, true},
-		{"checkpoint", []string{"goal_progress", "complete_goal"}, true},
+		{"checkpoint", []string{"goal_progress", "complete_goal"}, false},
 		{"final", []string{"complete_goal"}, true},
 		{"post_final", []string{}, true},
 		{"not_a_real_phase", []string{"set_goal"}, true},
@@ -335,6 +391,13 @@ func TestP1_ProjectionInvariants(t *testing.T) {
 // The anti-misfire property, asserted on the NARROW + UNKNOWN phases, where
 // the projection is exact: everything advertised must be executable. (At
 // OPEN the projection is deliberately wider — see the note above.)
+//
+// LEVER (b), plan §20: CHECKPOINT joins OPEN as a deliberately-WIDE
+// projection (whole registry). The "never advertise a blocked tool"
+// property therefore does NOT hold at CHECKPOINT any more — by design.
+// What still holds there is the complementary invariant: the EXECUTABLE
+// set is unchanged ({goal_progress, complete_goal}), so widening the
+// wire does not widen what may run.
 
 func TestP1_NarrowPhasesNeverAdvertiseBlockedTools(t *testing.T) {
 	for _, tc := range []struct {
@@ -342,7 +405,6 @@ func TestP1_NarrowPhasesNeverAdvertiseBlockedTools(t *testing.T) {
 		allow []string
 	}{
 		{"set", []string{"set_goal"}},
-		{"checkpoint", []string{"goal_progress", "complete_goal"}},
 		{"final", []string{"complete_goal"}},
 		{"post_final", []string{}},
 		{"not_a_real_phase", []string{"set_goal"}},
@@ -362,11 +424,49 @@ func TestP1_NarrowPhasesNeverAdvertiseBlockedTools(t *testing.T) {
 	}
 }
 
+// TestLeverB_CheckpointWireIsWideButGateStaysNarrow — LEVER (b), plan §20.
+//
+// The CHECKPOINT projection is the whole registry (wide), but the
+// EXECUTABLE set is still exactly {goal_progress, complete_goal} (narrow).
+// This test pins both halves at once, because lever (b) is only safe if
+// the wire widens WITHOUT the gate widening.
+func TestLeverB_CheckpointWireIsWideButGateStaysNarrow(t *testing.T) {
+	reg := p1Registry()
+	reg.SetAllowlist([]string{"goal_progress", "complete_goal"})
+	reg.SetPhase("checkpoint")
+
+	projected := p1Names(reg.ToProviderDefs())
+	for _, want := range []string{"exec", "read_file"} {
+		if !p1Contains(projected, want) {
+			t.Fatalf("lever (b) violated: CHECKPOINT projection %v lost %q — the wire must be wide", projected, want)
+		}
+	}
+
+	executable := []string{}
+	for _, n := range []string{"set_goal", "view_goal", "goal_progress", "complete_goal", "read_file", "exec"} {
+		if reg.IsAllowed(n) {
+			executable = append(executable, n)
+		}
+	}
+	if len(executable) != 2 {
+		t.Fatalf("lever (b) violated: executable set at CHECKPOINT = %v (%d), want exactly 2 "+
+			"{goal_progress, complete_goal} — the gate must NOT widen with the wire", executable, len(executable))
+	}
+}
+
 // --- The projection is phase-scoped, not global ---------------------------
 //
 // Regression guard for the temptation to implement P1 by turning the
 // projection freeze OFF wholesale: that would shrink OPEN too and break the
 // prompt-cache prefix. This test pins both halves at once.
+//
+// LEVER (b), plan §20: CHECKPOINT now shares OPEN's whole-registry
+// projection, so the "strictly fewer" comparison is no longer the right
+// invariant for that phase. The invariant that IS still pinned:
+//   - the NARROW phases (set / final / post_final) project strictly
+//     fewer tools than OPEN (the freeze is not off wholesale), and
+//   - CHECKPOINT projects EXACTLY the same set as OPEN (the cache prefix
+//     must not move on the OPEN→CHECKPOINT transition).
 
 func TestP1_ProjectionIsPhaseScopedNotGlobal(t *testing.T) {
 	reg := p1Registry()
@@ -378,11 +478,28 @@ func TestP1_ProjectionIsPhaseScopedNotGlobal(t *testing.T) {
 	reg.SetPhase("open")
 	openNames := p1Names(reg.ToProviderDefs())
 
-	if len(checkpointNames) >= len(openNames) {
-		t.Fatalf("P1 not phase-scoped: checkpoint=%v (%d), open=%v (%d) — narrow phase must project strictly fewer tools",
+	// LEVER (b): CHECKPOINT == OPEN, exactly.
+	if len(checkpointNames) != len(openNames) {
+		t.Fatalf("lever (b) violated: checkpoint=%v (%d), open=%v (%d) — "+
+			"the CHECKPOINT wire must match the OPEN wire so the prompt-cache prefix does not move",
 			checkpointNames, len(checkpointNames), openNames, len(openNames))
+	}
+	for _, want := range openNames {
+		if !p1Contains(checkpointNames, want) {
+			t.Fatalf("lever (b) violated: checkpoint=%v missing %q (open has it)", checkpointNames, want)
+		}
 	}
 	if !p1Contains(openNames, "exec") {
 		t.Fatalf("OPEN projection lost exec: %v", openNames)
+	}
+
+	// The freeze is NOT off wholesale: a narrow phase still projects
+	// strictly fewer tools than OPEN.
+	reg.SetAllowlist([]string{"set_goal"})
+	reg.SetPhase("set")
+	setNames := p1Names(reg.ToProviderDefs())
+	if len(setNames) >= len(openNames) {
+		t.Fatalf("projection freeze looks off: set=%v (%d), open=%v (%d) — a narrow phase must project strictly fewer tools",
+			setNames, len(setNames), openNames, len(openNames))
 	}
 }

@@ -43,7 +43,13 @@ func formatIterCompass(req PromptBuildRequest, phase GoalPhase, goalFinalized bo
 		phase, req.Iteration, req.MaxIterationsCap)
 	switch phase {
 	case GoalPhaseCheckpoint:
-		return base + " Only goal_progress/complete_goal available."
+		// LEVER (b), plan §20.3: this must describe what can be EXECUTED,
+		// not how many schemas are on the wire. After lever (b) the
+		// CHECKPOINT wire carries the full registry (~76 schemas), so a
+		// schema-count claim here would contradict the wire. The number
+		// "2" refers to executable lifecycle tools, which is what the
+		// runtime gate enforces.
+		return base + " Only 2 lifecycle tools can actually be executed: goal_progress and complete_goal."
 	case GoalPhaseFinal:
 		if goalFinalized {
 			return fmt.Sprintf("Goal phase: FINAL. Goal is finalized. complete_goal is idempotent — calling it again is safe.")

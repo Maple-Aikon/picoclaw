@@ -44,9 +44,9 @@ import "fmt"
 // continue the lifecycle".
 const goalPhaseCheckpointHintTextTemplate = `Goal phase: CHECKPOINT (iter %d).
 
-You are now at a CHECKPOINT in this turn. Only 2 tools are now available — all other tools are temporarily locked and will be rejected with a "not available in the current phase" error if you call them.
+You are now at a CHECKPOINT in this turn. Only 2 lifecycle tools can actually be executed: goal_progress and complete_goal. Every other tool is temporarily locked and will be rejected with a "not available in the current phase" error if you call it.
 
-The 2 available tools:
+The 2 executable lifecycle tools:
 
 1. goal_progress — self-evaluate progress and (optionally) continue the goal lifecycle to keep working on this goal for more iterations. Required fields: completed_steps[], blockers[], remaining_steps[] (at least 1), next_action, drift_detected.
 

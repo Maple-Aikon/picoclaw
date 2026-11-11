@@ -19,7 +19,7 @@ import (
 //   - OPEN: defensive invariant — only render "Next CHECKPOINT at iter X" when
 //     iter < iterCap AND iterCap < maxCap. Else fall through to
 //     "FINAL phase will be at iter M".
-//   - CHECKPOINT: header + "Only goal_progress/complete_goal available".
+//   - CHECKPOINT: header + "Only 2 lifecycle tools can actually be executed".
 //   - FINAL: branches by goalFinalized.
 //     - goalFinalized=true → "Goal is finalized. complete_goal is idempotent..."
 //     - goalFinalized=false + iter >= maxCap → "This is the last iter, call complete_goal"
@@ -127,7 +127,7 @@ func TestFormatIterCompass_Open_IterCapZero_FinalMarker(t *testing.T) {
 	}
 }
 
-// T5 — CHECKPOINT at iter 5, maxCap=15 → "Only goal_progress/complete_goal available".
+// T5 — CHECKPOINT at iter 5, maxCap=15 → "Only 2 lifecycle tools can actually be executed".
 func TestFormatIterCompass_Checkpoint_Iter5_OnlyLifecycleTools(t *testing.T) {
 	got := formatIterCompass(PromptBuildRequest{
 		Iteration:        5,
@@ -135,7 +135,7 @@ func TestFormatIterCompass_Checkpoint_Iter5_OnlyLifecycleTools(t *testing.T) {
 		MaxIterationsCap: 15,
 	}, GoalPhaseCheckpoint, false)
 	mustContain(t, got, "Goal phase: checkpoint (iter 5 / total 15 turn iters).", "CHECKPOINT base header")
-	mustContain(t, got, "Only goal_progress/complete_goal available.", "CHECKPOINT affordance text")
+	mustContain(t, got, "Only 2 lifecycle tools can actually be executed", "CHECKPOINT affordance text")
 }
 
 // T6 — CHECKPOINT at iter 10, maxCap=15 → same shape.
@@ -146,7 +146,7 @@ func TestFormatIterCompass_Checkpoint_Iter10_OnlyLifecycleTools(t *testing.T) {
 		MaxIterationsCap: 15,
 	}, GoalPhaseCheckpoint, false)
 	mustContain(t, got, "Goal phase: checkpoint (iter 10 / total 15 turn iters).", "CHECKPOINT base header")
-	mustContain(t, got, "Only goal_progress/complete_goal available.", "CHECKPOINT affordance text")
+	mustContain(t, got, "Only 2 lifecycle tools can actually be executed", "CHECKPOINT affordance text")
 }
 
 // T8 — FINAL at iter 15, maxCap=15, goalFinalized=false → "This is the last iter, call complete_goal".

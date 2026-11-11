@@ -84,13 +84,18 @@ func TestFrozenToolSchema_InvariantAcrossGoalPhases(t *testing.T) {
 	// These are the ABSOLUTE phase rows from pkg/tools/phase_policy_table.go.
 	// Each phase's allowlist is pinned by the policy table, so the expected
 	// projected set is exact.
+	//
+	// LEVER (b), plan §20 (anh chốt 2026-11-11 07:58 ICT): CHECKPOINT is
+	// NO LONGER narrow — its projection is the whole registry, identical to
+	// OPEN, so the OPEN→CHECKPOINT transition does not move the
+	// prompt-cache prefix. Its executable set is unchanged (still the 2
+	// lifecycle tools); only the advertised schema set widened.
 	narrowCases := []struct {
 		phase     string
 		allowlist []string
 		want      []string
 	}{
 		{"SET", []string{"set_goal"}, []string{"set_goal"}},
-		{"CHECKPOINT", []string{"goal_progress", "complete_goal"}, []string{"goal_progress", "complete_goal"}},
 		{"FINAL", []string{"complete_goal"}, []string{"complete_goal"}},
 	}
 
@@ -116,12 +121,53 @@ func TestFrozenToolSchema_InvariantAcrossGoalPhases(t *testing.T) {
 		})
 	}
 
+	// --- LEVER (b): CHECKPOINT projects the whole registry ---------------
+	//
+	// Identical to the OPEN projection — that is the whole point: the
+	// prompt-cache prefix must not move when the turn crosses the
+	// OPEN→CHECKPOINT boundary.
+	reg.SetAllowlist([]string{"goal_progress", "complete_goal"})
+	reg.SetPhase("CHECKPOINT")
+	defsCheckpoint := reg.ToProviderDefs()
+	if len(defsCheckpoint) != 5 {
+		t.Fatalf("CHECKPOINT phase must project the whole registry (5 tools) under lever (b), got %d", len(defsCheckpoint))
+	}
+	ckptNames := map[string]bool{}
+	for _, d := range defsCheckpoint {
+		ckptNames[d.Function.Name] = true
+	}
+	for _, want := range []string{"set_goal", "goal_progress", "complete_goal", "read_file", "exec"} {
+		if !ckptNames[want] {
+			t.Errorf("CHECKPOINT projection lost %q — the wire must match OPEN", want)
+		}
+	}
+
 	// --- (a) Runtime Gate must still enforce phase restrictions! ----------
 	//
 	// P1 changes what the LLM SEES. It must NOT change what the LLM is
 	// allowed to RUN. At SET phase, 'read_file' must be blocked at
 	// execution time even though (in the frozen legacy projection) its
 	// schema was visible.
+	//
+	// LEVER (b) widens the CHECKPOINT wire — the gate must NOT follow.
+	// This is the safety half of (b): at CHECKPOINT the schema set is the
+	// whole registry, but the executable set is still {goal_progress,
+	// complete_goal}.
+	reg.SetAllowlist([]string{"goal_progress", "complete_goal"})
+	reg.SetPhase("CHECKPOINT")
+	if reg.IsAllowed("exec") {
+		t.Errorf("runtime execution gate failed: 'exec' must not be accessible at CHECKPOINT even though its schema is projected")
+	}
+	if reg.IsAllowed("read_file") {
+		t.Errorf("runtime execution gate failed: 'read_file' must not be accessible at CHECKPOINT even though its schema is projected")
+	}
+	if !reg.IsAllowed("goal_progress") {
+		t.Errorf("runtime execution gate failed: 'goal_progress' must be accessible at CHECKPOINT")
+	}
+	if !reg.IsAllowed("complete_goal") {
+		t.Errorf("runtime execution gate failed: 'complete_goal' must be accessible at CHECKPOINT")
+	}
+
 	reg.SetAllowlist([]string{"set_goal"})
 	reg.SetPhase("SET")
 	if reg.IsAllowed("read_file") {
