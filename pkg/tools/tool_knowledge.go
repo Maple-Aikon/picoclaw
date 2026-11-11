@@ -774,56 +774,25 @@ func headingsOnly(head string, sections []h2Section, byteCap int) string {
 	return truncateWithinCap(b.String(), byteCap)
 }
 
-// smartTruncate keeps the frontmatter intact and preserves as much of the body
-// as fits within byteCap. READ PATH ONLY - never call this before a write.
-//
-// The cut is UTF-8 safe: the body is sliced at byteCap, then walked back byte by
-// byte until the result is valid UTF-8, then snapped back to the last newline so
-// the output never ends mid-line. Without those two steps the result can end
-// inside a multi-byte rune (measured 2026-10-20: 4/8 and 5/8 offsets on
-// Vietnamese text produced invalid UTF-8) or mid-line. Mirrors
-// truncateDiffPreview in shared/diff_result.go.
-func smartTruncate(content string, byteCap int) string {
-	if len(content) <= byteCap {
-		return content
-	}
-	const fmEnd = "\n---\n\n"
-	fmIdx := strings.Index(content, fmEnd)
-	if fmIdx < 0 {
-		// No frontmatter - just hard truncate.
-		return hardTruncate(content, byteCap)
-	}
-	fmEndIdx := fmIdx + len(fmEnd)
-	head := content[:fmEndIdx]
-	body := content[fmEndIdx:]
-	remaining := byteCap - len(head)
-	if remaining <= 0 {
-		// Frontmatter alone exceeded cap (should not happen with sane
-		// frontmatter); just hard-truncate the whole thing.
-		return hardTruncate(content, byteCap)
-	}
-	if remaining >= len(body) {
-		return content // would fit, recompute elsewhere if needed
-	}
-	// Reserve room for the marker so the result stays inside byteCap.
-	tail := body[:remaining]
-	if room := remaining - len(truncationMarker); room > 0 {
-		tail = body[:room]
-	}
-	return head + trimToUTF8LineBoundary(tail) + truncationMarker
-}
-
 // truncationMarker is appended whenever a body is cut for display. Stable so
 // snapshot tests can pin the format.
 const truncationMarker = "\n... [truncated]\n"
 
-// hardTruncate truncates content that has no recognizable frontmatter.
-func hardTruncate(content string, byteCap int) string {
-	if byteCap > len(content) {
-		byteCap = len(content)
-	}
-	return trimToUTF8LineBoundary(content[:byteCap]) + truncationMarker
-}
+// smartTruncate and hardTruncate were REMOVED here (Phase 12.71,
+// 2026-11-11). They were dead code in production: the last read-path call
+// site was replaced by digestSections on 2026-10-25, and the write path
+// must never truncate at all (see writeLocked).
+//
+// They cut the body at a raw byte offset and kept only the FIRST ~2 KB.
+// Because lessons are always APPENDED, the newest lesson -- the one
+// describing the failure that just happened -- was exactly what got
+// dropped. The read path now uses digestSections, which keeps EVERY H2
+// heading and water-fills the remaining budget across the section bodies.
+//
+// The properties they used to guarantee are still asserted, against the
+// LIVE path: TestDigestSections_NeverExceedsCap, TestDigestSections_
+// KeepsFrontmatter and TestDigestSections_UTF8Safe in
+// tool_knowledge_digest_test.go.
 
 // trimToUTF8LineBoundary walks the tail back until it ends on a valid UTF-8
 // rune AND a newline, so the result is both parseable and line-complete.

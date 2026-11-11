@@ -4,28 +4,24 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 )
 
 // Regression tests for the two defects measured on 2026-10-20.
 //
-// Defect A: Save() applied smartTruncate BEFORE os.WriteFile, so a body over
+// Defect A: Save() applied a truncation helper (smartTruncate, removed
+// 2026-11-11) BEFORE os.WriteFile, so a body over
 // the cap was silently shortened on disk while Save returned nil error and
 // doSave printed a success line. Measured live: 300 sentinel strings in,
 // 151 out, 149 lost, "Saved knowledge ... (2065 bytes)".
 //
-// Defect B: smartTruncate cut at a raw byte offset, which can split a
+// Defect B: that same helper cut at a raw byte offset, which can split a
 // multi-byte UTF-8 rune and write an invalid file to disk. Measured with
 // Vietnamese text: 4/8 and 5/8 shift offsets produced invalid UTF-8.
 //
 // NOTE: multi-line Go string literals below are raw (backtick) strings on
 // purpose. An interpreted "..." literal cannot contain a real newline, and
 // writing one as an escape sequence gets mangled by the tool transport.
-
-func timeForTest() time.Time {
-	return time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
-}
 
 func readFileString(t *testing.T, path string) string {
 	t.Helper()
@@ -119,58 +115,5 @@ func TestKnowledgeStore_Save_AlwaysWritesValidUTF8(t *testing.T) {
 				t.Errorf("Save wrote invalid UTF-8: char=%q shift=%d", string(r), shift)
 			}
 		}
-	}
-}
-
-// TestSmartTruncate_UTF8Safe pins defect B directly at the helper level:
-// whatever byteCap is given, the result must be valid UTF-8.
-func TestSmartTruncate_UTF8Safe(t *testing.T) {
-	for _, r := range []rune{'đ', 'ộ', 'ậ'} {
-		for shift := 0; shift < 8; shift++ {
-			body := `## What goes wrong
-` + strings.Repeat("x", shift) + strings.Repeat(string(r), 2000) + `
-`
-			content := renderKnowledgeFile("fs.read", body, timeForTest())
-			for _, cap := range []int{
-				KnowledgeSizeCap, KnowledgeSizeCap + 1,
-				KnowledgeSizeCap + 2, KnowledgeSizeCap + 3,
-			} {
-				got := smartTruncate(content, cap)
-				if !utf8.ValidString(got) {
-					t.Errorf("smartTruncate produced invalid UTF-8: char=%q shift=%d cap=%d",
-						string(r), shift, cap)
-				}
-			}
-		}
-	}
-}
-
-// TestSmartTruncate_NeverExceedsCap is the property the read path still needs.
-func TestSmartTruncate_NeverExceedsCap(t *testing.T) {
-	content := renderKnowledgeFile("fs.read", strings.Repeat("x", 5000), timeForTest())
-	got := smartTruncate(content, KnowledgeSizeCap)
-	if len(got) > KnowledgeSizeCap+32 {
-		t.Errorf("smartTruncate exceeded cap by more than the marker: len=%d cap=%d",
-			len(got), KnowledgeSizeCap)
-	}
-	if !strings.Contains(got, "... [truncated]") {
-		t.Errorf("truncated output is missing its marker; callers rely on it")
-	}
-}
-
-// TestSmartTruncate_KeepsFrontmatter is the property the read path needs most:
-// the YAML header must survive so extractBody can still find the body.
-func TestSmartTruncate_KeepsFrontmatter(t *testing.T) {
-	body := strings.Repeat("payload line"+`
-`, 400)
-	content := renderKnowledgeFile("fs.read", body, timeForTest())
-	got := smartTruncate(content, KnowledgeSizeCap)
-	if !strings.HasPrefix(got, `---
-tool: fs.read
-`) {
-		t.Errorf("smartTruncate lost the frontmatter header: %.60q", got)
-	}
-	if extractBody(got) == "" {
-		t.Errorf("body is unrecoverable after truncate")
 	}
 }

@@ -152,3 +152,74 @@ func TestLoadForEscalation_OverCapEntryKeepsAllHeadings(t *testing.T) {
 		}
 	}
 }
+
+// TestDigestSections_UTF8Safe pins the UTF-8 invariant on the LIVE read
+// path, across every cap boundary and both rendering branches.
+//
+// It replaces TestSmartTruncate_UTF8Safe, which was deleted together with
+// the smartTruncate/hardTruncate dead code (Phase 12.71, 2026-11-11).
+// The old test only exercised a helper that no longer exists; this one
+// exercises what production actually calls.
+//
+// The cut points are the risky part: a byte-offset cut can land inside a
+// multi-byte rune. Vietnamese text is the regression case -- the first rune
+// is 2 bytes, the other two are 3 bytes, so shifting the body by 0..7
+// bytes walks the cut across every byte position of every rune length.
+//
+// NOTE: no escape sequences are used in the string literals below on
+// purpose -- a real newline is written as string(rune(10)) so the file
+// survives a JSON round trip intact.
+func TestDigestSections_UTF8Safe(t *testing.T) {
+	nl := string(rune(10))
+	for _, r := range []rune{'đ', 'ộ', 'ậ'} {
+		for shift := 0; shift < 8; shift++ {
+			// Sectioned content exercises the digest branch (headings +
+			// water-filled excerpts); flat content exercises the
+			// truncateWithinCap fallback (no H2 structure at all).
+			sectioned := "## What goes wrong" + nl +
+				strings.Repeat("x", shift) + strings.Repeat(string(r), 2000) + nl
+			flat := strings.Repeat("x", shift) + strings.Repeat(string(r), 2000) + nl
+
+			for _, c := range []struct {
+				name    string
+				content string
+			}{
+				{"sectioned", renderKnowledgeFile("fs.read", sectioned, time.Now())},
+				{"flat", flat},
+			} {
+				for _, byteCap := range []int{
+					KnowledgeSizeCap, KnowledgeSizeCap + 1,
+					KnowledgeSizeCap + 2, KnowledgeSizeCap + 3,
+					KnowledgeSizeCap - 1, 512, 64,
+				} {
+					got := digestSections(c.content, byteCap)
+					if !utf8.ValidString(got) {
+						t.Errorf("digestSections produced invalid UTF-8: char=%q shift=%d cap=%d branch=%s",
+							string(r), shift, byteCap, c.name)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestDigestSections_KeepsFrontmatterForEveryCap pins the frontmatter
+// invariant at the cap boundaries where the digest switches branch. It
+// replaces the deleted TestSmartTruncate_KeepsFrontmatter.
+func TestDigestSections_KeepsFrontmatterForEveryCap(t *testing.T) {
+	nl := string(rune(10))
+	body := "## What goes wrong" + nl + strings.Repeat("payload line"+nl, 400)
+	content := renderKnowledgeFile("fs.read", body, time.Now())
+	for _, byteCap := range []int{
+		KnowledgeSizeCap, KnowledgeSizeCap + 1,
+		KnowledgeSizeCap + 2, KnowledgeSizeCap + 3,
+	} {
+		got := digestSections(content, byteCap)
+		if !strings.HasPrefix(got, "---"+nl+"tool: fs.read"+nl) {
+			t.Errorf("digestSections lost the frontmatter header at cap=%d: %.60q", byteCap, got)
+		}
+		if extractBody(got) == "" {
+			t.Errorf("body unrecoverable after digest at cap=%d", byteCap)
+		}
+	}
+}
