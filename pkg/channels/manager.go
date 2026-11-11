@@ -39,6 +39,20 @@ const (
 	baseBackoff             = 500 * time.Millisecond
 	maxBackoff              = 8 * time.Second
 
+	// rateLimitMaxWait caps how long a rate-limited send waits for the
+	// platform's `retry_after`.
+	//
+	// WHY A CAP (anh chốt 2026-11-11): Telegram's flood control can
+	// ask for up to ~24 713 seconds (~6.9 hours). Honouring that
+	// literally would park the channel worker for hours, holding the
+	// queue and blocking every later message behind it. Five minutes
+	// is long enough for a normal flood window to clear and short
+	// enough that the worker returns to service.
+	//
+	// After the cap is hit the error is returned to the caller, which
+	// decides what to do - the Manager does not silently keep trying.
+	rateLimitMaxWait = 5 * time.Minute
+
 	janitorInterval = 10 * time.Second
 	typingStopTTL   = 5 * time.Minute
 	placeholderTTL  = 10 * time.Minute
@@ -1524,10 +1538,31 @@ func splitOutboundMessageContent(msg bus.OutboundMessage, maxLen int) []string {
 	return []string{msg.Content}
 }
 
+// rateLimitWaitFor returns how long to wait before retrying a
+// rate-limited send.
+//
+// The platform's `retry_after` wins when it is LONGER than the
+// default delay, but it is CAPPED at rateLimitMaxWait (5 minutes).
+// See the constant's comment for why the cap exists.
+//
+// A zero result means "do not retry this one" - the platform asked
+// for a wait longer than the cap, so the error goes back to the caller
+// instead of the worker parking itself for hours.
+func rateLimitWaitFor(err error) (time.Duration, bool) {
+	delay := rateLimitDelay
+	if ra := RateLimitRetryAfter(err); ra > delay {
+		delay = ra
+	}
+	if delay > rateLimitMaxWait {
+		return 0, false
+	}
+	return delay, true
+}
+
 // sendWithRetry sends a message through the channel with rate limiting and
 // retry logic. It classifies errors to determine the retry strategy:
 //   - ErrNotRunning / ErrSendFailed: permanent, no retry
-//   - ErrRateLimit: fixed delay retry
+//   - ErrRateLimit: wait for the platform's retry_after (capped)
 //   - ErrTemporary / unknown: exponential backoff retry
 func (m *Manager) sendWithRetry(
 	ctx context.Context,
@@ -1577,10 +1612,21 @@ func (m *Manager) sendWithRetry(
 			break
 		}
 
-		// Rate limit error — fixed delay
+		// Rate limit error — wait for the platform's retry_after (capped).
 		if errors.Is(lastErr, ErrRateLimit) {
+			delay, ok := rateLimitWaitFor(lastErr)
+			if !ok {
+				// The platform asked for longer than the cap: give the
+				// error back to the caller instead of parking the worker.
+				logger.WarnCF("channels", "rate limit wait exceeds cap; returning error", map[string]any{
+					"channel": name,
+					"retry_after": RateLimitRetryAfter(lastErr).String(),
+					"cap":         rateLimitMaxWait.String(),
+				})
+				break
+			}
 			select {
-			case <-time.After(rateLimitDelay):
+			case <-time.After(delay):
 				continue
 			case <-ctx.Done():
 				return nil, false
@@ -1772,10 +1818,21 @@ func (m *Manager) sendMediaWithRetry(
 			break
 		}
 
-		// Rate limit error — fixed delay
+		// Rate limit error — wait for the platform's retry_after (capped).
 		if errors.Is(lastErr, ErrRateLimit) {
+			delay, ok := rateLimitWaitFor(lastErr)
+			if !ok {
+				// The platform asked for longer than the cap: give the
+				// error back to the caller instead of parking the worker.
+				logger.WarnCF("channels", "media rate limit wait exceeds cap; returning error", map[string]any{
+					"channel":     name,
+					"retry_after": RateLimitRetryAfter(lastErr).String(),
+					"cap":         rateLimitMaxWait.String(),
+				})
+				break
+			}
 			select {
-			case <-time.After(rateLimitDelay):
+			case <-time.After(delay):
 				continue
 			case <-ctx.Done():
 				return nil, ctx.Err()

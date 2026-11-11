@@ -2,9 +2,12 @@ package channels
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 const toolFeedbackAnimationInterval = 3 * time.Second
@@ -113,6 +116,17 @@ func (a *ToolFeedbackAnimator) Take(chatID string) (string, string, bool) {
 // Update edits an existing tracked feedback message. If the edit fails, the
 // previous feedback state is restored so callers can retry without orphaning
 // the old progress message.
+//
+// RATE LIMIT (plan telegram-429-flood-classification-fix, §11.2):
+// when the edit fails with a 429 we deliberately do NOT Record() the
+// entry back. Record() would start a NEW animation goroutine, which
+// would resume the 3-second edit loop while Telegram is still
+// flood-blocking us.
+//
+// Take() has already DETACHED the entry, so simply not re-recording it
+// means no goroutine survives this call: the loop genuinely stops.
+// The Manager owns the retry (it waits for retry_after and calls
+// again), and that later call creates a fresh entry via Record().
 func (a *ToolFeedbackAnimator) Update(ctx context.Context, chatID, content string) (string, bool, error) {
 	if a == nil || a.editFn == nil {
 		return "", false, nil
@@ -124,6 +138,17 @@ func (a *ToolFeedbackAnimator) Update(ctx context.Context, chatID, content strin
 
 	animatedContent := InitialAnimatedToolFeedbackContent(content)
 	if err := a.editFn(ctx, strings.TrimSpace(chatID), msgID, animatedContent); err != nil {
+		if errors.Is(err, ErrRateLimit) {
+			// 429: do NOT restart the animation goroutine. The entry is
+			// already detached, so the 3-second loop stops for good.
+			logger.WarnCF("channels", "tool feedback edit rate limited; animation stopped", map[string]any{
+				"chat_id":     chatID,
+				"message_id":  msgID,
+				"retry_after": RateLimitRetryAfter(err).String(),
+				"error":       err.Error(),
+			})
+			return "", true, err
+		}
 		a.Record(chatID, msgID, baseContent)
 		return "", true, err
 	}
@@ -160,6 +185,24 @@ func (a *ToolFeedbackAnimator) detach(chatID string) *toolFeedbackAnimationState
 	return entry
 }
 
+// run drives the animation loop.
+//
+// RATE LIMIT (plan telegram-429-flood-classification-fix, RC-1):
+// the previous version IGNORED the error from editFn:
+//
+//	_ = a.editFn(ctx, chatID, entry.messageID, content)
+//
+// so a 429 was invisible: the goroutine kept ticking every 3 seconds
+// for as long as Telegram kept saying "Too Many Requests". Measured on
+// 2026-11-03: 39 consecutive edits spaced exactly 3.000s apart,
+// running ~6 hours, against a `retry_after` of ~24 713s.
+//
+// Now the error is handled:
+//   - a 429 STOPS the loop (plan §11.3, option D). The Manager owns
+//     the retry; it waits for retry_after and calls again, which
+//     creates a fresh entry via Record().
+//   - any other error also stops the loop, but is LOGGED - the
+//     silence is what hid a 6-hour incident in the first place.
 func (a *ToolFeedbackAnimator) run(chatID string, entry *toolFeedbackAnimationState) {
 	defer close(entry.done)
 
@@ -179,8 +222,25 @@ func (a *ToolFeedbackAnimator) run(chatID string, entry *toolFeedbackAnimationSt
 			frame := toolFeedbackAnimationFrames[frameIdx%len(toolFeedbackAnimationFrames)]
 			content := formatAnimatedToolFeedbackContent(entry.baseContent, frame)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = a.editFn(ctx, chatID, entry.messageID, content)
+			err := a.editFn(ctx, chatID, entry.messageID, content)
 			cancel()
+			if err != nil {
+				if errors.Is(err, ErrRateLimit) {
+					logger.WarnCF("channels", "tool feedback animation rate limited; stopping animation", map[string]any{
+						"chat_id":     chatID,
+						"message_id":  entry.messageID,
+						"retry_after": RateLimitRetryAfter(err).String(),
+						"error":       err.Error(),
+					})
+				} else {
+					logger.WarnCF("channels", "tool feedback animation edit failed; stopping animation", map[string]any{
+						"chat_id":    chatID,
+						"message_id": entry.messageID,
+						"error":      err.Error(),
+					})
+				}
+				return
+			}
 			frameIdx++
 		}
 	}

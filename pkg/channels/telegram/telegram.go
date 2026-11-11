@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mymmrac/telego"
+	ta "github.com/mymmrac/telego/telegoapi"
 	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
 
@@ -423,6 +424,16 @@ type sendChunkParams struct {
 
 // sendChunk sends a single rich or HTML message, falling back to the original
 // markdown as plain text on failure so users never see raw tags.
+//
+// RATE LIMIT (plan telegram-429-flood-classification-fix, RC-2/RC-3):
+// a 429 is NOT retried with a different format. The fallback exists to
+// recover from a PARSE failure ("Bad Request: can't parse entities"),
+// but a flood-control rejection has nothing to do with the format, and
+// the fallback would issue a SECOND api call while Telegram is already
+// blocking us - exactly the behaviour that produced the 6-hour storm.
+//
+// So: on a 429, classify and return immediately, with NO fallback call.
+// On any other error, the historical fallback is preserved.
 func (c *TelegramChannel) sendChunk(
 	ctx context.Context,
 	params sendChunkParams,
@@ -435,6 +446,9 @@ func (c *TelegramChannel) sendChunk(
 			ReplyParameters: telegramReplyParameters(params.replyToID),
 		})
 		if err != nil {
+			if isRateLimitAPIError(err) {
+				return "", classifyTelegramError(err)
+			}
 			logParseFailed(err, true)
 
 			tgMsg := tu.Message(tu.ID(params.chatID), params.mdFallback)
@@ -442,7 +456,7 @@ func (c *TelegramChannel) sendChunk(
 			tgMsg.ReplyParameters = telegramReplyParameters(params.replyToID)
 			pMsg, err = c.bot.SendMessage(ctx, tgMsg)
 			if err != nil {
-				return "", fmt.Errorf("telegram send: %w", channels.ErrTemporary)
+				return "", classifyTelegramError(err)
 			}
 		}
 		return strconv.Itoa(pMsg.MessageID), nil
@@ -455,13 +469,16 @@ func (c *TelegramChannel) sendChunk(
 
 	pMsg, err := c.bot.SendMessage(ctx, tgMsg)
 	if err != nil {
+		if isRateLimitAPIError(err) {
+			return "", classifyTelegramError(err)
+		}
 		logParseFailed(err, false)
 
 		tgMsg.Text = params.mdFallback
 		tgMsg.ParseMode = ""
 		pMsg, err = c.bot.SendMessage(ctx, tgMsg)
 		if err != nil {
-			return "", fmt.Errorf("telegram send: %w", channels.ErrTemporary)
+			return "", classifyTelegramError(err)
 		}
 	}
 
@@ -543,6 +560,15 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 		// it as success to prevent the Manager from sending a duplicate message.
 		if strings.Contains(err.Error(), "message is not modified") {
 			return nil
+		}
+
+		// RATE LIMIT (plan telegram-429-flood-classification-fix, RC-4):
+		// classify a 429 and return it as ErrRateLimit so the Manager
+		// waits for `retry_after` instead of falling through to a NEW
+		// SendMessage. Falling through would add outbound traffic at the
+		// exact moment Telegram is flood-blocking us.
+		if isRateLimitAPIError(err) {
+			return classifyTelegramError(err)
 		}
 
 		// Only fallback to plain text if the error looks like a parsing failure (Bad Request).
@@ -1636,6 +1662,65 @@ func resolveTelegramOutboundTarget(chatID string, outboundCtx *bus.InboundContex
 		return resolvedChatID, threadID, nil
 	}
 	return resolvedChatID, resolvedThreadID, nil
+}
+
+// telegramAPIError extracts the HTTP-style error code and the
+// `retry_after` from a Telegram API error.
+//
+// WHY THIS EXISTS (plan telegram-429-flood-classification-fix, RC-2)
+//
+// telego's `performRequest` (bot.go:175-176) wraps a failed API
+// response as:
+//
+//	return fmt.Errorf("api: %w", response.Error)
+//
+// so the `*ta.Error` IS in the error chain and `errors.As` can reach
+// it. Before this helper existed, every Telegram failure was reported
+// as `ErrTemporary` regardless of its cause - a 429 (flood control)
+// was indistinguishable from a 500.
+//
+// Telegram's flood control sets `parameters.retry_after`, which can be
+// as long as ~24 713 seconds. Losing that number is what made the
+// Manager retry on a fixed 1s delay and hammer the API while Telegram
+// was still blocking us.
+//
+// Returns (0, 0) when err is not a Telegram API error.
+func telegramAPIError(err error) (code int, retryAfter time.Duration) {
+	if err == nil {
+		return 0, 0
+	}
+	var apiErr *ta.Error
+	if !errors.As(err, &apiErr) {
+		return 0, 0
+	}
+	code = apiErr.ErrorCode
+	if apiErr.Parameters != nil && apiErr.Parameters.RetryAfter > 0 {
+		retryAfter = time.Duration(apiErr.Parameters.RetryAfter) * time.Second
+	}
+	return code, retryAfter
+}
+
+// isRateLimitAPIError reports whether err is a Telegram 429.
+func isRateLimitAPIError(err error) bool {
+	code, _ := telegramAPIError(err)
+	return code == http.StatusTooManyRequests
+}
+
+// classifyTelegramError converts a Telegram API error into the
+// channels package's error taxonomy, carrying `retry_after` for a 429.
+//
+// A non-API error (network failure, timeout) stays `ErrTemporary` -
+// the pre-existing behaviour that the regression tests pin (T3b).
+func classifyTelegramError(err error) error {
+	if err == nil {
+		return nil
+	}
+	code, retryAfter := telegramAPIError(err)
+	if code == 0 {
+		// Not a Telegram API error: keep the historical behaviour.
+		return fmt.Errorf("telegram api: %w", channels.ErrTemporary)
+	}
+	return channels.ClassifySendErrorWithRetry(code, retryAfter, err)
 }
 
 // logParseFailed logs a parse-mode failure with the format name that failed,
