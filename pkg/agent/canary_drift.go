@@ -18,6 +18,21 @@
 // count is deliberately phase-independent. It is a prompt-cache artifact,
 // not a policy signal.
 //
+// UPDATE (2026-11-11, lever (b) — commit 3da55983): the statement
+// above still holds for SET / OPEN / FINAL / POST_FINAL, and it now
+// holds for CHECKPOINT as well — lever (b) restored CHECKPOINT
+// projection parity with OPEN (registry.go: projectToolLocked, the
+// `r.phase == phases.PhaseCheckpoint` branch) so the prompt prefix
+// stays byte-stable across the OPEN→CHECKPOINT transition.
+//
+// What remains phase-dependent is the RUNTIME GATE (the executable
+// allowlist), not the projection. The wire stays wide on purpose; the
+// narrow gate is enforced at execution time.
+//
+// The canary therefore measures the EXECUTABLE set, which remains
+// phase-dependent by design. See also the note on
+// CanaryCheckToolsVisibleForAgent below.
+//
 // Measured consequence (2026-11-03, 8 log files, 2026-10-27 → 11-03):
 //
 //	phase=open       tools_visible = 75 (6522x) / 76 (1896x) / 69 (194x)
@@ -190,6 +205,12 @@ func CanaryCheckToolsVisible(phase string, total, visible int, iter int, turnID,
 // `visible` must be the EXECUTABLE count (ToolRegistry.EffectiveToolCount),
 // NOT the projected schema count: the projection is frozen (Phase 12.72)
 // and is phase-independent by design.
+//
+// UPDATE (2026-11-11, lever (b)): at CHECKPOINT the projection is also
+// the whole registry (parity with OPEN — registry.go projectToolLocked),
+// so the schema count is still not a policy signal there either. The
+// phase-dependent quantity is the EXECUTABLE set, which is what this
+// function compares.
 func CanaryCheckToolsVisibleForAgent(
 	definition AgentContextDefinition,
 	phase string,

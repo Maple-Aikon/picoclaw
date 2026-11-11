@@ -71,6 +71,35 @@ jobs:
         # `make test-bedrock` is the canonical entry point.
         run: make test-bedrock
 
+  race:
+    name: Race Detector
+    runs-on: ubuntu-latest
+    # The race detector only works on linux/amd64. It cannot run on
+    # linux/arm64 (ThreadSanitizer: "unsupported VMA range"), which is
+    # the architecture of Maple's own box - so this job is the ONLY
+    # place the race detector can actually run for this repo.
+    #
+    # SCOPE: the packages that hold SHARED, MUTABLE state. Running
+    # `-race` over ./... is slow and produces flaky failures from
+    # timing-sensitive tests that are not about concurrency at all.
+    # The registry is the one place where a genuine semantic race
+    # lives (the allowlist + phase pair), so it is covered explicitly
+    # by registry_race_semantics_test.go.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run go generate
+        run: go generate ./...
+
+      - name: Run race detector (shared-state packages)
+        run: go test -race -count=1 ./pkg/tools/... ./pkg/channels/...
+
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
