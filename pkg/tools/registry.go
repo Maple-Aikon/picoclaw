@@ -175,10 +175,22 @@ func (r *ToolRegistry) SetPhase(phase string) {
 //	Before P1 that window was cosmetic: the projection was deliberately
 //	phase-INDEPENDENT (frozen), so a mixed state changed nothing about
 //	what the LLM saw. After P1 the projection IS phase-dependent, so the
-//	same window can hide the WRONG tool set from the LLM — e.g. a turn
-//	that is really at OPEN could be handed CHECKPOINT's 2 schemas and
-//	then have its domain tools gated out. That is a functional break, not
-//	just a wasted iteration.
+//	same window can hide the WRONG tool set from the LLM.
+//
+//	MEASURED 2026-11-11 (after lever (b), commit 3da55983): the mixed
+//	state does NOT narrow the WIRE. phase "" lands in the full-registry
+//	branch of projectToolLocked, so the model still sees the whole
+//	registry (6/6 in the probe registry). What the window actually
+//	corrupts is the GATE: toolAllowedLocked then reads the stale
+//	allowlist with no phase left to correct it, so a turn that is really
+//	at OPEN is gated down to CHECKPOINT's 2 lifecycle tools and loses its
+//	domain tools (read_file/exec). That is a functional break, not just
+//	a wasted iteration.
+//
+//	Wire wide, gate narrow: lever (b) deliberately widened the CHECKPOINT
+//	wire to the full registry, so the phase="" branch is no longer
+//	narrower than OPEN. The one-lock write is what keeps the two fields
+//	consistent.
 //
 //	One lock acquisition removes the window entirely. It also closes the
 //	pre-existing split-state hazard for the runtime gate, which reads the

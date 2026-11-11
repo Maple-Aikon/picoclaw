@@ -243,7 +243,7 @@ func resolveAgentToolAllowlistWithPhase(definition AgentContextDefinition, phase
 	case GoalPhaseCheckpoint:
 		// Checkpoint is also absolute: when the iter cap is hit, the LLM
 		// must either extend (goal_progress) or finalize (complete_goal).
-		// Base tools (read_file/exec/...) are intentionally NOT exposed —
+		// Base tools (read_file/exec/...) are intentionally NOT EXECUTABLE —
 		// there's no iteration budget left to spend on more tool work,
 		// only on lifecycle decisions. Pre-fix (Phase 12.14), an agent
 		// without a `tools:` frontmatter field fell through to the
@@ -253,6 +253,13 @@ func resolveAgentToolAllowlistWithPhase(definition AgentContextDefinition, phase
 		// executor would silently run the empty command, and the turn
 		// ended on a toolLimitResponse fallback. See goal `crg-update-latest`
 		// on session `sk_v1_9238bf3573...` from 2026-07-25 12:54 ICT.
+		//
+		// LEVER (b), plan §20 (anh chốt 2026-11-11 07:58 ICT): this
+		// allowlist is the RUNTIME GATE, and it is still exactly the 2
+		// lifecycle tools. It is NOT what the model SEES: at CHECKPOINT
+		// the wire carries the full registry, so the schema set and the
+		// executable set deliberately differ. "Not exposed" here means
+		// "not callable", not "not advertised".
 		return []string{"goal_progress", "complete_goal"}
 	}
 

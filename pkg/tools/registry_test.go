@@ -333,9 +333,16 @@ func TestToolRegistry_SetAllowlistClearsPhase(t *testing.T) {
 // registry held phase-N's allowlist with phase="" — a state matching
 // NEITHER phase. While the projection was phase-INDEPENDENT that window
 // was cosmetic. After P1 the projection IS phase-dependent, so a
-// concurrent reader could be handed the WRONG tool set (e.g. an OPEN turn
-// seeing only CHECKPOINT's 2 schemas, then having its domain tools gated
-// out). That is a functional break.
+// concurrent reader could be handed the WRONG tool set. That is a
+// functional break.
+//
+// MEASURED 2026-11-11 (after lever (b), commit 3da55983): the mixed
+// state does NOT narrow the WIRE — phase "" lands in the full-registry
+// branch of projectToolLocked, so the model still sees the whole
+// registry. What the window corrupts is the GATE: toolAllowedLocked
+// reads the stale allowlist with no phase left to correct it, so an
+// OPEN turn is gated down to CHECKPOINT's 2 lifecycle tools and loses
+// its domain tools (read_file/exec).
 //
 // This test pins the ATOMIC behaviour: after the call, the registry
 // reflects the phase it was given, and the allowlist that goes with it.

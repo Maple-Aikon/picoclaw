@@ -88,6 +88,11 @@ import (
 //	final       -> 1  (complete_goal)
 //	post_final  -> 0  (no tools)
 //
+// These are EXECUTABLE counts, not WIRE counts. Lever (b) (plan §20,
+// 2026-11-11) widened the CHECKPOINT wire to the whole registry, but the
+// gate is still {goal_progress, complete_goal} — so "checkpoint -> 2"
+// stays true here and only here.
+//
 // OPEN is RELATIVE: the allowlist is the agent's own frontmatter `tools:`
 // declaration plus the policy's BaseAdds (view_goal, complete_goal).
 // It is therefore computed per-agent by canaryExpectedToolsVisibleForAgent

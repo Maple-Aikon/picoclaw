@@ -32,6 +32,11 @@ func (m *mockTool) Execute(ctx context.Context, args map[string]any) *toolshared
 // model picks one, the runtime gate rejects it, the turn burns an
 // iteration on a misfire).
 //
+// LEVER (b) (plan §20, anh chốt 2026-11-11 07:58 ICT) then REVERSED that
+// for CHECKPOINT ONLY: the CHECKPOINT wire is the full registry again, so
+// the OPEN→CHECKPOINT transition does not move the prompt-cache prefix.
+// The RUNTIME GATE at CHECKPOINT is still {goal_progress, complete_goal}.
+//
 // Per C8 the test is UPDATED, NOT DELETED. What it keeps:
 //
 //	(a) the RUNTIME GATE assertions — the gate is the security boundary and
@@ -43,8 +48,10 @@ func (m *mockTool) Execute(ctx context.Context, args map[string]any) *toolshared
 //
 //	- OPEN (and the unset-phase backward-compat path) project ALL 5 tools,
 //	  byte-identical to the pre-P1 behaviour;
-//	- the NARROW phases project exactly the tools their phase allowlist
-//	  permits — SET -> 1, CHECKPOINT -> 2, FINAL -> 1.
+//	- CHECKPOINT projects ALL 5 tools too (lever (b)) — the wire matches
+//	  OPEN so the prompt-cache prefix does not move on the transition;
+//	- the remaining NARROW phases project exactly the tools their phase
+//	  allowlist permits — SET -> 1, FINAL -> 1.
 func TestFrozenToolSchema_InvariantAcrossGoalPhases(t *testing.T) {
 	reg := tools.NewToolRegistry()
 	reg.SetProjectionFrozen(true)

@@ -153,7 +153,16 @@ func (ts *turnState) applyPhaseAllowlist(phase GoalPhase) {
 	// CHECKPOINT's allowlist with phase="" — a state matching neither phase.
 	// Harmless while the projection was phase-INDEPENDENT; after P1 the
 	// projection IS phase-dependent, so a concurrent reader could be handed
-	// the WRONG tool set (e.g. an OPEN turn seeing only the 2 CHECKPOINT
-	// schemas, then having its domain tools gated out).
+	// the WRONG tool set.
+	//
+	// MEASURED 2026-11-11 (after lever (b), commit 3da55983): the mixed
+	// state does NOT narrow the WIRE — phase "" lands in the
+	// full-registry branch of projectToolLocked, so the model still sees
+	// the whole registry (6/6 in the probe registry). What the window
+	// actually corrupts is the GATE: toolAllowedLocked reads the stale
+	// allowlist with no phase left to correct it, so an OPEN turn is
+	// gated down to CHECKPOINT's 2 lifecycle tools and loses its domain
+	// tools (read_file/exec). The one-lock write is what keeps the two
+	// fields consistent.
 	ts.agent.Tools.SetPhaseAllowlist(allowlist, string(phase))
 }
