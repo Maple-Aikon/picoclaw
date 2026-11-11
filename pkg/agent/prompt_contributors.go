@@ -118,7 +118,7 @@ func (c mcpServerPromptContributor) ContributePrompt(
 		// When a phase is known the whole line moves to the PHASE CHANNEL
 		// (goal_phase_channel.go :: phaseMCPNote), so the system prompt
 		// carries nothing phase-dependent. The phase == "" path (legacy
-		// callers / test fixtures) keeps the old behaviour.
+		// callers / test fixtures) keeps the old behavior.
 		if GoalPhase(req.GoalPhase) != "" {
 			return nil, nil
 		}

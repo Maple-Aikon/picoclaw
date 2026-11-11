@@ -30,7 +30,7 @@ func TestRateLimitWaitForCap(t *testing.T) {
 		t.Errorf("default delay: got %s want %s", delay, rateLimitDelay)
 	}
 
-	// 2. A SHORT retry_after is honoured verbatim.
+	// 2. A SHORT retry_after is honored verbatim.
 	delay, ok = rateLimitWaitFor(NewRateLimitError(30*time.Second, errors.New("boom")))
 	if !ok {
 		t.Fatal("a 30s retry_after must be retried")
@@ -39,7 +39,7 @@ func TestRateLimitWaitForCap(t *testing.T) {
 		t.Errorf("short retry_after: got %s want 30s", delay)
 	}
 
-	// 3. A retry_after LONGER than the cap is NOT honoured: the wait
+	// 3. A retry_after LONGER than the cap is NOT honored: the wait
 	//    would park the worker for hours.
 	delay, ok = rateLimitWaitFor(NewRateLimitError(6*time.Hour, errors.New("boom")))
 	if ok {

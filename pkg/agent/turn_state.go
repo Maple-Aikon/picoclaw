@@ -283,7 +283,7 @@ type turnState struct {
 	//
 	// Reset to 0 whenever the phase changes (the rebuild hook re-seeds it);
 	// 0 = "not yet tracked" — the banner then falls back to the live
-	// iteration (legacy behaviour).
+	// iteration (legacy behavior).
 	phaseStartIter int
 
 	// Replay counter: bound AfterLLM hook replay attempts within a single iteration.

@@ -399,9 +399,9 @@ func isLifecycleToolAllowed(toolName, phase string) bool {
 // P1 (plan checkpoint-misfire-fix): the projection is phase-scoped.
 //
 //   - projectionFrozen == false → the runtime allowlist filters the
-//     projection (the pre-Phase-12.72 behaviour, unchanged).
+//     projection (the pre-Phase-12.72 behavior, unchanged).
 //   - projectionFrozen == true and the phase is OPEN or UNSET → the FULL
-//     registry is projected, byte-identical to the pre-P1 behaviour. The
+//     registry is projected, byte-identical to the pre-P1 behavior. The
 //     OPEN prompt-cache prefix must not move.
 //   - projectionFrozen == true and the phase is CHECKPOINT → the FULL
 //     registry is projected too. LEVER (b), plan §20 (anh chốt
@@ -412,7 +412,7 @@ func isLifecycleToolAllowed(toolName, phase string) bool {
 //   - projectionFrozen == true and the phase is NARROW (set / final /
 //     post_final) → only the phase allowlist is projected.
 //   - projectionFrozen == true and the phase is UNKNOWN → fail CLOSED onto
-//     the allowlist. An unrecognised phase must never widen the visible set.
+//     the allowlist. An unrecognized phase must never widen the visible set.
 //
 // The caller must hold r.mu (read). This function does NOT decide what may
 // EXECUTE — toolAllowedLocked does, and pipeline_execute.go's
@@ -691,7 +691,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 	asyncCallback AsyncCallback,
 ) *ToolResult {
 	// Phase 12.3 fix: enforce the runtime allowlist at the EXECUTION gate.
-	// Phase 12.2 fixed the projection gate (ToProviderDefs honours
+	// Phase 12.2 fixed the projection gate (ToProviderDefs honors
 	// toolAllowedLocked) but execution was still a gap — LLM could call
 	// tools outside the 4-phase goal allowlist (set/open/checkpoint/final)
 	// if it knew their names from prior turns (signet-memory recall).
@@ -1014,10 +1014,10 @@ func (r *ToolRegistry) GetDefinitions() []map[string]any {
 // the projection is PHASE-SCOPED.
 //
 //   - projectionFrozen == false (legacy / unfrozen registries):
-//     unchanged behaviour — the runtime allowlist filters the projection.
+//     unchanged behavior — the runtime allowlist filters the projection.
 //   - projectionFrozen == true AND the phase is OPEN or unset:
 //     the FULL registry is projected, byte-identical to the pre-P1
-//     behaviour. The OPEN prompt-cache prefix must not move, or every
+//     behavior. The OPEN prompt-cache prefix must not move, or every
 //     OPEN turn pays full uncached input.
 //   - projectionFrozen == true AND the phase is CHECKPOINT:
 //     the FULL registry is projected too. LEVER (b), plan §20 (anh chốt
@@ -1033,7 +1033,7 @@ func (r *ToolRegistry) GetDefinitions() []map[string]any {
 //     ~76 schemas it is not allowed to call, so it stops picking a tool
 //     that the runtime gate will reject (the "misfire").
 //   - projectionFrozen == true AND the phase is UNKNOWN:
-//     fail CLOSED onto the allowlist. An unrecognised phase must never
+//     fail CLOSED onto the allowlist. An unrecognized phase must never
 //     WIDEN the visible set.
 //
 // The RUNTIME GATE is untouched by this change: toolAllowedLocked still

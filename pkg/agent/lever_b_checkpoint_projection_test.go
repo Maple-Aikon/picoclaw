@@ -36,7 +36,7 @@ package agent
 //	B4  FINAL projection is still exactly {complete_goal}.
 //	B5  The runtime gate is NOT weakened: exec / read_file are still
 //	    BLOCKED at execution time at CHECKPOINT.
-//	B6  Unknown / unrecognised phase still fails CLOSED (never widens).
+//	B6  Unknown / unrecognized phase still fails CLOSED (never widens).
 //	B7  The CHECKPOINT hint must not claim "Only N tools are available"
 //	    with N != the projected schema count (plan §20.3) — the hint
 //	    may talk about EXECUTABLE tools, not about schemas on the wire.
@@ -206,8 +206,8 @@ func TestLeverB_RuntimeGateStillBlocksAtCheckpoint(t *testing.T) {
 
 // --- B6: an unknown phase still fails CLOSED ------------------------------
 //
-// (b) must not become a hole: an unrecognised phase must never WIDEN
-// the visible set. The unknown phase keeps the pre-(b) behaviour —
+// (b) must not become a hole: an unrecognized phase must never WIDEN
+// the visible set. The unknown phase keeps the pre-(b) behavior —
 // project only what the allowlist permits.
 
 func TestLeverB_UnknownPhaseStillFailsClosed(t *testing.T) {

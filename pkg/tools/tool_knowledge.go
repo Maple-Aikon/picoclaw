@@ -370,7 +370,7 @@ func (s *ToolKnowledgeStore) LoadForEscalation(tool string) string {
 	if err != nil {
 		return ""
 	}
-	// Re-render and apply the digest to mirror Save's cap behaviour.
+	// Re-render and apply the digest to mirror Save's cap behavior.
 	rendered := renderKnowledgeFile(tool, body, time.Now().UTC())
 	if len(rendered) > KnowledgeSizeCap {
 		rendered = digestSections(rendered, KnowledgeSizeCap)
@@ -393,7 +393,7 @@ func renderKnowledgeFile(tool, body string, now time.Time) string {
 // extractBody returns the body portion (everything after the closing "---").
 //
 // Phase 12.64 (2026-11-11, Mode A p76d): the frontmatter is only
-// recognised when the content STARTS with the fence.
+// recognized when the content STARTS with the fence.
 //
 // The previous implementation searched for the marker ANYWHERE:
 //
@@ -439,7 +439,7 @@ func extractBody(content string) string {
 // splitFrontmatter separates a leading YAML frontmatter block from the
 // body.
 //
-// Phase 12.62: the frontmatter is only recognised when the content
+// Phase 12.62: the frontmatter is only recognized when the content
 // STARTS with "---". A bare strings.Index for the frontmatter terminator finds
 // horizontal rules in the middle of a markdown document (measured:
 // memory/tool_knowledge/code-review.packet-format.md has seven of them)
@@ -817,7 +817,7 @@ func smartTruncate(content string, byteCap int) string {
 // snapshot tests can pin the format.
 const truncationMarker = "\n... [truncated]\n"
 
-// hardTruncate truncates content that has no recognisable frontmatter.
+// hardTruncate truncates content that has no recognizable frontmatter.
 func hardTruncate(content string, byteCap int) string {
 	if byteCap > len(content) {
 		byteCap = len(content)

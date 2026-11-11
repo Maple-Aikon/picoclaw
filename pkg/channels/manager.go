@@ -43,7 +43,7 @@ const (
 	// platform's `retry_after`.
 	//
 	// WHY A CAP (anh chốt 2026-11-11): Telegram's flood control can
-	// ask for up to ~24 713 seconds (~6.9 hours). Honouring that
+	// ask for up to ~24 713 seconds (~6.9 hours). Honoring that
 	// literally would park the channel worker for hours, holding the
 	// queue and blocking every later message behind it. Five minutes
 	// is long enough for a normal flood window to clear and short
@@ -1619,7 +1619,7 @@ func (m *Manager) sendWithRetry(
 				// The platform asked for longer than the cap: give the
 				// error back to the caller instead of parking the worker.
 				logger.WarnCF("channels", "rate limit wait exceeds cap; returning error", map[string]any{
-					"channel": name,
+					"channel":     name,
 					"retry_after": RateLimitRetryAfter(lastErr).String(),
 					"cap":         rateLimitMaxWait.String(),
 				})

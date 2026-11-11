@@ -26,7 +26,7 @@ package agent
 //	C6  The runtime execution gate is NOT weakened: a tool absent from the
 //	    projected schema is still blocked at execution time.
 //	C7  Unknown / empty phase -> fail CLOSED onto the phase allowlist.
-//	    The visible set must never be WIDENED by an unrecognised phase.
+//	    The visible set must never be WIDENED by an unrecognized phase.
 //
 // C8 (plan §9.6) — pkg/agent/frozen_tool_schema_test.go asserted that
 // ToProviderDefs() returns the SAME schemas in every phase. P1 deliberately
@@ -59,9 +59,9 @@ type p1MockTool struct {
 	name string
 }
 
-func (m *p1MockTool) Name() string                     { return m.name }
-func (m *p1MockTool) Description() string              { return "mock tool for testing" }
-func (m *p1MockTool) Parameters() map[string]any       { return map[string]any{"type": "object"} }
+func (m *p1MockTool) Name() string               { return m.name }
+func (m *p1MockTool) Description() string        { return "mock tool for testing" }
+func (m *p1MockTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
 func (m *p1MockTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	return toolshared.NewToolResult("ok")
 }
@@ -265,7 +265,7 @@ func TestP1_RuntimeGateStillBlocksHiddenTools(t *testing.T) {
 // allowlist there would advertise tools the runtime gate refuses to run —
 // which is the very misfire P1 exists to remove.
 //
-// C7's real requirement — "an unrecognised phase must never WIDEN the
+// C7's real requirement — "an unrecognized phase must never WIDEN the
 // visible set" — is therefore asserted as:
 //
 //	projected ⊆ executable   (never advertise what the gate will refuse)
@@ -324,7 +324,7 @@ func TestP1_UnknownPhaseFailsClosed(t *testing.T) {
 //	    byte-identical to the pre-P1 frozen projection so the prompt-cache
 //	    prefix does not move). Measured at OPEN: executable = 4
 //	    (view_goal, complete_goal, read_file, exec), projected = 6 — the
-//	    extra two (set_goal, goal_progress) are the pre-P1 behaviour,
+//	    extra two (set_goal, goal_progress) are the pre-P1 behavior,
 //	    unchanged, and the plan measured OPEN misfire at 0.29%.
 //	    Narrowing OPEN is P9's job, not P1's.
 

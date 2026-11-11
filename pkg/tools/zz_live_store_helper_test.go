@@ -55,7 +55,7 @@ import (
 // Precedence:
 //
 //	PICOCLAW_TEST_WORKSPACE  (explicit override, used by CI jobs that
-//	                          materialise a fixture store)
+//	                          materialize a fixture store)
 //	PICOCLAW_HOME            (-> $PICOCLAW_HOME/workspace)
 //	                          (-> ~/.picoclaw/workspace)
 func liveStoreWorkspace(t *testing.T) string {

@@ -430,7 +430,7 @@ type sendChunkParams struct {
 // recover from a PARSE failure ("Bad Request: can't parse entities"),
 // but a flood-control rejection has nothing to do with the format, and
 // the fallback would issue a SECOND api call while Telegram is already
-// blocking us - exactly the behaviour that produced the 6-hour storm.
+// blocking us - exactly the behavior that produced the 6-hour storm.
 //
 // So: on a 429, classify and return immediately, with NO fallback call.
 // On any other error, the historical fallback is preserved.
@@ -1710,14 +1710,14 @@ func isRateLimitAPIError(err error) bool {
 // channels package's error taxonomy, carrying `retry_after` for a 429.
 //
 // A non-API error (network failure, timeout) stays `ErrTemporary` -
-// the pre-existing behaviour that the regression tests pin (T3b).
+// the pre-existing behavior that the regression tests pin (T3b).
 func classifyTelegramError(err error) error {
 	if err == nil {
 		return nil
 	}
 	code, retryAfter := telegramAPIError(err)
 	if code == 0 {
-		// Not a Telegram API error: keep the historical behaviour.
+		// Not a Telegram API error: keep the historical behavior.
 		return fmt.Errorf("telegram api: %w", channels.ErrTemporary)
 	}
 	return channels.ClassifySendErrorWithRetry(code, retryAfter, err)

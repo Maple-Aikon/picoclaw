@@ -344,7 +344,7 @@ func TestToolRegistry_SetAllowlistClearsPhase(t *testing.T) {
 // OPEN turn is gated down to CHECKPOINT's 2 lifecycle tools and loses
 // its domain tools (read_file/exec).
 //
-// This test pins the ATOMIC behaviour: after the call, the registry
+// This test pins the ATOMIC behavior: after the call, the registry
 // reflects the phase it was given, and the allowlist that goes with it.
 func TestToolRegistry_SetPhaseAllowlist_Atomic(t *testing.T) {
 	r := NewToolRegistry()

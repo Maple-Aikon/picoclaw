@@ -464,15 +464,6 @@ func TestCacheInvalidationOnIterationChange(t *testing.T) {
 		"(iter 1)", "SET hint header must reflect iter 1 after the iter-17 cache flip")
 }
 
-// intMin helper for substring slicing above (avoids name collision with
-// the Go 1.21+ builtin min on two ints).
-func intMin(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // TestNonOpenPhasesBypassCache (Phase 12.16.1): cache MUST be bypassed for
 // GoalPhaseSet, GoalPhaseCheckpoint, and GoalPhaseFinal. Reasoning: these
 // phases have tool allowlists restricted to 1-2 goal lifecycle tools, so

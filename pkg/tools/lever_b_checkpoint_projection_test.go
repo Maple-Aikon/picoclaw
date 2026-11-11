@@ -5,7 +5,7 @@ package tools
 //
 // The projection lives here (pkg/tools/registry.go: projectToolLocked).
 // This file pins the contract at the layer that actually owns the
-// behaviour, so a future refactor of pkg/agent cannot silently widen or
+// behavior, so a future refactor of pkg/agent cannot silently widen or
 // narrow the CHECKPOINT wire.
 //
 // CONTRACT:

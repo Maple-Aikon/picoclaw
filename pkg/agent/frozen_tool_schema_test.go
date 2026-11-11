@@ -47,7 +47,7 @@ func (m *mockTool) Execute(ctx context.Context, args map[string]any) *toolshared
 // What it now asserts instead of "identical in every phase":
 //
 //	- OPEN (and the unset-phase backward-compat path) project ALL 5 tools,
-//	  byte-identical to the pre-P1 behaviour;
+//	  byte-identical to the pre-P1 behavior;
 //	- CHECKPOINT projects ALL 5 tools too (lever (b)) — the wire matches
 //	  OPEN so the prompt-cache prefix does not move on the transition;
 //	- the remaining NARROW phases project exactly the tools their phase

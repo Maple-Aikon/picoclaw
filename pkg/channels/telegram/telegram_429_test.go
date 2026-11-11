@@ -8,7 +8,7 @@ package telegram
 // The existing `stubCaller` can only return `(nil, error)`. telego
 // then returns `internal execution: ...` — a plain error with NO
 // `ta.Error` inside — so `errors.As(err, &apiErr)` would NOT match
-// and a 429 could never be recognised.
+// and a 429 could never be recognized.
 //
 // telego's `performRequest` (bot.go:175-176) does:
 //
@@ -20,7 +20,7 @@ package telegram
 // payload DOES put a `*ta.Error` in the error chain. That is what
 // `errorResponse` builds.
 //
-// The tests below are written against the ACCEPTED behaviour
+// The tests below are written against the ACCEPTED behavior
 // (plan §5, AC-1..AC-7):
 //
 //	T1   429 + retry_after=60   -> ErrRateLimit, retry_after visible,
@@ -28,7 +28,7 @@ package telegram
 //	T1b  429 without retry_after -> ErrRateLimit, retry_after == 0
 //	T2   400 Bad Request        -> ErrSendFailed, TWO calls (fallback kept)
 //	T3   500                    -> ErrTemporary
-//	T3b  network error          -> ErrTemporary (pre-existing behaviour)
+//	T3b  network error          -> ErrTemporary (pre-existing behavior)
 //	T4   animator editFn 429    -> animator stops, no second call,
 //	                                and Update() does NOT re-Record
 
@@ -62,24 +62,6 @@ func errorResponse(errorCode int, description string, retryAfter int) *ta.Respon
 		resp.Error.Parameters = &ta.ResponseParameters{RetryAfter: retryAfter}
 	}
 	return resp
-}
-
-// countingCaller records every API call so the tests can assert the
-// NUMBER of calls (AC-1/T1: exactly one; AC-3: none during backoff).
-type countingCaller struct {
-	*stubCaller
-}
-
-func (c *countingCaller) count() int {
-	return len(c.calls)
-}
-
-func (c *countingCaller) urls() []string {
-	out := make([]string, 0, len(c.calls))
-	for _, call := range c.calls {
-		out = append(out, call.URL)
-	}
-	return out
 }
 
 // newRateLimitChannel wires a channel whose API always returns the
@@ -157,7 +139,7 @@ func TestTelegramSend_400KeepsPlainTextFallback(t *testing.T) {
 	require.NotErrorIs(t, err, channels.ErrRateLimit)
 
 	// T2: the HTML attempt + the plain-text fallback = TWO calls.
-	// This is the PRE-EXISTING behaviour and must not regress.
+	// This is the PRE-EXISTING behavior and must not regress.
 	require.Len(t, urls, 2, "the 400 fallback must be preserved: %v", urls)
 }
 
