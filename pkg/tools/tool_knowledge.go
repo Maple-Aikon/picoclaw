@@ -710,53 +710,27 @@ func splitH2Sections(body string) []h2Section {
 	return sections
 }
 
-// firstHeadedIndex returns the index of the first section that carries an
-// H2 heading, or -1 when the document has none.
-func firstHeadedIndex(sections []h2Section) int {
-	for i, s := range sections {
-		if s.heading != "" {
-			return i
-		}
-	}
-	return -1
-}
-
-// renderDigest renders the digest and reports whether it fits the cap.
-// keepFirstFull keeps the first HEADED section's body verbatim instead of
-// excerpting it.
-func renderDigest(head string, sections []h2Section, budget int, keepFirstFull bool, byteCap int) (string, bool) {
-	fullIdx := -1
-	if keepFirstFull {
-		fullIdx = firstHeadedIndex(sections)
-	}
-	var b strings.Builder
-	b.WriteString(head)
-	for i, s := range sections {
-		if s.heading != "" {
-			b.WriteString(s.heading)
-			b.WriteString("\n")
-		}
-		body := strings.TrimSpace(s.body)
-		if body != "" {
-			if i == fullIdx {
-				b.WriteString(body)
-			} else if budget > 0 {
-				cut := body
-				if len(cut) > budget {
-					cut = cut[:budget]
-				}
-				b.WriteString(trimToUTF8LineBoundary(cut))
-			}
-			b.WriteString("\n")
-		}
-	}
-	b.WriteString(truncationMarker)
-	out := b.String()
-	if len(out) > byteCap {
-		return "", false
-	}
-	return out, true
-}
+// firstHeadedIndex and renderDigest were REMOVED here (2026-11-12).
+//
+// renderDigest was the PRE-water-filling renderer: it handed the SAME
+// byte budget to every section and cut each body at a raw byte offset.
+// That is the same arithmetic bug the budget ladder had (see
+// tool_knowledge_digest_alloc.go): the digest's fixed overhead grows
+// with the section count, so no uniform budget fits once N is large
+// enough. Commit c7bdda25 replaced the whole path with allocateDigest
+// + renderDigestAlloc, which reserve the real overhead first and
+// water-fill the surplus across the section bodies.
+//
+// firstHeadedIndex existed only to serve renderDigest's `keepFirstFull`
+// mode, so it died with it.
+//
+// Go's linker pruned both from the binary (verified with `go tool nm`:
+// linked=0), so removing them changes no runtime behavior.
+//
+// The properties they used to guarantee are still asserted, against the
+// LIVE path: TestDigestSections_NeverExceedsCap, TestDigestSections_
+// KeepsFrontmatter and TestDigestSections_UTF8Safe in
+// tool_knowledge_digest_test.go.
 
 // headingsOnly renders just the headings of the given sections, dropping
 // every body. Used as the last-resort fallback when even the headings

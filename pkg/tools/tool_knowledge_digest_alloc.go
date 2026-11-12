@@ -2,7 +2,6 @@ package tools
 
 import (
 	"strings"
-	"unicode/utf8"
 )
 
 // digestNL is the newline byte. This file deliberately avoids escape
@@ -49,15 +48,19 @@ func digestMinWordSafeExcerpt(s string) string {
 	return s
 }
 
-// trimToRuneBoundary drops trailing bytes until the string is valid
-// UTF-8. It does NOT snap to a line boundary -- digestMinWordSafeExcerpt
-// and extendExcerpt handle boundaries themselves.
-func trimToRuneBoundary(s string) string {
-	for len(s) > 0 && !utf8.ValidString(s) {
-		s = s[:len(s)-1]
-	}
-	return s
-}
+// trimToRuneBoundary was REMOVED here (2026-11-12).
+//
+// It was added in c7bdda25 next to the water-filling allocator, but no
+// call site was ever wired up: the boundary handling is done by
+// digestMinWordSafeExcerpt (word boundary) and extendExcerpt (line or
+// word boundary), both of which are on the LIVE path.
+//
+// It also had a silent difference from the live helpers: it snapped to a
+// RUNE boundary only, never to a line boundary. A digest cut with it
+// could therefore end mid-line. The live path snaps to both.
+//
+// Go's linker pruned it from the binary (verified with `go tool nm`:
+// linked=0), so removing it changes no runtime behavior.
 
 // extendExcerpt grows the excerpt of a section body from `cur` to at most
 // `budget` bytes, and returns the new length.
