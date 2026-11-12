@@ -46,6 +46,24 @@ func p76fBackupPath(t *testing.T) string {
 	return p
 }
 
+// p76fProseLines returns the PROSE lines of a knowledge file: every
+// non-empty line that is NOT a heading AT ANY LEVEL.
+//
+// Mode A p1112 (2026-11-12): the original version skipped only "## " and
+// "### ", so a line like "#### p56: ..." was treated as PROSE. A regroup
+// that DEMOTES "#### x" to "##### x" therefore changed the prose text
+// (the marker is part of the line) and the ordered-subsequence check
+// reported every demoted heading as "PROSE LOST" -- on a file that had
+// lost NOTHING.
+//
+// Measured 2026-11-12 against the live store, level-agnostic:
+//
+//	p76d base (pre-11-11) -> live : PROSE missing = 0 of 1 951
+//	p1112 base (pre-11-12) -> live: PROSE missing = 0 of 2 074
+//	heading titles missing        : 0
+//
+// The heading LEVEL is a structural artefact of the regroup; the CONTENT
+// is what must survive.
 func p76fProseLines(t *testing.T, path string) []string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -58,10 +76,35 @@ func p76fProseLines(t *testing.T, path string) []string {
 		if s == "" {
 			continue
 		}
-		if strings.HasPrefix(s, "## ") || strings.HasPrefix(s, "### ") {
+		// Skip EVERY heading level: "## ", "### ", "#### ", ...
+		if strings.HasPrefix(s, "#") {
 			continue
 		}
 		out = append(out, s)
+	}
+	return out
+}
+
+// p76fHeadingTitles returns the heading TITLES (marker stripped, level
+// ignored) of a knowledge file.
+//
+// The title TEXT must survive a regroup even when the LEVEL changes: a
+// demoted "## Foo" becomes "### Foo" and the title is still there. This
+// is the check that proves the CONTENT survived independently of the
+// prose check above.
+func p76fHeadingTitles(t *testing.T, path string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var out []string
+	for _, l := range strings.Split(string(raw), string(rune(10))) {
+		s := strings.TrimSpace(l)
+		if s == "" || !strings.HasPrefix(s, "#") {
+			continue
+		}
+		out = append(out, strings.TrimSpace(strings.TrimLeft(s, "#")))
 	}
 	return out
 }
@@ -119,6 +162,94 @@ func TestP76fNoProseLoss(t *testing.T) {
 	if missing == 0 {
 		t.Logf("no prose lost: before=%d after=%d (+%d added)", len(before), len(after), len(after)-len(before))
 	}
+
+	// The complementary half: every heading TITLE of the base must still
+	// be present in the live file, whatever its LEVEL now is.
+	//
+	// Mode A p1112 (2026-11-12): the prose check alone does not prove the
+	// regroup was lossless, because a regroup can demote a heading and
+	// keep every prose line while the heading text itself disappears.
+	// The title check covers that gap, and it is level-agnostic on purpose:
+	// "## Foo" -> "### Foo" is a demotion, not a loss.
+	//
+	// The match is PREFIX-based: a regroup may EXTEND a title (the 11-11
+	// base title "What goes wrong / ... / canary — `grep -c` counts LINES
+	// not EVENTS; dedupe by `call_id`; log REPLAY inflates counts" is a
+	// 130-char PREFIX of the 11-12 merged title, which continues with
+	// "; `llm_call`/..."). The base title is therefore still PRESENT as the
+	// prefix of a longer title. An exact-string comparison would report
+	// that as a loss -- a FALSE failure, the same class of bug the prose
+	// check had.
+	tb := p76fHeadingTitles(t, backup)
+	ta := p76fHeadingTitles(t, cur)
+	baseCount := map[string]int{}
+	for _, h := range tb {
+		baseCount[h]++
+	}
+	titlesMissing := 0
+	for _, h := range tb {
+		if p76fTitlePresent(h, ta) {
+			continue
+		}
+		titlesMissing++
+		if titlesMissing <= 10 {
+			t.Errorf("HEADING TITLE LOST: %q", h)
+		}
+	}
+	if titlesMissing == 0 {
+		t.Logf("no heading title lost: before=%d after=%d (+%d added)", len(tb), len(ta), len(ta)-len(tb))
+	}
+
+	// MULTIPLICITY: "the title is present" is NOT enough.
+	//
+	// Several real entries repeat the same heading text ("## What goes
+	// wrong" appears 5x in exec.md). A regroup that merges those five
+	// sections into ONE heading keeps the title TEXT but loses four
+	// heading LINES -- the lessons those headings indexed are no longer
+	// addressable by title.
+	//
+	// The count is over DISTINCT live titles matching the base title:
+	// an exact match, or a live title that EXTENDS the base title (a
+	// regroup may extend a title, never truncate one). Comparing the
+	// count against the base multiplicity catches a merge that the
+	// presence-only check above cannot see.
+	//
+	// Measured 2026-11-12 against the live store: 0 titles lost their
+	// multiplicity (base 263 titles / live 289).
+	for h, want := range baseCount {
+		got := p76fTitleMatchCount(h, ta)
+		if got < want {
+			t.Errorf("HEADING TITLE MULTIPLICITY LOST: %q appeared %d time(s) in the base, %d match(es) in the live file",
+				h, want, got)
+		}
+	}
+}
+
+// p76fTitlePresent reports whether the base title h is still present in
+// the live titles: either as an exact match, or as the PREFIX of a longer
+// title (a regroup may extend a title; it never truncates one).
+func p76fTitlePresent(h string, live []string) bool {
+	return p76fTitleMatchCount(h, live) > 0
+}
+
+// p76fTitleMatchCount returns how many live titles match the base title
+// h: an exact match, or a live title that EXTENDS h.
+//
+// The count is over DISTINCT live titles, so a heading text that appears
+// five times in the live file counts five times -- which is what makes
+// the multiplicity check meaningful.
+func p76fTitleMatchCount(h string, live []string) int {
+	n := 0
+	for _, l := range live {
+		if l == h {
+			n++
+			continue
+		}
+		if len(l) > len(h) && strings.HasPrefix(l, h) {
+			n++
+		}
+	}
+	return n
 }
 
 // TestP76fNeedlesStillAutoLoad proves every absorbed lesson is still

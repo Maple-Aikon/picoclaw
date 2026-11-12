@@ -150,6 +150,32 @@ func TestZZLiveMeasure(t *testing.T) {
 		}
 		if starved > 0 {
 			starvedEntries++
+			// Mode A p1112 (2026-11-12): this file used to COUNT
+			// starved sections and only LOG them, so a store where
+			// section bodies had become invisible still produced a
+			// GREEN run. A measurement that cannot fail is not a
+			// guard.
+			//
+			// The contract: every body-bearing section of an over-cap
+			// entry must keep a NON-EMPTY excerpt. An empty excerpt means
+			// the lesson inside that section is unreachable at runtime
+			// (the digest carries the heading, so the section LOOKS
+			// present while its content is gone).
+			//
+			// This is the live-store counterpart of the synthetic
+			// fixture guard in tool_knowledge_digest_word_test.go
+			// (TestDigestSections_EverySectionKeepsReadableBody): same
+			// invariant, but measured against the REAL store instead of
+			// a generated one.
+			for i := range src {
+				if strings.TrimSpace(src[i].body) == "" {
+					continue
+				}
+				if strings.TrimSpace(dst[i].body) == "" {
+					t.Errorf("STARVED %s :: [%d] %q (srcBodyLen=%d) -- the section body is invisible at runtime",
+						name, i, src[i].heading, len(strings.TrimSpace(src[i].body)))
+				}
+			}
 		}
 
 		for i := range src {
