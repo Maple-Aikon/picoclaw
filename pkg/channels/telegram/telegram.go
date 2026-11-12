@@ -584,6 +584,17 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 			return nil
 		}
 
+		// RATE LIMIT (plan telegram-429-flood-classification-fix, §17):
+		// the plain-text fallback call above can ITSELF be flood-blocked.
+		// A 429 raised by THAT call must be classified too — otherwise it
+		// escapes as an unknown error, the Manager retries it on a fixed
+		// backoff, and we keep hammering Telegram while it is blocking us.
+		// The first edit's own 429 already returned above, so the only
+		// 429 that can reach here comes from the fallback.
+		if isRateLimitAPIError(err) {
+			return classifyTelegramError(err)
+		}
+
 		if isPostConnectError(err) {
 			logger.WarnCF(
 				"telegram",
@@ -772,6 +783,14 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				"count": len(msg.Parts),
 				"error": err.Error(),
 			})
+			// RATE LIMIT (plan telegram-429-flood-classification-fix, §17):
+			// a 429 must surface as ErrRateLimit so the Manager waits for
+			// `retry_after` instead of retrying on a fixed backoff while
+			// Telegram is still flood-blocking us. Flattening it into
+			// ErrTemporary loses both the classification and the wait.
+			if isRateLimitAPIError(err) {
+				return nil, fmt.Errorf("telegram send media group: %w", classifyTelegramError(err))
+			}
 			return nil, fmt.Errorf("telegram send media group: %w", channels.ErrTemporary)
 		}
 		if len(groupIDs) > 0 {
@@ -875,6 +894,13 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				"type":  part.Type,
 				"error": err.Error(),
 			})
+			// RATE LIMIT (plan telegram-429-flood-classification-fix, §17):
+			// see the media-group branch above — a 429 keeps its
+			// classification and `retry_after` instead of being flattened
+			// into ErrTemporary.
+			if isRateLimitAPIError(err) {
+				return nil, fmt.Errorf("telegram send media: %w", classifyTelegramError(err))
+			}
 			return nil, fmt.Errorf("telegram send media: %w", channels.ErrTemporary)
 		}
 	}

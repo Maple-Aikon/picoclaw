@@ -36,6 +36,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +48,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
+	"github.com/sipeed/picoclaw/pkg/media"
 )
 
 // errorResponse builds a ta.Response that telego turns into an
@@ -241,4 +244,150 @@ func TestErrorResponseCarriesTelegramAPIError(t *testing.T) {
 	require.False(t, resp.Ok)
 	require.Equal(t, 429, resp.Error.ErrorCode)
 	require.Equal(t, 60, resp.Error.Parameters.RetryAfter)
+}
+
+// --- T5: SendMedia (single attachment) 429 keeps its classification ----
+//
+// Plan telegram-429-flood-classification-fix §17 (patch A2).
+//
+// BEFORE the patch, the media branch flattened every failure into
+// `fmt.Errorf("telegram send media: %w", channels.ErrTemporary)`.
+// A 429 therefore reached the Manager as ErrTemporary: the Manager
+// retried it on a fixed exponential backoff (baseBackoff..maxBackoff)
+// instead of waiting for the `retry_after` Telegram asked for, and it
+// never stopped the tool-feedback animation loop (that loop only
+// stops on errors.Is(err, ErrRateLimit)).
+//
+// AFTER the patch a 429 surfaces as ErrRateLimit carrying retry_after.
+
+func TestTelegramSendMedia_429IsRateLimit(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return errorResponse(429, "Too Many Requests: retry after 60", 60), nil
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	localPath := filepath.Join(tmpDir, "image.png")
+	require.NoError(t, os.WriteFile(localPath, []byte("fake-png-content"), 0o644))
+
+	ref, err := store.Store(localPath, media.MediaMeta{Filename: "image.png", ContentType: "image/png"}, "scope-1")
+	require.NoError(t, err)
+
+	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts:  []bus.MediaPart{{Type: "image", Ref: ref}},
+	})
+
+	require.Error(t, err)
+	// The 429 must NOT be flattened into ErrTemporary: that is exactly
+	// the defect this patch fixes.
+	require.ErrorIs(t, err, channels.ErrRateLimit)
+	require.NotErrorIs(t, err, channels.ErrTemporary)
+
+	// The retry_after must survive to the Manager.
+	require.Equal(t, 60*time.Second, channels.RateLimitRetryAfter(err))
+
+	var rl *channels.RateLimitError
+	require.True(t, errors.As(err, &rl), "errors.As must find the typed error")
+	require.Equal(t, 60*time.Second, rl.RetryAfter)
+
+	// Exactly ONE api call — a 429 must not trigger the
+	// photo->document fallback.
+	require.Len(t, caller.calls, 1, "a 429 must not trigger the document fallback: %v", caller.calls)
+	require.Contains(t, caller.calls[0].URL, "sendPhoto")
+}
+
+// --- T6: SendMedia (media group) 429 keeps its classification ----------
+//
+// Plan telegram-429-flood-classification-fix §17 (patch A1).
+//
+// The media-group branch had the same flattening defect as the single
+// attachment branch: `fmt.Errorf("telegram send media group: %w",
+// channels.ErrTemporary)`.
+
+func TestTelegramSendMediaGroup_429IsRateLimit(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return errorResponse(429, "Too Many Requests: retry after 45", 45), nil
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	firstPath := filepath.Join(tmpDir, "first.png")
+	secondPath := filepath.Join(tmpDir, "second.png")
+	require.NoError(t, os.WriteFile(firstPath, []byte("first-image"), 0o644))
+	require.NoError(t, os.WriteFile(secondPath, []byte("second-image"), 0o644))
+
+	firstRef, err := store.Store(firstPath, media.MediaMeta{Filename: "first.png", ContentType: "image/png"}, "scope-1")
+	require.NoError(t, err)
+	secondRef, err := store.Store(secondPath, media.MediaMeta{Filename: "second.png", ContentType: "image/png"}, "scope-1")
+	require.NoError(t, err)
+
+	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{
+			{Type: "image", Ref: firstRef},
+			{Type: "image", Ref: secondRef},
+		},
+	})
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, channels.ErrRateLimit)
+	require.NotErrorIs(t, err, channels.ErrTemporary)
+	require.Equal(t, 45*time.Second, channels.RateLimitRetryAfter(err))
+
+	// Exactly ONE api call — the group is not retried per-part.
+	require.Len(t, caller.calls, 1, "a 429 must not retry the media group: %v", caller.calls)
+	require.Contains(t, caller.calls[0].URL, "sendMediaGroup")
+}
+
+// --- T7: EditMessage fallback 429 keeps its classification -------------
+//
+// Plan telegram-429-flood-classification-fix §17 (patch B).
+//
+// The FIRST edit's own 429 was already classified (RC-4). But the
+// plain-text FALLBACK call can itself be flood-blocked, and that 429
+// escaped as an unknown error: the Manager treated it as a generic
+// failure and fell through to a NEW SendMessage — adding outbound
+// traffic at the exact moment Telegram was flood-blocking us.
+//
+// The fallback only fires on "Bad Request", so the stub answers:
+//   call 1 -> 400 Bad Request   (parse failure, triggers the fallback)
+//   call 2 -> 429               (the fallback is flood-blocked)
+
+func TestTelegramEditMessage_Fallback429IsRateLimit(t *testing.T) {
+	callCount := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			callCount++
+			if callCount == 1 {
+				return errorResponse(400, "Bad Request: can't parse entities", 0), nil
+			}
+			return errorResponse(429, "Too Many Requests: retry after 30", 30), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	err := ch.EditMessage(context.Background(), "12345", "42", "hello **world**")
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, channels.ErrRateLimit)
+	require.NotErrorIs(t, err, channels.ErrTemporary)
+	require.Equal(t, 30*time.Second, channels.RateLimitRetryAfter(err))
+
+	// The rich edit + the plain-text fallback = TWO calls, and no third.
+	require.Len(t, caller.calls, 2, "edit attempt + fallback only: %v", caller.calls)
+	require.Contains(t, caller.calls[0].URL, "editMessageText")
+	require.Contains(t, caller.calls[1].URL, "editMessageText")
 }
