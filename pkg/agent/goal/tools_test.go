@@ -701,7 +701,6 @@ func (f *fakeExtender) FlushPendingExtend() (bool, int, int) {
 	f.pendingFlushReason = ""
 	return true, f.iterCap, delta
 }
-func (f *fakeExtender) iterationCap() int { return 50 }
 func (f *fakeExtender) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

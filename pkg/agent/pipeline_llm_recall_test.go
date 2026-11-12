@@ -38,7 +38,6 @@ type recallTestProvider struct {
 	}
 	errors        []error      // optional, per-call transient/non-transient errors
 	responses     []*providers.LLMResponse
-	transientOk   bool         // mark injected errors as transient via transientLLMRetryReason
 	abortOnCall   *int         // if non-nil and *abortOnCall == idx, request hard abort after returning
 	abortTurnState *turnState  // required when abortOnCall != nil — points to the ts to abort
 }

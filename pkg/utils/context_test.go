@@ -246,12 +246,6 @@ func TestTruncateContextSmart(t *testing.T) {
 					len(got), tt.wantLen)
 			}
 
-			// Check for expected content
-			allContent := ""
-			for _, msg := range got {
-				allContent += msg.Content + " "
-			}
-
 			for _, want := range tt.wantHas {
 				found := false
 				for _, msg := range got {

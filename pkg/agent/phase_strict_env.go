@@ -26,35 +26,19 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
-// strictPhasesEnabled — atomic flag mirroring PICOCLAW_AGENT_STRICT_PHASES env.
-// Defaults false (zero value).
-var strictPhasesEnabled atomic.Bool
-
 // strictPhaseMissCounter — atomic counter incremented by recordPhaseLookupMiss.
 // Test-only inspection via getStrictPhaseMissCounter + resetStrictPhaseCounterForTest.
 var strictPhaseMissCounter atomic.Int64
-
-// initStrictPhasesFromEnv reads the env once at process start. Mirrors the
-// pattern used by IsAgentDebugEnabled() in agent_debug.go (defer init to
-// first call vs process-start race condition in env-only gates).
-func initStrictPhasesFromEnv() {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv(config.EnvAgentStrictPhases)))
-	strictPhasesEnabled.Store(v == "1" || v == "true" || v == "yes" || v == "on")
-}
 
 // IsStrictPhasesEnabled reports whether PICOCLAW_AGENT_STRICT_PHASES is set
 // to a truthy value ("1"/"true"/"yes"/"on" case-insensitive).
 //
 // Phase 12.49 §3.4: production opt-in for telemetry mode. Default false
 // (production zero-cost). Re-reads the env on each call so test cases can
-// toggle the env var mid-process (atomic.Bool is a caching optimization
-// keyed on the literal that triggered last — but for tests we want to
-// pick up `os.Setenv` immediately).
+// toggle the env var mid-process.
 func IsStrictPhasesEnabled() bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv(config.EnvAgentStrictPhases)))
-	enabled := v == "1" || v == "true" || v == "yes" || v == "on"
-	strictPhasesEnabled.Store(enabled)
-	return enabled
+	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 
 // recordPhaseLookupMiss increments the miss counter and emits a warn log

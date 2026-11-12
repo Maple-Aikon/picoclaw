@@ -485,13 +485,6 @@ func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 	return result
 }
 
-func normalizeSeahorseMessageCreatedAt(createdAt *time.Time) time.Time {
-	if createdAt == nil || createdAt.IsZero() {
-		return time.Time{}
-	}
-	return createdAt.UTC().Truncate(time.Second)
-}
-
 // seahorseToProviderMessages converts a seahorse.AssembleResult to []providers.Message.
 func seahorseToProviderMessages(result *seahorse.AssembleResult) []protocoltypes.Message {
 	messages := make([]protocoltypes.Message, 0, len(result.Messages))

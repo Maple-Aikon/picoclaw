@@ -123,12 +123,6 @@ type turnExecution struct {
 	taskSummaryChan  chan string
 	currentTurnStart int
 
-	// injectedTaskSummary tracks whether a task reminder has been injected
-	// this turn. Empty = not yet injected; non-empty = the exact summary text
-	// that was injected. Guards against duplicate injection at the 50%
-	// threshold when steering already placed a reminder into the messages.
-	injectedTaskSummary string
-
 	// Turn output
 	finalContent string
 

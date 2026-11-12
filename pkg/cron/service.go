@@ -603,13 +603,6 @@ func (cs *CronService) Status() map[string]any {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
 
-	var enabledCount int
-	for _, job := range cs.store.Jobs {
-		if job.Enabled {
-			enabledCount++
-		}
-	}
-
 	return map[string]any{
 		"enabled":      cs.running,
 		"jobs":         len(cs.store.Jobs),

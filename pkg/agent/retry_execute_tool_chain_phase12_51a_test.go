@@ -37,9 +37,7 @@ package agent
 import (
 	"context"
 	"testing"
-	"time"
 
-	"github.com/sipeed/picoclaw/pkg/agent/goal"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -510,22 +508,3 @@ func TestRetryExecuteToolChain_Path4Success_ClearsPendingRecovery(t *testing.T) 
 // =============================================================================
 // Helper: seed active goal (used in some W tests)
 // =============================================================================
-func seedActiveGoal(t *testing.T, ts *turnState, ws, sessionKey string) {
-	t.Helper()
-	goalStore := goal.NewStore(ws)
-	now := time.Now().UTC()
-	activeGoal := &goal.Goal{
-		Name: "test-archive",
-		Description: goal.Description{
-			Objective:       "test archive path",
-			SuccessCriteria: []string{"archive fires AbortReason"},
-			Cadence:         "as_needed",
-		},
-		Status:    goal.StatusActive,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := goalStore.Write(sessionKey, activeGoal); err != nil {
-		t.Fatalf("Write goal: %v", err)
-	}
-}

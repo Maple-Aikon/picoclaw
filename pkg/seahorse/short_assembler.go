@@ -171,12 +171,10 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 	var messages []Message
 	var summaries []Summary
 	var sourceIDs []string
-	totalTokens := 0
 	maxDepth := 0
 	condensedCount := 0
 
 	for _, r := range final {
-		totalTokens += r.tokenCount
 		if r.itemType == "message" && r.message != nil {
 			messages = append(messages, *r.message)
 			sourceIDs = append(sourceIDs, fmt.Sprintf("msg:%d", r.message.ID))

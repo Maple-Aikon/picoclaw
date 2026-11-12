@@ -242,11 +242,3 @@ func (h *Handler) picoWebUIAddr(r *http.Request) string {
 func (h *Handler) buildWsURL(r *http.Request) string {
 	return requestWSScheme(r) + "://" + h.picoWebUIAddr(r) + "/pico/ws"
 }
-
-func (h *Handler) buildPicoEventsURL(r *http.Request) string {
-	return requestHTTPScheme(r) + "://" + h.picoWebUIAddr(r) + "/pico/events"
-}
-
-func (h *Handler) buildPicoSendURL(r *http.Request) string {
-	return requestHTTPScheme(r) + "://" + h.picoWebUIAddr(r) + "/pico/send"
-}

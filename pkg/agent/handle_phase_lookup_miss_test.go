@@ -33,19 +33,6 @@ func redirectLoggerForTest2(t *testing.T) *bytes.Buffer {
 	return buf
 }
 
-// resetRedirectLoggerForTest2 forces the global logger state back to
-// defaults. Some tests rely on the WARN-level capture to NOT leak into
-// the next test (which expects the default level). Used as a hard
-// reset before/after any test that touches logger level or writer.
-//
-// Alternative to t.Cleanup() when a subsequent test explicitly resets
-// the level mid-test (e.g., TestAgentDebugPhaseStartPreInit set DEBUG
-// before this test set WARN).
-func resetRedirectLoggerForTest2() {
-	logger.SetLevel(logger.INFO) // default
-	logger.WithTestWriter(nil)
-}
-
 // TestHandlePhaseLookupMiss_BumpsCounter — handler increments counter.
 func TestHandlePhaseLookupMiss_BumpsCounter(t *testing.T) {
 	resetCrossPkgMissCountForTest()

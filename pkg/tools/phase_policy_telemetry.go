@@ -39,12 +39,6 @@ func recordPhaseLookupMissLocal(site, phase string) {
 	localPhaseLookupMissCounter.Add(1)
 }
 
-// getLocalPhaseLookupMissCounter returns the pkg/tools miss counter.
-// Test-only seam.
-func getLocalPhaseLookupMissCounter() int64 {
-	return localPhaseLookupMissCounter.Load()
-}
-
 // ResetLocalPhaseLookupMissCounterForTest clears the pkg/tools counter.
 // Test-only seam (exported for cross-package test cleanup).
 func ResetLocalPhaseLookupMissCounterForTest() {

@@ -26,14 +26,14 @@ func resetModelProbeHooks(t *testing.T) {
 	origOpenAIProbe := probeOpenAICompatibleModelFunc
 	origCommandProbe := probeCommandAvailableFunc
 	origNow := modelProbeNowFunc
-	resetModelProbeCache()
+	modelProbeState.resetForTest()
 	t.Cleanup(func() {
 		probeTCPServiceFunc = origTCPProbe
 		probeOllamaModelFunc = origOllamaProbe
 		probeOpenAICompatibleModelFunc = origOpenAIProbe
 		probeCommandAvailableFunc = origCommandProbe
 		modelProbeNowFunc = origNow
-		resetModelProbeCache()
+		modelProbeState.resetForTest()
 	})
 }
 

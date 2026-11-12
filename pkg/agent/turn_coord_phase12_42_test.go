@@ -37,7 +37,6 @@ func TestP1242_W6_NoExecuteToolsInRetryPath(t *testing.T) {
 // caller-set terminal flag).
 type phase1242AbortExecutor struct {
 	calls   int
-	log     []string
 	setFlag func(exec *turnExecution)
 }
 
@@ -163,8 +162,5 @@ func TestP1242_W12_AllResponsesHandledInRetryPathFinalizes(t *testing.T) {
 	if result.status == TurnEndStatusError {
 		t.Errorf("W12: expected non-error finalize, got TurnEndStatusError (G10: allResponsesHandled misread as archive)")
 	}
-}
-func (p *restrictedPhaseToolBlockProvider) idx() int {
-	return p.mu.idx
 }
 

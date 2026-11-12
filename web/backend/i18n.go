@@ -97,6 +97,8 @@ func SetLanguage(lang string) {
 }
 
 // GetLanguage returns the current language
+// Deprecated: no caller in this repo; kept as part of the web console's
+// public surface. Remove together with a real consumer.
 func GetLanguage() Language {
 	return currentLang
 }

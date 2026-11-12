@@ -73,10 +73,6 @@ func newModelProbeCacheState() *modelProbeCacheState {
 	return &modelProbeCacheState{cache: map[string]*modelProbeCacheEntry{}}
 }
 
-func resetModelProbeCache() {
-	modelProbeState.resetForTest()
-}
-
 func (s *modelProbeCacheState) resetForTest() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

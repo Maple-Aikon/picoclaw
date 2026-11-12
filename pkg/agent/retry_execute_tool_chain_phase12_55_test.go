@@ -378,31 +378,3 @@ func gStatus(g *goal.Goal) string {
 	}
 	return string(g.Status)
 }
-
-// flakyExecutor fails the first `failTimes` ExecuteTools calls (appending
-// an error tool message), then succeeds for all later calls — used to model
-// a transient tool outage that recovers on the next iteration.
-type flakyExecutor struct {
-	fakeExecutor
-	failTimes int
-}
-
-func (f *flakyExecutor) ExecuteTools(
-	ctx context.Context,
-	turnCtx context.Context,
-	ts *turnState,
-	exec *turnExecution,
-	iteration int,
-) ToolControl {
-	if f.failTimes > 0 {
-		f.failTimes--
-		f.appendContent = "Tool execution failed: transient phase12.55 outage"
-		f.appendIsError = true
-		f.appendToolName = "view_goal"
-	} else {
-		f.appendContent = ""
-		f.appendIsError = false
-		f.appendToolName = ""
-	}
-	return f.fakeExecutor.ExecuteTools(ctx, turnCtx, ts, exec, iteration)
-}

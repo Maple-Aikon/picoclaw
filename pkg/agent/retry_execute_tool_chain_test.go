@@ -179,7 +179,6 @@ type fakeExecutor struct {
 	lastIteration int
 	callCount     int
 	returnControl ToolControl
-	returnErr     error
 
 	// Task 7 extensions — when non-empty, the executor appends a tool
 	// message to exec.messages after each ExecuteTools call:
@@ -327,11 +326,6 @@ func TestRetryExecuteToolChain_Step5_InnerBreakPropagates(t *testing.T) {
 		t.Errorf("expected ExecuteTools NOT called (text-only), got callCount=%d", fake.callCount)
 	}
 }
-
-// mockBoundedRetryExhaustionHelper simulates the inner-step exhaustion path by
-// always returning ControlToolLoop (so BoundedRetry keeps retrying until cap
-// hit). Task 5 wiring tests use this in place of a scripted LLM provider.
-type mockAlwaysRetryOnceHelper struct{}
 
 func TestRetryExecuteToolChain_SetToolExecutor_Injection(t *testing.T) {
 	provider := &recordingProvider{}
