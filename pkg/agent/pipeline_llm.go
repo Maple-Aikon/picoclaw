@@ -105,8 +105,17 @@ func (p *Pipeline) CallLLM(
 	// iteration's LLM call sees the hint, then the field clears so the
 	// hint does not repeat. Without this consumer (the Phase 5 → 11 gap),
 	// the message was set but never reached the LLM context.
+	//
+	// Auto-load telemetry (R1 — next-iteration carry): this is an
+	// INJECTION point, not a build point. The message is about to enter
+	// exec.callMessages, i.e. the LLM context. Counting here measures
+	// injections; counting at the builder (buildToolExecErrorRetryMessage)
+	// would over-count, because checkToolExecErrorRecovery has two
+	// callsites and the same failure can build the message twice while
+	// injecting it once.
 	if recoveryMsg := ts.recoveryHintMessage(); recoveryMsg.Content != "" {
 		exec.callMessages = append(append([]providers.Message(nil), exec.callMessages...), recoveryMsg)
+		countRecoveryAutoLoadInject(ts, recoveryMsg.Content)
 	}
 	if err := p.routeMediaTurn(ts, exec); err != nil {
 		return ControlBreak, err
@@ -1342,6 +1351,10 @@ func (p *Pipeline) handleGoalRecovery(
 					Role:    "user",
 					Content: ts.pendingRecoveryMessage,
 				})
+				// Auto-load telemetry (R2 — same-iteration retry): the
+				// message is entering the LLM context here, so this is an
+				// INJECTION point.
+				countRecoveryAutoLoadInject(ts, ts.pendingRecoveryMessage)
 			}
 			// Clear pendingRecoveryMessage after consumption so subsequent
 			// attempts within this iteration do not re-inject the same hint.

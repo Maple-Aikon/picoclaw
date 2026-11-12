@@ -754,7 +754,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 					ErrKind: res.ErrKind,
 					ArgSig:  "",
 				}, res.ForLLM, r.toolKnowledgeFor(name)); hint != "" {
-					res = appendEscalatorHint(res, hint)
+					res = appendEscalatorHint(res, hint, name, channel, chatID)
 				}
 			}
 		}
@@ -946,7 +946,12 @@ func (r *ToolRegistry) ExecuteWithContext(
 
 	// Escalator hint LAST (exactly once) — the tracker's directive is
 	// intentionally stronger than the soft-prompt nudge.
-	result = appendEscalatorHint(result, escalatorHint)
+	//
+	// Phase: this is the escalate-path injection point for the auto-load
+	// telemetry (plan tool-knowledge-instrumentation-...-20261112) — the
+	// hint is about to be appended to what the LLM sees, so this is where
+	// an injection is counted (not where the lesson was loaded).
+	result = appendEscalatorHint(result, escalatorHint, name, channel, chatID)
 
 	duration := time.Since(start)
 
@@ -1208,10 +1213,23 @@ func (r *ToolRegistry) GetSummaries() []string {
 // the escalator hint used to ride on the circuit breaker's fb.Message
 // channel; with the breaker deleted it must be appended directly here or it
 // dies silently (writer-without-reader lesson, Phase 10.1).
-func appendEscalatorHint(result *ToolResult, hintMsg string) *ToolResult {
+//
+// This is ALSO the single injection point for the escalate path of the
+// auto-load telemetry (plan
+// tool-knowledge-instrumentation-...-20261112). The ForLLM append below is
+// the only place where the escalate payload touches what the LLM sees, so
+// counting here measures INJECTIONS — not loads (LoadForEscalation runs on
+// every transient failure, even below the escalation threshold) and not
+// builds (buildToolExecErrorRetryMessage can build twice for one
+// injection).
+//
+// tool/channel/chatID are only used for the counter key; an empty
+// channel/chatID is normalised to "<anon>" (never "<nil>").
+func appendEscalatorHint(result *ToolResult, hintMsg, tool, channel, chatID string) *ToolResult {
 	if hintMsg == "" {
 		return result
 	}
 	result.ForLLM += "\n\n" + hintMsg
+	RecordEscalateAutoLoadInject(channel, chatID, tool, hintMsg)
 	return result
 }

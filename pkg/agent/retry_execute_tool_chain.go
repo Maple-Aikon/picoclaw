@@ -455,6 +455,9 @@ func (p *Pipeline) recallAndCheckTool(
 			Role:    "user",
 			Content: hint,
 		})
+		// Auto-load telemetry (R3 — restricted-phase retry): the hint is
+		// entering the LLM context here, so this is an INJECTION point.
+		countRecoveryAutoLoadInject(ts, hint)
 	}
 	resp, err := p.RecallLLM(ctx, turnCtx, ts, exec, iteration, helperName, setupFunc)
 	if err != nil || resp == nil {
