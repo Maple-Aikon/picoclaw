@@ -337,7 +337,11 @@ func (c *BaseChannel) HandleMessageWithContext(
 		// "Thinking…" only once the voice has been processed.
 		if !audioAnnotationRe.MatchString(content) {
 			if pc, ok := c.owner.(PlaceholderCapable); ok {
-				if phID, err := pc.SendPlaceholder(ctx, deliveryChatID); err == nil && phID != "" {
+				phID, err := pc.SendPlaceholder(ctx, deliveryChatID)
+				if err != nil {
+					// Best effort: log only, never retry.
+					LogBestEffortFailure(c.name, deliveryChatID, "", "send placeholder (inbound)", err)
+				} else if phID != "" {
 					c.placeholderRecorder.RecordPlaceholder(c.name, deliveryChatID, phID)
 				}
 			}

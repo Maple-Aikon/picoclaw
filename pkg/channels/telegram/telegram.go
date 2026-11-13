@@ -676,7 +676,10 @@ func (c *TelegramChannel) dismissTrackedToolFeedbackMessage(ctx context.Context,
 		return
 	}
 	c.ClearToolFeedbackMessage(chatID)
-	_ = c.DeleteMessage(ctx, chatID, messageID)
+	// Best effort: log only, never retry.
+	if err := c.DeleteMessage(ctx, chatID, messageID); err != nil {
+		channels.LogBestEffortFailure(c.Name(), chatID, messageID, "dismiss tool feedback", err)
+	}
 }
 
 // finalizeTrackedToolFeedbackMessage edits the currently-tracked tool feedback

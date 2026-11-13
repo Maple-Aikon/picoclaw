@@ -353,7 +353,14 @@ func (m *Manager) SendPlaceholder(ctx context.Context, channel, chatID string) b
 		return false
 	}
 	phID, err := pc.SendPlaceholder(ctx, chatID)
-	if err != nil || phID == "" {
+	if err != nil {
+		// Best effort: the placeholder is a UX nicety, not the delivery.
+		// We log it (no retry) so a failing placeholder is visible
+		// instead of silently degrading to "no thinking indicator".
+		LogBestEffortFailure(channel, chatID, "", "send placeholder", err)
+		return false
+	}
+	if phID == "" {
 		return false
 	}
 	m.RecordPlaceholder(channel, chatID, phID)
@@ -443,17 +450,23 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 				if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
 					// Prefer deleting the placeholder (cleaner UX than editing to same content)
 					if deleter, ok := ch.(MessageDeleter); ok {
-						deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
+						// Best effort: log only, never retry.
+						if err := deleter.DeleteMessage(ctx, chatID, entry.id); err != nil {
+							LogBestEffortFailure(name, chatID, entry.id, "delete placeholder", err)
+						}
 					} else if editor, ok := ch.(MessageEditor); ok {
 						if payloadEditor, ok := ch.(MessageEditorWithPayload); ok {
-							_ = payloadEditor.EditMessageWithPayload(
+							if err := payloadEditor.EditMessageWithPayload(
 								ctx,
 								chatID,
 								entry.id,
 								outboundMessageEditPayload(msg, msg.Content),
-							)
-						} else {
-							editor.EditMessage(ctx, chatID, entry.id, msg.Content) // fallback
+							); err != nil {
+								LogBestEffortFailure(name, chatID, entry.id, "edit placeholder (payload)", err)
+							}
+						} else if err := editor.EditMessage(ctx, chatID, entry.id, msg.Content); err != nil {
+							// fallback
+							LogBestEffortFailure(name, chatID, entry.id, "edit placeholder", err)
 						}
 					}
 				}
@@ -489,13 +502,19 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 		if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
 			if isToolFeedback && separateToolFeedbackMessages {
 				if deleter, ok := ch.(MessageDeleter); ok {
-					deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
+					// Best effort: log only, never retry.
+					if err := deleter.DeleteMessage(ctx, chatID, entry.id); err != nil {
+						LogBestEffortFailure(name, chatID, entry.id, "delete placeholder (tool feedback)", err)
+					}
 				}
 				return nil, false
 			}
 			if outboundMessageBypassesPlaceholderEdit(msg) {
 				if deleter, ok := ch.(MessageDeleter); ok {
-					deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
+					// Best effort: log only, never retry.
+					if err := deleter.DeleteMessage(ctx, chatID, entry.id); err != nil {
+						LogBestEffortFailure(name, chatID, entry.id, "delete placeholder (bypass edit)", err)
+					}
 				}
 				return nil, false
 			}
@@ -526,7 +545,36 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 					}
 					return []string{entry.id}, true
 				}
-				// edit failed → fall through to normal Send
+
+				// Edit failed.
+				LogBestEffortFailure(name, chatID, entry.id, "edit placeholder", err)
+
+				// RATE LIMIT (plan telegram-429-flood-classification-fix, §S.5):
+				// falling through to a normal Send here would fire a NEW
+				// request at the exact moment the platform is flood-blocking
+				// us - the one remaining traffic-amplification path.
+				//
+				// So wait for the platform's `retry_after` (capped at
+				// rateLimitMaxWait) BEFORE falling through. The extra Send
+				// then lands after the flood window instead of during it.
+				if errors.Is(err, ErrRateLimit) {
+					wait := rateLimitFallbackWait(err)
+					logger.WarnCF("channels", "placeholder edit rate limited; waiting before falling back to Send", map[string]any{
+						"channel":     name,
+						"chat_id":     chatID,
+						"message_id":  entry.id,
+						"retry_after": RateLimitRetryAfter(err).String(),
+						"wait":        wait.String(),
+					})
+					if !waitForRateLimit(ctx, err) {
+						// Context canceled during the wait: fall through so
+						// the normal Send path reports the failure. Returning
+						// handled=true here would publish a false "sent".
+						return nil, false
+					}
+				}
+
+				// fall through to normal Send
 			}
 		}
 	}
@@ -569,7 +617,10 @@ func (m *Manager) preSendMedia(ctx context.Context, name string, msg bus.Outboun
 	if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
 		if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
 			if deleter, ok := ch.(MessageDeleter); ok {
-				deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
+				// Best effort: log only, never retry.
+				if err := deleter.DeleteMessage(ctx, chatID, entry.id); err != nil {
+					LogBestEffortFailure(name, chatID, entry.id, "delete placeholder (media)", err)
+				}
 			}
 		}
 	}
@@ -680,9 +731,15 @@ func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionK
 		if v, loaded := m.placeholders.LoadAndDelete(placeholderKey); loaded {
 			if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
 				if deleter, ok := ch.(MessageDeleter); ok {
-					deleter.DeleteMessage(finalizeCtx, chatID, entry.id) // best effort
+					// Best effort: log only, never retry.
+					if err := deleter.DeleteMessage(finalizeCtx, chatID, entry.id); err != nil {
+						LogBestEffortFailure(channelName, chatID, entry.id, "delete placeholder (stream finalize)", err)
+					}
 				} else if editor, ok := ch.(MessageEditor); ok {
-					editor.EditMessage(finalizeCtx, chatID, entry.id, finalContent) // best effort fallback
+					// Best effort: log only, never retry.
+					if err := editor.EditMessage(finalizeCtx, chatID, entry.id, finalContent); err != nil {
+						LogBestEffortFailure(channelName, chatID, entry.id, "edit placeholder (stream finalize)", err)
+					}
 				}
 			}
 		}
