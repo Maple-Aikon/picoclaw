@@ -130,8 +130,17 @@ type ServerConnection struct {
 	// P1 (2026-11-16): lifecycle bookkeeping owned by the Manager.
 	// startedAt is when the current process was spawned; lastUsed is the
 	// last time a tool call actually ran against it. Both drive the reaper.
-	startedAt time.Time
-	lastUsed  time.Time
+	//
+	// R9 (2026-11-16): these are stored as atomic int64 (UnixNano), NOT as
+	// time.Time. A time.Time is 24 bytes (wall + ext + loc) and is NOT
+	// written atomically, so a reader could observe a half-written value.
+	// touch() writes lastUsed from the tool-call goroutine without holding
+	// m.mu, while reapExpired() reads it under m.mu.RLock() - the lock did
+	// not protect anything, because the writer never took it. A torn read
+	// produces a garbage instant, which either kills a server that was just
+	// used or keeps an expired server alive.
+	startedAtNano atomic.Int64
+	lastUsedNano  atomic.Int64
 
 	// intentionalKill is set when the Manager itself killed the process
 	// (idle timeout, lifetime timeout, or Close). It distinguishes "we
@@ -140,6 +149,9 @@ type ServerConnection struct {
 	intentionalKill atomic.Bool
 	// procExited is closed once the process is confirmed dead.
 	procExited chan struct{}
+	// transport is the stdio transport that owns the subprocess, kept so
+	// the process exit can be observed from more than one place (R13).
+	transport *isolatedCommandTransport
 }
 
 // Manager manages multiple MCP server connections
@@ -150,6 +162,16 @@ type Manager struct {
 	closed             atomic.Bool    // changed from bool to atomic.Bool to avoid TOCTOU race
 	wg                 sync.WaitGroup // tracks in-flight CallTool calls
 	defaultCallTimeout time.Duration  // default timeout for tool calls (0 = use fallback)
+
+	// R8 (2026-11-16): the configuration of every known server, kept even
+	// while the server is not connected.
+	//
+	// The reaper removes a server from m.servers when it hits the idle or
+	// lifetime timeout. Without this map the Manager could not bring the
+	// server back, and every tool of that server would fail forever with
+	// "server X not found" until the gateway restarted. That is what the
+	// live run on 2026-11-16 at 15:59 actually showed.
+	serverConfigs map[string]config.MCPServerConfig
 
 	// P0b (2026-11-16): explicit timeout policy. These bound how long a
 	// server process may live and how long a reconnect handshake may take.
@@ -203,6 +225,7 @@ type ServerEventPayload struct {
 func NewManager(opts ...ManagerOption) *Manager {
 	m := &Manager{
 		servers:          make(map[string]*ServerConnection),
+		serverConfigs:    make(map[string]config.MCPServerConfig),
 		idleTimeout:      defaultMCPIdleTimeout,
 		maxLifetime:      defaultMCPMaxLifetime,
 		reconnectTimeout: defaultMCPReconnectTimeout,
@@ -373,6 +396,9 @@ func (m *Manager) ConnectServer(
 	}
 
 	m.servers[name] = conn
+	// R8 (2026-11-16): remember the configuration so the server can be
+	// re-spawned later, even after the reaper removed it from m.servers.
+	m.serverConfigs[name] = cfg
 	for _, tool := range conn.Tools {
 		toolName := ""
 		if tool != nil {
@@ -573,10 +599,16 @@ func connectServer(
 		Session:       session,
 		Tools:         tools,
 		SubprocessPID: subprocessPID,
-		startedAt:     now,
-		lastUsed:      now,
 		procExited:    make(chan struct{}),
 	}
+	// R13 (2026-11-16): keep the transport so the exit result can be
+	// observed from more than one place (the Manager's waiter and any
+	// test that wants to watch the process exit).
+	if ict, ok := transport.(*isolatedCommandTransport); ok {
+		conn.transport = ict
+	}
+	conn.startedAtNano.Store(now.UnixNano())
+	conn.lastUsedNano.Store(now.UnixNano())
 
 	// P1 (2026-11-16): observe the process exit so the connection knows
 	// whether the subprocess is still alive.
@@ -602,12 +634,28 @@ func connectServer(
 // already dead" without relying on /proc, which reports zombies as present
 // and that made an earlier version of this code report dead processes as
 // alive (contract C8).
+//
+// R10 (2026-11-16): the wait must NOT be bounded by a short timeout. The
+// previous version gave up after 60 seconds, which is shorter than the
+// idle timeout (10m) and the max lifetime (2h) - so for every server that
+// was reaped by the policy, the waiter had ALREADY timed out and gave up
+// long before the kill happened. The consequences were measured live on
+// 2026-11-16:
+//
+//	15:45:31  server spawned
+//	15:46:31  waiter gave up (60s timeout) - the process is still alive
+//	15:56:01  idle_timeout kill -> NO "MCP subprocess exited" row,
+//	          procExited never closed, isProcessAlive() lied.
 func waitForProcessExit(ict *isolatedCommandTransport, conn *ServerConnection) {
 	if ict == nil || conn == nil {
 		return
 	}
 	go func() {
-		err, ok := ict.waitResult(60 * time.Second)
+		// No timeout: the waiter lives as long as the subprocess does.
+		// The transport's waitCh holds the result, and waitResult is
+		// tolerant of repeated calls, so this goroutine parks here until
+		// the process really exits.
+		err, ok := ict.waitResult(0)
 		if !ok {
 			return
 		}
@@ -620,7 +668,7 @@ func waitForProcessExit(ict *isolatedCommandTransport, conn *ServerConnection) {
 				"pid":              conn.SubprocessPID,
 				"err":              errString(err),
 				"intentional_kill": conn.intentionalKill.Load(),
-				"lifetime_ms":      time.Since(conn.startedAt).Milliseconds(),
+				"lifetime_ms":      time.Since(conn.startedAt()).Milliseconds(),
 			})
 	}()
 }
@@ -677,7 +725,23 @@ func (m *Manager) CallTool(
 	m.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("server %s not found", serverName)
+		// R8 (2026-11-16): the server is not connected. That is NOT an
+		// error the caller should see: the reaper removes idle servers on
+		// purpose, and the next tool call has to bring them back.
+		//
+		// Measured live on 2026-11-16: after the idle-timeout kill, a tool
+		// call failed with "MCP tool execution failed: server planning-mcp
+		// not found" - and every later call would fail the same way, because
+		// nothing else ever re-created the server.
+		//
+		// The re-spawn must NOT inherit the caller's context: that was the
+		// original bug (P0a). The handshake gets its own bounded context.
+		reconnected, err := m.lazyReconnect(ctx, serverName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reconnect MCP server %s: %w", serverName, err)
+		}
+		conn = reconnected
+		m.wg.Add(1)
 	}
 	defer m.wg.Done()
 
@@ -1036,20 +1100,16 @@ func (m *Manager) reapExpired() {
 		if conn == nil {
 			continue
 		}
-		if idle := m.serverIdleTimeout(conn); idle > 0 && !conn.startedAt.IsZero() {
+		if idle := m.serverIdleTimeout(conn); idle > 0 && !conn.startedAt().IsZero() {
 			// lastUsed is bumped on every tool call; fall back to startedAt
 			// so a server that was never called is still measured.
-			last := conn.lastUsed
-			if last.IsZero() {
-				last = conn.startedAt
-			}
-			if now.Sub(last) > idle {
+			if conn.idleSince() > idle {
 				victims = append(victims, victim{name, conn, "idle_timeout"})
 				continue
 			}
 		}
-		if maxLife := m.serverMaxLifetime(conn); maxLife > 0 && !conn.startedAt.IsZero() {
-			if now.Sub(conn.startedAt) > maxLife {
+		if maxLife := m.serverMaxLifetime(conn); maxLife > 0 && !conn.startedAt().IsZero() {
+			if now.Sub(conn.startedAt()) > maxLife {
 				victims = append(victims, victim{name, conn, "max_lifetime"})
 			}
 		}
@@ -1082,8 +1142,8 @@ func (m *Manager) killServer(name string, conn *ServerConnection, reason string)
 			"server":      name,
 			"reason":      reason,
 			"pid":         pid,
-			"idle_for_ms": time.Since(conn.lastUsed).Milliseconds(),
-			"lifetime_ms": time.Since(conn.startedAt).Milliseconds(),
+			"idle_for_ms": conn.idleSince().Milliseconds(),
+			"lifetime_ms": time.Since(conn.startedAt()).Milliseconds(),
 		})
 
 	// Kill the whole process group so wrapper children die too.
@@ -1093,6 +1153,78 @@ func (m *Manager) killServer(name string, conn *ServerConnection, reason string)
 	_ = conn.Session.Close()
 }
 
+// lazyReconnect re-spawns a server that is not currently connected.
+//
+// R8 (2026-11-16). The reaper removes idle servers from m.servers on
+// purpose. Without this path every tool of a reaped server would fail
+// forever with "server X not found" - measured live on 2026-11-16.
+//
+// The handshake context is derived from Background with the configured
+// reconnect timeout, NOT from the caller's context. Binding the new
+// process to the caller's context is exactly the bug P0a fixed: the
+// process was SIGKILLed the moment the tool call returned.
+func (m *Manager) lazyReconnect(ctx context.Context, serverName string) (*ServerConnection, error) {
+	if m.closed.Load() {
+		return nil, fmt.Errorf("manager is closed")
+	}
+
+	m.mu.RLock()
+	cfg, known := m.serverConfigs[serverName]
+	// A concurrent call may have re-connected the server already.
+	if conn, ok := m.servers[serverName]; ok {
+		m.mu.RUnlock()
+		return conn, nil
+	}
+	m.mu.RUnlock()
+
+	if !known {
+		return nil, fmt.Errorf("server %s not found", serverName)
+	}
+
+	// P0a: the spawn must outlive the caller's context.
+	handshakeCtx, cancel := context.WithTimeout(context.Background(), m.reconnectTimeout)
+	defer cancel()
+
+	conn, err := connectServerFunc(handshakeCtx, serverName, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("reconnect handshake failed: %w", err)
+	}
+
+	m.mu.Lock()
+	if m.closed.Load() {
+		m.mu.Unlock()
+		_ = conn.Session.Close()
+		return nil, fmt.Errorf("manager is closed")
+	}
+	// Another goroutine may have connected it in the meantime - keep that
+	// one and drop ours, so there is never more than one process per server.
+	if existing, ok := m.servers[serverName]; ok {
+		m.mu.Unlock()
+		_ = conn.Session.Close()
+		return existing, nil
+	}
+	m.servers[serverName] = conn
+	m.mu.Unlock()
+
+	logger.InfoCF("mcp", "Reconnected MCP server on demand",
+		map[string]any{
+			"server": serverName,
+			"pid":    conn.SubprocessPID,
+			"reason": "not_connected",
+		})
+	for _, tool := range conn.Tools {
+		toolName := ""
+		if tool != nil {
+			toolName = tool.Name
+		}
+		m.publishToolDiscovered(serverName, cfg, toolName)
+	}
+	m.publishServerEvent(runtimeevents.KindMCPServerConnected, serverName, cfg, len(conn.Tools), nil)
+
+	return conn, nil
+}
+
+// reconnectServer re-creates a connection for a server whose session died.
 func (m *Manager) reconnectServer(
 	ctx context.Context,
 	serverName string,
@@ -1152,11 +1284,63 @@ func (m *Manager) reconnectServer(
 }
 
 // touch records that the server was just used, resetting the idle timer.
+//
+// R9 (2026-11-16): the timestamp is stored atomically. A plain
+// time.Time field would be written non-atomically while the reaper reads
+// it concurrently, which can produce a torn (garbage) instant.
 func (c *ServerConnection) touch() {
 	if c == nil {
 		return
 	}
-	c.lastUsed = time.Now()
+	c.lastUsedNano.Store(time.Now().UnixNano())
+}
+
+// startedAt returns the spawn time of the current subprocess.
+func (c *ServerConnection) startedAt() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	n := c.startedAtNano.Load()
+	if n == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n)
+}
+
+// lastUsed returns the time of the last tool call against this server.
+func (c *ServerConnection) lastUsed() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	n := c.lastUsedNano.Load()
+	if n == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n)
+}
+
+// idleSince returns how long the server has been idle.
+//
+// It falls back to the spawn time when the server was never called, so a
+// freshly spawned server that nobody uses still ages out. The result is
+// never negative: a clock adjustment backwards would otherwise make the
+// reaper believe a just-used server has been idle for hours.
+func (c *ServerConnection) idleSince() time.Duration {
+	if c == nil {
+		return 0
+	}
+	last := c.lastUsed()
+	if last.IsZero() {
+		last = c.startedAt()
+	}
+	if last.IsZero() {
+		return 0
+	}
+	idle := time.Since(last)
+	if idle < 0 {
+		return 0
+	}
+	return idle
 }
 
 // isProcessAlive reports whether the subprocess is still running.
@@ -1213,8 +1397,8 @@ func (m *Manager) logSessionLoss(
 		return
 	}
 	fields["pid"] = conn.SubprocessPID
-	fields["lifetime_ms"] = time.Since(conn.startedAt).Milliseconds()
-	fields["idle_ms"] = time.Since(conn.lastUsed).Milliseconds()
+	fields["lifetime_ms"] = time.Since(conn.startedAt()).Milliseconds()
+	fields["idle_ms"] = conn.idleSince().Milliseconds()
 	fields["intentional_kill"] = conn.intentionalKill.Load()
 	if !conn.isProcessAlive() {
 		fields["cause"] = "process_dead"
