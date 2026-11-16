@@ -126,6 +126,20 @@ type ServerConnection struct {
 	Tools         []*mcp.Tool
 	SubprocessPID int // PID of underlying stdio subprocess (0 = not stdio / not tracked)
 	reconnectMu   sync.Mutex
+
+	// P1 (2026-11-16): lifecycle bookkeeping owned by the Manager.
+	// startedAt is when the current process was spawned; lastUsed is the
+	// last time a tool call actually ran against it. Both drive the reaper.
+	startedAt time.Time
+	lastUsed  time.Time
+
+	// intentionalKill is set when the Manager itself killed the process
+	// (idle timeout, lifetime timeout, or Close). It distinguishes "we
+	// killed it" from "it died on its own", which decides whether the next
+	// tool call reconnects silently or surfaces an error.
+	intentionalKill atomic.Bool
+	// procExited is closed once the process is confirmed dead.
+	procExited chan struct{}
 }
 
 // Manager manages multiple MCP server connections
@@ -136,7 +150,31 @@ type Manager struct {
 	closed             atomic.Bool    // changed from bool to atomic.Bool to avoid TOCTOU race
 	wg                 sync.WaitGroup // tracks in-flight CallTool calls
 	defaultCallTimeout time.Duration  // default timeout for tool calls (0 = use fallback)
+
+	// P0b (2026-11-16): explicit timeout policy. These bound how long a
+	// server process may live and how long a reconnect handshake may take.
+	// They are what makes "MCP never runs forever" true, independently of
+	// whatever context the caller happens to hold.
+	idleTimeout      time.Duration
+	maxLifetime      time.Duration
+	reconnectTimeout time.Duration
+
+	// reaperStop ends the reaper goroutine when the Manager closes.
+	reaperStop chan struct{}
+	reaperDone chan struct{}
 }
+
+// Default timeout policy for MCP servers. Chosen by Maple on 2026-11-16.
+const (
+	defaultMCPIdleTimeout      = 10 * time.Minute
+	defaultMCPMaxLifetime      = 2 * time.Hour
+	defaultMCPReconnectTimeout = 30 * time.Second
+	// mcpReaperInterval is how often the reaper scans for expired servers.
+	// The effective idle kill window is therefore idle_timeout..idle_timeout+interval.
+	mcpReaperInterval = 30 * time.Second
+	// mcpKillGrace is how long a killed process group gets to exit politely.
+	mcpKillGrace = 5 * time.Second
+)
 
 var connectServerFunc = connectServer
 
@@ -164,13 +202,19 @@ type ServerEventPayload struct {
 // NewManager creates a new MCP manager
 func NewManager(opts ...ManagerOption) *Manager {
 	m := &Manager{
-		servers: make(map[string]*ServerConnection),
+		servers:          make(map[string]*ServerConnection),
+		idleTimeout:      defaultMCPIdleTimeout,
+		maxLifetime:      defaultMCPMaxLifetime,
+		reconnectTimeout: defaultMCPReconnectTimeout,
+		reaperStop:       make(chan struct{}),
+		reaperDone:       make(chan struct{}),
 	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(m)
 		}
 	}
+	go m.reaper()
 	return m
 }
 
@@ -193,6 +237,19 @@ func (m *Manager) LoadFromMCPConfig(
 
 	// Parse default call timeout
 	m.defaultCallTimeout = parseTimeout(mcpCfg.DefaultCallTimeout)
+
+	// P0b (2026-11-16): parse the explicit timeout policy. An empty string
+	// means "use the built-in default"; an explicit "0" means "disabled".
+	m.idleTimeout = resolvePolicyTimeout(mcpCfg.IdleTimeout, defaultMCPIdleTimeout)
+	m.maxLifetime = resolvePolicyTimeout(mcpCfg.MaxLifetime, defaultMCPMaxLifetime)
+	m.reconnectTimeout = resolvePolicyTimeout(mcpCfg.ReconnectTimeout, defaultMCPReconnectTimeout)
+
+	logger.InfoCF("mcp", "MCP timeout policy resolved",
+		map[string]any{
+			"idle_timeout":      m.idleTimeout.String(),
+			"max_lifetime":      m.maxLifetime.String(),
+			"reconnect_timeout": m.reconnectTimeout.String(),
+		})
 
 	if len(mcpCfg.Servers) == 0 {
 		logger.InfoCF("mcp", "No MCP servers configured", nil)
@@ -406,8 +463,33 @@ func connectServer(
 				"server":  name,
 				"command": cfg.Command,
 			})
-		// Create command with context
-		cmd := exec.CommandContext(ctx, expandHomeCommandPath(cfg.Command), cfg.Args...)
+		// P0a (2026-11-16): the subprocess lifetime is owned by the Manager,
+		// NOT by the caller's context.
+		//
+		// Before this fix the command was built with exec.CommandContext(ctx, …),
+		// which makes os/exec install a watchCtx goroutine that SIGKILLs the
+		// process the moment ctx is canceled (Go os/exec exec.go:484/780).
+		// The ctx that reaches here is the caller's ctx: a tool-call ctx on
+		// reconnect (manager.go:656) and a 30s reloadCtx on config reload
+		// (gateway.go:654). Either way the MCP process died seconds after it
+		// was spawned, the stdout pipe EOFed, and the SDK reported
+		// "client is closing: EOF".
+		//
+		// Measured live before the fix: 105 "session was lost" events, 104 of
+		// them on context-mode (DIRECT node) and 1 on codebase-memory
+		// (DIRECT C binary) - every WRAPPER server (uv/uvx/npx) was at 0,
+		// because killing a wrapper leaves its child holding the pipe open.
+		//
+		// ctx is still honored for the handshake below (client.Connect +
+		// listServerTools): if the handshake hangs, it aborts. Only the
+		// process lifetime is decoupled.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("context already done before spawning %s: %w", name, err)
+		}
+		cmd := exec.Command(expandHomeCommandPath(cfg.Command), cfg.Args...)
+		// P1 (2026-11-16): own process group so killing the group also kills
+		// wrapper children (uv/npx) that would otherwise be orphaned.
+		configureProcessGroup(cmd)
 
 		// Build environment variables with proper override semantics
 		// Use a map to ensure config variables override file variables
@@ -483,14 +565,71 @@ func connectServer(
 	if ict, ok := transport.(*isolatedCommandTransport); ok && ict.Command != nil && ict.Command.Process != nil {
 		subprocessPID = ict.Command.Process.Pid
 	}
-	return &ServerConnection{
+	now := time.Now()
+	conn := &ServerConnection{
 		Name:          name,
 		Config:        cfg,
 		Client:        client,
 		Session:       session,
 		Tools:         tools,
 		SubprocessPID: subprocessPID,
-	}, nil
+		startedAt:     now,
+		lastUsed:      now,
+		procExited:    make(chan struct{}),
+	}
+
+	// P1 (2026-11-16): observe the process exit so the connection knows
+	// whether the subprocess is still alive.
+	//
+	// cmd.Wait() is owned by the transport (see
+	// isolatedCommandTransport.startWaiter) - Go's os/exec allows exactly one
+	// Wait per Cmd, and a second call fails with "waitid: no child
+	// processes". We observe the transport's wait channel instead of
+	// calling Wait() again.
+	//
+	// Before the fix cmd.Wait() ran only from isolatedPipeRWC.Close(), so a
+	// process killed by any other path stayed a zombie forever. Measured
+	// live: 6 "[uv] <defunct>" zombies accumulated under the gateway.
+	if ict, ok := transport.(*isolatedCommandTransport); ok && ict.Command != nil {
+		waitForProcessExit(ict, conn)
+	}
+	return conn, nil
+}
+
+// waitForProcessExit closes conn.procExited once the subprocess is gone.
+//
+// Callers use it to distinguish "process still running" from "process
+// already dead" without relying on /proc, which reports zombies as present
+// and that made an earlier version of this code report dead processes as
+// alive (contract C8).
+func waitForProcessExit(ict *isolatedCommandTransport, conn *ServerConnection) {
+	if ict == nil || conn == nil {
+		return
+	}
+	go func() {
+		err, ok := ict.waitResult(60 * time.Second)
+		if !ok {
+			return
+		}
+		if conn.procExited != nil {
+			close(conn.procExited)
+		}
+		logger.InfoCF("mcp", "MCP subprocess exited",
+			map[string]any{
+				"server":           conn.Name,
+				"pid":              conn.SubprocessPID,
+				"err":              errString(err),
+				"intentional_kill": conn.intentionalKill.Load(),
+				"lifetime_ms":      time.Since(conn.startedAt).Milliseconds(),
+			})
+	}()
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // GetServers returns all connected servers
@@ -546,6 +685,10 @@ func (m *Manager) CallTool(
 	timeout := resolveTimeout(conn.Config, m.defaultCallTimeout, toolName)
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	// P0b (2026-11-16): record activity so the reaper's idle timer starts
+	// from the last real use, not from the moment the server was spawned.
+	conn.touch()
 
 	params := &mcp.CallToolParams{
 		Name:      toolName,
@@ -620,12 +763,17 @@ func (m *Manager) CallTool(
 			case <-time.After(3 * time.Second):
 			}
 
-			// Reconnect with its own bounded timeout — never use parent ctx (may have
-			// no deadline, or be canceled already). Cap at 30s to avoid hanging on
-			// a stuck subprocess during reconnect (covers cold start, FS lock, etc.).
-			reconnectCtx, reconnectCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			// Reconnect with its own bounded timeout - never use parent ctx (may have
+			// no deadline, or be canceled already). Cap at the configured
+			// reconnect timeout to avoid hanging on a stuck subprocess during
+			// reconnect (covers cold start, FS lock, etc.).
+			//
+			// P0a (2026-11-16): the cancel is deferred, not called immediately.
+			// Cancelling the handshake ctx right after reconnectServer returns
+			// would kill the process we just spawned.
+			reconnectCtx, reconnectCancel := context.WithTimeout(context.Background(), m.reconnectTimeout)
+			defer reconnectCancel()
 			reconnectedConn, reconnectErr := m.reconnectServer(reconnectCtx, serverName, conn)
-			reconnectCancel()
 			if reconnectErr != nil {
 				return nil, fmt.Errorf("tool %q timed out after %v and reconnect failed: %w",
 					toolName, timeout, reconnectErr)
@@ -646,6 +794,12 @@ func (m *Manager) CallTool(
 		}
 
 		if shouldReconnectCallError(err) {
+			// P0c (2026-11-16): instrument the cause BEFORE reconnecting.
+			// Without this, "EOF" has no attribution and every fix is a guess
+			// (contract C6). We report whether the subprocess was still
+			// alive, whether we killed it ourselves, and how old it was.
+			m.logSessionLoss(serverName, toolName, conn, err)
+
 			logger.WarnCF("mcp", "MCP server session was lost during tool call, reconnecting",
 				map[string]any{
 					"server": serverName,
@@ -653,7 +807,25 @@ func (m *Manager) CallTool(
 					"error":  err.Error(),
 				})
 
-			reconnectedConn, reconnectErr := m.reconnectServer(ctx, serverName, conn)
+			// P0a (2026-11-16): the reconnect must NOT inherit the tool-call
+			// context. Before the fix this passed the caller's ctx straight
+			// into connectServer, so the freshly spawned process was bound
+			// to a context that was canceled the moment the tool call
+			// returned - the process was SIGKILLed seconds after it started.
+			//
+			// The reconnect gets its own bounded context instead: it may
+			// outlive the tool call (that is the point) but it is still
+			// bounded by the configured reconnect timeout.
+			//
+			// IMPORTANT: since P0a the subprocess is NOT bound to this ctx
+			// any more (connectServer uses exec.Command, not
+			// exec.CommandContext), so cancelling the handshake ctx can no
+			// longer kill the process. Deferring the cancel is therefore
+			// safe AND it releases the timer promptly.
+			reconnectCtx, reconnectCancel := context.WithTimeout(
+				context.Background(), m.reconnectTimeout)
+			defer reconnectCancel()
+			reconnectedConn, reconnectErr := m.reconnectServer(reconnectCtx, serverName, conn)
 			if reconnectErr != nil {
 				return nil, fmt.Errorf("failed to recover lost MCP session: %w", reconnectErr)
 			}
@@ -775,6 +947,152 @@ func resolveTimeout(
 	return defaultToolCallTimeout
 }
 
+// resolvePolicyTimeout parses a policy duration.
+//
+// Semantics:
+//   - ""  -> use the built-in default (the policy is enabled)
+//   - "0" -> the policy is explicitly DISABLED for this scope
+//   - anything else that parses -> that duration
+//   - unparseable -> the built-in default (fail safe: keep the guard on)
+func resolvePolicyTimeout(raw string, def time.Duration) time.Duration {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return def
+	}
+	d, err := time.ParseDuration(trimmed)
+	if err != nil {
+		logger.WarnCF("mcp", "Invalid timeout policy value, using default",
+			map[string]any{"value": raw, "default": def.String()})
+		return def
+	}
+	if d < 0 {
+		return def
+	}
+	return d
+}
+
+// serverIdleTimeout resolves the idle timeout for one server, letting the
+// per-server setting override the global one.
+func (m *Manager) serverIdleTimeout(conn *ServerConnection) time.Duration {
+	if conn == nil {
+		return m.idleTimeout
+	}
+	if v := strings.TrimSpace(conn.Config.IdleTimeout); v != "" {
+		return resolvePolicyTimeout(v, m.idleTimeout)
+	}
+	return m.idleTimeout
+}
+
+// serverMaxLifetime resolves the max lifetime for one server, letting the
+// per-server setting override the global one.
+func (m *Manager) serverMaxLifetime(conn *ServerConnection) time.Duration {
+	if conn == nil {
+		return m.maxLifetime
+	}
+	if v := strings.TrimSpace(conn.Config.MaxLifetime); v != "" {
+		return resolvePolicyTimeout(v, m.maxLifetime)
+	}
+	return m.maxLifetime
+}
+
+// reaper enforces the timeout policy: it kills servers that sat idle for
+// too long, and servers that have been alive for longer than their maximum
+// lifetime. Without this, "MCP never runs forever" was only true because
+// something else happened to kill the process - never by design.
+//
+// The kill removes the server from the map, so the next tool call lazily
+// reconnects. That reconnect is invisible to the user apart from a short
+// cold-start delay.
+func (m *Manager) reaper() {
+	defer close(m.reaperDone)
+	ticker := time.NewTicker(mcpReaperInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.reaperStop:
+			return
+		case <-ticker.C:
+			m.reapExpired()
+		}
+	}
+}
+
+// reapExpired scans every tracked server and kills the expired ones.
+func (m *Manager) reapExpired() {
+	if m.closed.Load() {
+		return
+	}
+	now := time.Now()
+
+	type victim struct {
+		name string
+		conn *ServerConnection
+		why  string
+	}
+	var victims []victim
+
+	m.mu.RLock()
+	for name, conn := range m.servers {
+		if conn == nil {
+			continue
+		}
+		if idle := m.serverIdleTimeout(conn); idle > 0 && !conn.startedAt.IsZero() {
+			// lastUsed is bumped on every tool call; fall back to startedAt
+			// so a server that was never called is still measured.
+			last := conn.lastUsed
+			if last.IsZero() {
+				last = conn.startedAt
+			}
+			if now.Sub(last) > idle {
+				victims = append(victims, victim{name, conn, "idle_timeout"})
+				continue
+			}
+		}
+		if maxLife := m.serverMaxLifetime(conn); maxLife > 0 && !conn.startedAt.IsZero() {
+			if now.Sub(conn.startedAt) > maxLife {
+				victims = append(victims, victim{name, conn, "max_lifetime"})
+			}
+		}
+	}
+	m.mu.RUnlock()
+
+	for _, v := range victims {
+		m.killServer(v.name, v.conn, v.why)
+	}
+}
+
+// killServer terminates a server process (and its process group) and drops it
+// from the map so the next tool call reconnects cleanly.
+func (m *Manager) killServer(name string, conn *ServerConnection, reason string) {
+	if conn == nil {
+		return
+	}
+	conn.intentionalKill.Store(true)
+
+	// Remove it from the map first so no new call can grab it.
+	m.mu.Lock()
+	if current, ok := m.servers[name]; ok && current == conn {
+		delete(m.servers, name)
+	}
+	m.mu.Unlock()
+
+	pid := conn.SubprocessPID
+	logger.InfoCF("mcp", "Killing MCP server by timeout policy",
+		map[string]any{
+			"server":      name,
+			"reason":      reason,
+			"pid":         pid,
+			"idle_for_ms": time.Since(conn.lastUsed).Milliseconds(),
+			"lifetime_ms": time.Since(conn.startedAt).Milliseconds(),
+		})
+
+	// Kill the whole process group so wrapper children die too.
+	killProcessGroup(pid, mcpKillGrace)
+
+	// Close the session to release SDK resources and close the pipes.
+	_ = conn.Session.Close()
+}
+
 func (m *Manager) reconnectServer(
 	ctx context.Context,
 	serverName string,
@@ -833,12 +1151,95 @@ func (m *Manager) reconnectServer(
 	return currentConn, nil
 }
 
+// touch records that the server was just used, resetting the idle timer.
+func (c *ServerConnection) touch() {
+	if c == nil {
+		return
+	}
+	c.lastUsed = time.Now()
+}
+
+// isProcessAlive reports whether the subprocess is still running.
+//
+// It waits on procExited (closed by the waiter goroutine when the process
+// dies) instead of checking /proc, because /proc lists zombies as present
+// and that made an earlier version of this code report dead processes as
+// alive (contract C8).
+func (c *ServerConnection) isProcessAlive() bool {
+	if c == nil {
+		return false
+	}
+	if c.SubprocessPID <= 0 {
+		return false
+	}
+	if c.procExited == nil {
+		return true
+	}
+	select {
+	case <-c.procExited:
+		return false
+	default:
+		return true
+	}
+}
+
+// logSessionLoss is the P0c instrumentation: it attributes a session loss to
+// a cause so that "EOF" stops being an unattributed symptom.
+//
+// Causes reported:
+//   - "process_dead"          the subprocess exited on its own
+//   - "process_alive"         the subprocess is still running, so the pipe
+//     broke for another reason (server-side close, protocol error)
+//   - "killed_by_policy"      the Manager killed it (idle/lifetime)
+//   - "not_stdio"             no tracked subprocess (HTTP/SSE transport)
+func (m *Manager) logSessionLoss(
+	serverName, toolName string,
+	conn *ServerConnection,
+	cause error,
+) {
+	fields := map[string]any{
+		"server": serverName,
+		"tool":   toolName,
+		"error":  cause.Error(),
+	}
+	if conn == nil {
+		fields["cause"] = "unknown_no_connection"
+		logger.WarnCF("mcp", "MCP session loss cause", fields)
+		return
+	}
+	if conn.SubprocessPID <= 0 {
+		fields["cause"] = "not_stdio"
+		logger.WarnCF("mcp", "MCP session loss cause", fields)
+		return
+	}
+	fields["pid"] = conn.SubprocessPID
+	fields["lifetime_ms"] = time.Since(conn.startedAt).Milliseconds()
+	fields["idle_ms"] = time.Since(conn.lastUsed).Milliseconds()
+	fields["intentional_kill"] = conn.intentionalKill.Load()
+	if !conn.isProcessAlive() {
+		fields["cause"] = "process_dead"
+	} else if conn.intentionalKill.Load() {
+		fields["cause"] = "killed_by_policy"
+	} else {
+		fields["cause"] = "process_alive"
+	}
+	logger.WarnCF("mcp", "MCP session loss cause", fields)
+}
+
 // Close closes all server connections
 func (m *Manager) Close() error {
 	// Use Swap to atomically set closed=true and get the previous value
 	// This prevents TOCTOU race with CallTool's closed check
 	if m.closed.Swap(true) {
 		return nil // already closed
+	}
+
+	// Stop the reaper so it does not race with the teardown below.
+	if m.reaperStop != nil {
+		close(m.reaperStop)
+	}
+	if m.reaperDone != nil {
+		<-m.reaperDone
 	}
 
 	// Wait for all in-flight CallTool calls to finish before closing sessions
@@ -855,13 +1256,33 @@ func (m *Manager) Close() error {
 
 	var errs []error
 	for name, conn := range m.servers {
+		// P1 (2026-11-16): kill the whole process group, not just the
+		// session. Session.Close() only closes the pipes; wrapper children
+		// (uv/npx) would survive as orphans.
+		intentional := false
+		if conn != nil {
+			conn.intentionalKill.Store(true)
+			intentional = true
+			killProcessGroup(conn.SubprocessPID, mcpKillGrace)
+		}
 		if err := conn.Session.Close(); err != nil {
-			logger.ErrorCF("mcp", "Failed to close server connection",
-				map[string]any{
-					"server": name,
-					"error":  err.Error(),
-				})
-			errs = append(errs, fmt.Errorf("server %s: %w", name, err))
+			// We killed the process ourselves, so the SDK reports the
+			// termination as an error ("signal: terminated"). That is the
+			// expected outcome of an intentional shutdown, not a failure.
+			if intentional {
+				logger.DebugCF("mcp", "MCP session closed after intentional kill",
+					map[string]any{
+						"server": name,
+						"error":  err.Error(),
+					})
+			} else {
+				logger.ErrorCF("mcp", "Failed to close server connection",
+					map[string]any{
+						"server": name,
+						"error":  err.Error(),
+					})
+				errs = append(errs, fmt.Errorf("server %s: %w", name, err))
+			}
 		}
 	}
 

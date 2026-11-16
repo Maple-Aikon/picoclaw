@@ -23,6 +23,43 @@ var isolatedCommandTerminateDuration = 5 * time.Second
 type isolatedCommandTransport struct {
 	Command           *exec.Cmd
 	TerminateDuration time.Duration
+
+	// waitOnce guards the single cmd.Wait() call.
+	//
+	// Before 2026-11-16 two different places called cmd.Wait(): this file's
+	// Close() and the Manager's process waiter. Go's os/exec allows only one
+	// Wait per Cmd - the second call fails with "waitid: no child
+	// processes", which surfaced as a Close() error.
+	//
+	// The transport owns the wait now: it starts one waiter goroutine at
+	// Connect time and both Close() and the Manager observe its result.
+	waitOnce sync.Once
+	waitCh   chan error
+}
+
+func (t *isolatedCommandTransport) startWaiter() {
+	if t.waitCh != nil {
+		return
+	}
+	t.waitCh = make(chan error, 1)
+	go func() {
+		t.waitCh <- t.Command.Wait()
+	}()
+}
+
+// waitResult waits for the process exit result, tolerating repeated calls.
+func (t *isolatedCommandTransport) waitResult(timeout time.Duration) (error, bool) {
+	if t.waitCh == nil {
+		t.startWaiter()
+	}
+	select {
+	case err := <-t.waitCh:
+		// Put it back so later callers see the same result.
+		t.waitCh <- err
+		return err, true
+	case <-time.After(timeout):
+		return nil, false
+	}
 }
 
 func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connection, error) {
@@ -42,7 +79,17 @@ func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connecti
 	if td <= 0 {
 		td = isolatedCommandTerminateDuration
 	}
-	return newIsolatedIOConn(&isolatedPipeRWC{cmd: t.Command, stdout: stdout, stdin: stdin, terminateDuration: td}), nil
+	// P1 (2026-11-16): start the single waiter goroutine here. From this
+	// point on, cmd.Wait() is owned by the transport - neither Close() nor
+	// the Manager may call it again.
+	t.startWaiter()
+	return newIsolatedIOConn(&isolatedPipeRWC{
+		cmd:               t.Command,
+		stdout:            stdout,
+		stdin:             stdin,
+		terminateDuration: td,
+		transport:         t,
+	}), nil
 }
 
 type isolatedPipeRWC struct {
@@ -50,6 +97,7 @@ type isolatedPipeRWC struct {
 	stdout            io.ReadCloser
 	stdin             io.WriteCloser
 	terminateDuration time.Duration
+	transport         *isolatedCommandTransport
 }
 
 func (s *isolatedPipeRWC) Read(p []byte) (n int, err error) {
@@ -64,9 +112,16 @@ func (s *isolatedPipeRWC) Close() error {
 	if err := s.stdin.Close(); err != nil {
 		return fmt.Errorf("closing stdin: %w", err)
 	}
+	// The transport owns the single cmd.Wait() call (see
+	// isolatedCommandTransport.startWaiter); this method must not call
+	// cmd.Wait() again or Go reports "waitid: no child processes".
 	resChan := make(chan error, 1)
 	go func() {
-		resChan <- s.cmd.Wait()
+		err, ok := s.transport.waitResult(s.terminateDuration)
+		if !ok {
+			err = fmt.Errorf("subprocess did not exit within %s", s.terminateDuration)
+		}
+		resChan <- err
 	}()
 	wait := func() (error, bool) {
 		select {

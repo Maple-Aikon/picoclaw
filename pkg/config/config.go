@@ -441,11 +441,11 @@ type SubTurnConfig struct {
 }
 
 type ToolFeedbackConfig struct {
-	Enabled           bool `json:"enabled"             env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_ENABLED"`
-	MaxArgsLength     int  `json:"max_args_length"     env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_MAX_ARGS_LENGTH"`
-	SeparateMessages  bool `json:"separate_messages"   env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_SEPARATE_MESSAGES"`
-	PrettyPrint       bool `json:"pretty_print"        env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_PRETTY_PRINT"`
-	DisableEscapeHTML bool `json:"disable_escape_html" env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_DISABLE_ESCAPE_HTML"`
+	Enabled             bool `json:"enabled"             env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_ENABLED"`
+	MaxArgsLength       int  `json:"max_args_length"     env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_MAX_ARGS_LENGTH"`
+	SeparateMessages    bool `json:"separate_messages"   env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_SEPARATE_MESSAGES"`
+	PrettyPrint         bool `json:"pretty_print"        env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_PRETTY_PRINT"`
+	DisableEscapeHTML   bool `json:"disable_escape_html" env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_DISABLE_ESCAPE_HTML"`
 	ExplanationMessages bool `json:"explanation_messages" env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_EXPLANATION_MESSAGES"`
 }
 
@@ -1144,31 +1144,31 @@ type ToolsConfig struct {
 	// TimeoutSeconds is the default per-tool timeout in seconds applied to every
 	// native tool call (Phase 1 + Phase 3 fix). Default 120s. Set to 0 to disable
 	// the feature entirely (Q4 rollback). Per-tool overrides via `<name>.timeout_seconds`.
-	TimeoutSeconds      int                `json:"timeout_seconds"  yaml:"-"                          env:"PICOCLAW_TOOLS_TIMEOUT_SECONDS"`
-	Web                 WebToolsConfig     `json:"web"              yaml:"web,omitempty"`
-	Cron                CronToolsConfig    `json:"cron"             yaml:"-"`
-	Exec                ExecConfig         `json:"exec"             yaml:"-"`
-	Skills              SkillsToolsConfig  `json:"skills"           yaml:"skills,omitempty"`
-	MediaCleanup        MediaCleanupConfig `json:"media_cleanup"    yaml:"-"`
-	MCP                 MCPConfig          `json:"mcp"              yaml:"-"`
-	AppendFile          ToolConfig         `json:"append_file"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_APPEND_FILE_"`
-	EditFile            ToolConfig         `json:"edit_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_EDIT_FILE_"`
-	FindSkills          ToolConfig         `json:"find_skills"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_FIND_SKILLS_"`
-	I2C                 ToolConfig         `json:"i2c"              yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_I2C_"`
-	InstallSkill        ToolConfig         `json:"install_skill"    yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_INSTALL_SKILL_"`
-	ListDir             ToolConfig         `json:"list_dir"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_LIST_DIR_"`
-	LoadImage           ToolConfig         `json:"load_image"       yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_LOAD_IMAGE_"`
-	Message             MessageToolsConfig `json:"message"          yaml:"-"`
-	ReadFile            ReadFileToolConfig `json:"read_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_READ_FILE_"`
-	Serial              ToolConfig         `json:"serial"           yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SERIAL_"`
-	SendFile            ToolConfig         `json:"send_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
-	SendTTS             ToolConfig         `json:"send_tts"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SEND_TTS_"`
-	Spawn               ToolConfig         `json:"spawn"            yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPAWN_"`
-	SpawnStatus         ToolConfig         `json:"spawn_status"     yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
-	SPI                 ToolConfig         `json:"spi"              yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPI_"`
-	Subagent            ToolConfig         `json:"subagent"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
-	WebFetch            ToolConfig         `json:"web_fetch"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
-	WriteFile           ToolConfig         `json:"write_file"       yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
+	TimeoutSeconds int                `json:"timeout_seconds"  yaml:"-"                          env:"PICOCLAW_TOOLS_TIMEOUT_SECONDS"`
+	Web            WebToolsConfig     `json:"web"              yaml:"web,omitempty"`
+	Cron           CronToolsConfig    `json:"cron"             yaml:"-"`
+	Exec           ExecConfig         `json:"exec"             yaml:"-"`
+	Skills         SkillsToolsConfig  `json:"skills"           yaml:"skills,omitempty"`
+	MediaCleanup   MediaCleanupConfig `json:"media_cleanup"    yaml:"-"`
+	MCP            MCPConfig          `json:"mcp"              yaml:"-"`
+	AppendFile     ToolConfig         `json:"append_file"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_APPEND_FILE_"`
+	EditFile       ToolConfig         `json:"edit_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_EDIT_FILE_"`
+	FindSkills     ToolConfig         `json:"find_skills"      yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_FIND_SKILLS_"`
+	I2C            ToolConfig         `json:"i2c"              yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_I2C_"`
+	InstallSkill   ToolConfig         `json:"install_skill"    yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_INSTALL_SKILL_"`
+	ListDir        ToolConfig         `json:"list_dir"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_LIST_DIR_"`
+	LoadImage      ToolConfig         `json:"load_image"       yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_LOAD_IMAGE_"`
+	Message        MessageToolsConfig `json:"message"          yaml:"-"`
+	ReadFile       ReadFileToolConfig `json:"read_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_READ_FILE_"`
+	Serial         ToolConfig         `json:"serial"           yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SERIAL_"`
+	SendFile       ToolConfig         `json:"send_file"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
+	SendTTS        ToolConfig         `json:"send_tts"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SEND_TTS_"`
+	Spawn          ToolConfig         `json:"spawn"            yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPAWN_"`
+	SpawnStatus    ToolConfig         `json:"spawn_status"     yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
+	SPI            ToolConfig         `json:"spi"              yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SPI_"`
+	Subagent       ToolConfig         `json:"subagent"         yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
+	WebFetch       ToolConfig         `json:"web_fetch"        yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
+	WriteFile      ToolConfig         `json:"write_file"       yaml:"-"                                                                envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
 }
 
 // IsFilterSensitiveDataEnabled returns true if sensitive data filtering is enabled
@@ -1324,6 +1324,16 @@ type MCPServerConfig struct {
 	// ToolTimeouts sets per-tool timeout overrides for this server.
 	// Tool-specific timeout takes priority over server-level timeout.
 	ToolTimeouts map[string]string `json:"tool_timeouts,omitempty"`
+	// IdleTimeout is how long this server may sit unused before the Manager
+	// kills it and releases its resources. Format: duration string, e.g. "10m".
+	// "0" disables the idle kill for this server. Empty falls back to the
+	// global MCPConfig.IdleTimeout.
+	IdleTimeout string `json:"idle_timeout,omitempty"`
+	// MaxLifetime is the hard upper bound on how long a single server process
+	// may live before it is recycled, even when it is used continuously.
+	// Format: duration string, e.g. "2h". "0" disables it for this server.
+	// Empty falls back to the global MCPConfig.MaxLifetime.
+	MaxLifetime string `json:"max_lifetime,omitempty"`
 }
 
 // MCPConfig defines configuration for all MCP servers
@@ -1335,6 +1345,17 @@ type MCPConfig struct {
 	// DefaultCallTimeout sets the default timeout for MCP tool calls across all servers.
 	// Default: 60s if not set. Per-server and per-tool timeouts override this.
 	DefaultCallTimeout string `json:"default_call_timeout,omitempty" env:"PICOCLAW_TOOLS_MCP_DEFAULT_CALL_TIMEOUT"`
+	// IdleTimeout is how long any MCP server may sit unused before the
+	// Manager kills it and releases its resources. Format: duration string,
+	// e.g. "10m". Default: 10m. "0" disables the idle kill entirely.
+	IdleTimeout string `json:"idle_timeout,omitempty" env:"PICOCLAW_TOOLS_MCP_IDLE_TIMEOUT"`
+	// MaxLifetime is the hard upper bound on how long a single MCP server
+	// process may live before it is recycled, even under continuous use.
+	// Format: duration string, e.g. "2h". Default: 2h. "0" disables it.
+	MaxLifetime string `json:"max_lifetime,omitempty" env:"PICOCLAW_TOOLS_MCP_MAX_LIFETIME"`
+	// ReconnectTimeout bounds how long a reconnect handshake may take.
+	// Format: duration string, e.g. "30s". Default: 30s.
+	ReconnectTimeout string `json:"reconnect_timeout,omitempty" env:"PICOCLAW_TOOLS_MCP_RECONNECT_TIMEOUT"`
 	// Servers is a map of server name to server configuration
 	Servers map[string]MCPServerConfig `json:"servers,omitempty"`
 }
