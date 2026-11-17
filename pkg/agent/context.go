@@ -1405,13 +1405,7 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 	// call sequence (MiniMax-M3 passive cache hit rate > 0%).
 	// skipWrapDynamic = req.DynamicContext == "" (preserve exact original semantics).
 	userContent := wrapDynamicContext(req.DynamicContext, req.CurrentMessage)
-	if banner := formatDynamicGoalPhaseBanner(req); banner != "" {
-		if strings.TrimSpace(userContent) != "" {
-			userContent = userContent + "\n\n" + banner
-		} else {
-			userContent = banner
-		}
-	}
+
 	// LEVER (a) - 2026-11-10: the phase channel carries the phase-specific
 	// affordance (phase hint + goal snapshot + compass + tool-discovery/MCP
 	// note) that used to live in the SYSTEM prompt.
@@ -1425,23 +1419,52 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 	if len(req.DeferredMCPServers) == 0 {
 		req.DeferredMCPServers = cb.deferredMCPServers
 	}
+
+	// A1 (2026-11-17): the phase affordance (banner + channel) is rendered
+	// HERE only for the DIRECT-CALL path. The PRODUCTION path sets
+	// SuppressPhaseAffordance and gets the affordance APPENDED AT THE
+	// TAIL of the request instead (goal_phase_affordance_tail.go).
 	//
-	// It rides in the SAME user message as the goal_phase banner (the
-	// turn's root user message) so:
-	//   - the system prefix stays byte-constant across phase transitions
-	//     (the whole point of lever (a): measured ~81K token cache tax at
-	//     the OPEN->CHECKPOINT transition before this change);
-	//   - the turn loop's message bookkeeping (currentTurnStart, persisted
-	//     turn tail, media resolution) is untouched - no new message is
-	//     introduced into the array.
+	// WHY: the turn-root user message sits at wire INDEX 2 ([0] system,
+	// [1] assistant, [2] user) with ~138 messages after it. Rendering
+	// phase-dependent text into it means a phase transition changes bytes
+	// in the MIDDLE of the request, which kills the provider prefix cache
+	// for the WHOLE current turn (measured: uncached / this-turn-traffic
+	// ~= 1.00; 80.6% of all uncached tokens were spent at phase
+	// transitions).
 	//
-	// The channel is rendered AFTER the banner so the LLM reads the
-	// phase-specific instructions LAST (closest to the generation point).
-	if channel := buildPhaseChannel(req); channel != "" {
-		if strings.TrimSpace(userContent) != "" {
-			userContent = userContent + "\n\n" + channel
-		} else {
-			userContent = channel
+	// Controlled probe at the API level (real payload + real key):
+	//   V-INPLACE (rewrite in place = old behavior) uncached 18.848
+	//   V-TAIL    (one dedicated USER message at the tail) uncached  3.293
+	//   V-NONE    (control)                             uncached  3.191
+	// => V-TAIL is 5.7x better. See the A1 contract tests C6/C7/C8 in
+	// goal_phase_affordance_tail_test.go.
+	if !req.SuppressPhaseAffordance {
+		if banner := formatDynamicGoalPhaseBanner(req); banner != "" {
+			if strings.TrimSpace(userContent) != "" {
+				userContent = userContent + "\n\n" + banner
+			} else {
+				userContent = banner
+			}
+		}
+		//
+		// It rides in the SAME user message as the goal_phase banner (the
+		// turn's root user message) so:
+		//   - the system prefix stays byte-constant across phase transitions
+		//     (the whole point of lever (a): measured ~81K token cache tax at
+		//     the OPEN->CHECKPOINT transition before this change);
+		//   - the turn loop's message bookkeeping (currentTurnStart, persisted
+		//     turn tail, media resolution) is untouched - no new message is
+		//     introduced into the array.
+		//
+		// The channel is rendered AFTER the banner so the LLM reads the
+		// phase-specific instructions LAST (closest to the generation point).
+		if channel := buildPhaseChannel(req); channel != "" {
+			if strings.TrimSpace(userContent) != "" {
+				userContent = userContent + "\n\n" + channel
+			} else {
+				userContent = channel
+			}
 		}
 	}
 	if strings.TrimSpace(userContent) != "" || len(req.Media) > 0 {

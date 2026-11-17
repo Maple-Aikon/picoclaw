@@ -794,7 +794,12 @@ func (p *toolHookProvider) Chat(
 		}, nil
 	}
 
-	last := messages[len(messages)-1]
+	// A1 (2026-11-17): the phase affordance is a dedicated USER message
+	// at the TAIL => the tool result is the last non-affordance message.
+	last, ok := a1LastNonAffordanceMessage(messages)
+	if !ok {
+		last = providers.Message{}
+	}
 	return &providers.LLMResponse{
 		Content: last.Content,
 	}, nil

@@ -24,11 +24,11 @@ func newPhaseRebuildTestFixture(
 		agent: &AgentInstance{
 			ContextBuilder: cb,
 		},
-		activeSkills:            nil,
-		userMessage:             "test",
-		media:                   nil,
-		opts:                    processOptions{Dispatch: DispatchRequest{}},
-		lastBuiltPromptPhase:    initialLastBuilt,
+		activeSkills:             nil,
+		userMessage:              "test",
+		media:                    nil,
+		opts:                     processOptions{Dispatch: DispatchRequest{}},
+		lastBuiltPromptPhase:     initialLastBuilt,
 		lastBuiltPromptIteration: initialLastBuiltIter,
 	}
 	ts.opts.Dispatch.SessionKey = "test-session"
@@ -154,15 +154,21 @@ func TestPhaseChangeRebuild_SamePhase_IterChange_TriggersRebuild(t *testing.T) {
 		if !strings.Contains(result[1].Content, "userMsg1") {
 			t.Errorf("expected messages[1] to preserve userMsg1, got %q", result[1].Content)
 		}
-		// Phase 12.80: the user message keeps its original text AND carries
-		// the refreshed goal-phase banner (the banner lives in the user
-		// message tail, not the system prompt).
-		if got := bannerPhase(result[1].Content); got != "CHECKPOINT" {
-			t.Errorf("expected refreshed banner phase = CHECKPOINT, got %q in %q", got, result[1].Content)
+		// A1 (2026-11-17): the banner is NOT refreshed in place inside the
+		// turn-root user message any more — that mid-array rewrite is
+		// what killed the provider prefix cache for the whole turn.
+		// The banner lives in a dedicated USER message at the TAIL, and the
+		// rebuild hook leaves the turn-root user message untouched.
+		// The fixture's user message carries no banner (it is the bare
+		// user text), so it must STILL have none after the rebuild.
+		if got := bannerPhase(result[1].Content); got != "" {
+			t.Errorf("expected NO banner in the turn-root user message (A1), got %q in %q", got, result[1].Content)
+		}
+		if result[1].Content != "userMsg1" {
+			t.Errorf("the rebuild hook mutated the turn-root user message (A1): %q", result[1].Content)
 		}
 	})
 }
-
 
 // =====================================================================
 // T3: Open → Checkpoint triggers rebuild, preserves messages[1:N]
@@ -183,15 +189,18 @@ func TestPhaseChangeRebuild_OpenToCheckpoint_TriggersRebuild(t *testing.T) {
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages (rebuilt system + userMsg1), got %d: %v", len(result), result)
 	}
-	// Phase 12.80: the user message keeps its original text AND carries the
-	// refreshed goal-phase banner. Before the fix the banner stayed at the
-	// turn's first-iteration phase (always SET) because only messages[0]
-	// was rebuilt.
+	// The user message keeps its original text.
 	if !strings.Contains(result[1].Content, "userMsg1") {
 		t.Errorf("expected messages[1] to preserve userMsg1, got %q", result[1].Content)
 	}
-	if got := bannerPhase(result[1].Content); got != "CHECKPOINT" {
-		t.Errorf("expected refreshed banner phase = CHECKPOINT, got %q in %q", got, result[1].Content)
+	// A1 (2026-11-17): the phase banner is NO LONGER refreshed in place
+	// inside the turn-root user message (that mid-array rewrite is what
+	// killed the provider prefix cache for the whole turn). The banner
+	// now lives in a dedicated USER message at the TAIL of the request.
+	// The rebuild hook must therefore NOT touch the turn-root user
+	// message at all — it must stay byte-constant.
+	if got := bannerPhase(result[1].Content); got != "" {
+		t.Errorf("expected NO banner in the turn-root user message (A1), got %q in %q", got, result[1].Content)
 	}
 	if result[0].Content == "ORIGINAL_SYSTEM_PROMPT" {
 		t.Errorf("expected messages[0] rebuilt, still ORIGINAL_SYSTEM_PROMPT")
@@ -228,13 +237,12 @@ func TestPhaseChangeRebuild_CheckpointToOpen_TriggersRebuild(t *testing.T) {
 			t.Errorf("expected result[%d].Content to contain %q, got %q", tailStart+i, exp, got)
 		}
 	}
-	// Phase 12.80: the banner belongs to the current turn's ROOT user
-	// message (the first user message of the turn) - the same message
-	// that carried the banner when the turn was built. It is NOT the
-	// tail-most user message: steering messages also have Role=="user"
-	// and are appended after the root.
-	if got := bannerPhase(result[tailStart].Content); got != "OPEN" {
-		t.Errorf("expected refreshed banner phase = OPEN on the current-turn root user message, got %q in %q",
+	// A1 (2026-11-17): the banner is not refreshed in place any more (the
+	// mid-array rewrite killed the prefix cache). It lives in a
+	// dedicated USER message at the TAIL of the request.
+	// The rebuild hook must leave the turn-root user message untouched.
+	if got := bannerPhase(result[tailStart].Content); got != "" {
+		t.Errorf("expected NO banner in the turn-root user message (A1), got %q in %q",
 			got, result[tailStart].Content)
 	}
 }

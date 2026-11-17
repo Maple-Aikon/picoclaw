@@ -48,6 +48,13 @@ func promptBuildRequestForTurn(
 		// absolute ceiling (set at startup, never extended beyond this).
 		IterationCap:     ts.iterationCap,
 		MaxIterationsCap: ts.maxIterationsCap,
+		// A1 (2026-11-17): the production path does NOT render the phase
+		// affordance into the turn-root user message. The affordance is
+		// appended at the TAIL of the request instead (see
+		// goal_phase_affordance_tail.go + callLLMCore), so the turn-root
+		// user message stays byte-constant for the whole turn and the
+		// provider prefix cache survives phase transitions.
+		SuppressPhaseAffordance: true,
 	}
 	// Phase 12.34: inject goal context (objective + success criteria) into
 	// the CHECKPOINT-phase hint so the LLM can decide between goal_progress

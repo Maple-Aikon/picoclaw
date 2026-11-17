@@ -613,9 +613,13 @@ func TestProcessMessage_IncludesCurrentSenderInDynamicContext(t *testing.T) {
 		t.Fatal("provider did not receive any messages")
 	}
 
-	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" {
-		t.Fatalf("last provider message = %+v, want user role", lastMessage)
+	// A1 (2026-11-17): the phase affordance now lives in a dedicated
+	// USER message at the TAIL, so the turn-root user message is no
+	// longer the last message. Assert on the turn-root user message
+	// (dynamic context + user text) instead.
+	lastMessage, ok := a1TurnRootUserMessage(provider.lastMessages)
+	if !ok {
+		t.Fatalf("no turn-root user message in provider.lastMessages")
 	}
 	// Layout B (Q1=B điều chỉnh 2026-08-22): dynamic context (incl. Current Sender)
 	// now lives in user[0]. Assert it there, and confirm the original user text
@@ -1175,9 +1179,11 @@ func TestProcessMessage_UseCommandLoadsRequestedSkill(t *testing.T) {
 		t.Fatalf("system prompt missing requested skill content:\n%s", systemPrompt)
 	}
 
-	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" {
-		t.Fatalf("last provider message role = %s, want user", lastMessage.Role)
+	// A1 (2026-11-17): the phase affordance is a dedicated USER message
+	// at the TAIL; the turn-root user message is not the last one.
+	lastMessage, ok := a1TurnRootUserMessage(provider.lastMessages)
+	if !ok {
+		t.Fatalf("no turn-root user message in provider.lastMessages")
 	}
 	// Layout B: dynamic context is prepended to user[0], original text is included in turn.
 	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.Contains(lastMessage.Content, "explain how to list files") {
@@ -1242,6 +1248,9 @@ func TestProcessMessage_BtwCommandRunsWithoutPersistingHistory(t *testing.T) {
 	if len(provider.lastMessages) == 0 {
 		t.Fatal("provider did not receive any messages")
 	}
+	// A1 (2026-11-17): the /btw path does NOT build the production prompt,
+	// so there is no tail affordance here — the message count is unchanged
+	// (system + prior history + user).
 	if len(provider.lastMessages) != 4 {
 		t.Fatalf("provider messages len = %d, want 4 (system + prior history + user)", len(provider.lastMessages))
 	}
@@ -1250,13 +1259,17 @@ func TestProcessMessage_BtwCommandRunsWithoutPersistingHistory(t *testing.T) {
 		t.Fatalf("provider history = %#v, want %#v", provider.lastMessages[1:3], initialHistory)
 	}
 
-	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" {
-		t.Fatalf("last provider message role = %s, want user", lastMessage.Role)
+	// A1 (2026-11-17): the phase affordance is a dedicated USER message
+	// at the TAIL; the turn-root user message is not the last one.
+	rootMsg, ok := a1LastNonAffordanceMessage(provider.lastMessages)
+	if !ok {
+		t.Fatalf("no turn-root user message in provider.lastMessages")
 	}
 	// Layout B: dynamic context prepended to user[0], stripped /btw text is the suffix.
-	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.HasSuffix(lastMessage.Content, "explain side effects") {
-		t.Fatalf("last provider message = %+v, want dynamic_context prefix and %q suffix", lastMessage, "explain side effects")
+	if !strings.HasPrefix(rootMsg.Content, "<dynamic_context>") ||
+		!strings.HasSuffix(rootMsg.Content, "explain side effects") {
+		t.Fatalf("turn-root user message = %+v, want dynamic_context prefix and %q suffix",
+			rootMsg, "explain side effects")
 	}
 
 	history := al.GetRegistry().GetDefaultAgent().Sessions.GetHistory(sessionKey)
@@ -1309,9 +1322,11 @@ func TestProcessMessage_BtwCommandIncludesRequestContextAndMedia(t *testing.T) {
 		t.Fatalf("system prompt must not contain dynamic session/sender context:\n%s", systemPrompt)
 	}
 
-	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" {
-		t.Fatalf("last provider message role = %s, want user", lastMessage.Role)
+	// A1 (2026-11-17): the phase affordance is a dedicated USER message
+	// at the TAIL; the turn-root user message is not the last one.
+	lastMessage, ok := a1TurnRootUserMessage(provider.lastMessages)
+	if !ok {
+		t.Fatalf("no turn-root user message in provider.lastMessages")
 	}
 	// Layout B contract #2: session/sender context live in the dynamic_context block of user[0].
 	if !strings.Contains(lastMessage.Content, "## Current Session\nChannel: discord\nChat ID: group-1") {
@@ -1385,9 +1400,11 @@ func TestProcessMessage_BtwCommandUsesIsolatedProvider(t *testing.T) {
 	}
 
 	// Verify the question was stripped of /btw prefix
-	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" {
-		t.Fatalf("last provider message role = %s, want user", lastMessage.Role)
+	// A1 (2026-11-17): the phase affordance is a dedicated USER message
+	// at the TAIL; the turn-root user message is not the last one.
+	lastMessage, ok := a1TurnRootUserMessage(provider.lastMessages)
+	if !ok {
+		t.Fatalf("no turn-root user message in provider.lastMessages")
 	}
 	// Layout B: dynamic context prepended to user[0], stripped /btw text is the suffix.
 	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.HasSuffix(lastMessage.Content, "explain isolation") {
@@ -1622,9 +1639,11 @@ func TestProcessMessage_UseCommandArmsSkillForNextMessage(t *testing.T) {
 	if !strings.Contains(systemPrompt, "### Skill: shell") {
 		t.Fatalf("system prompt missing pending skill content:\n%s", systemPrompt)
 	}
-	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" {
-		t.Fatalf("last provider message role = %s, want user", lastMessage.Role)
+	// A1 (2026-11-17): the phase affordance is a dedicated USER message
+	// at the TAIL; the turn-root user message is not the last one.
+	lastMessage, ok := a1TurnRootUserMessage(provider.lastMessages)
+	if !ok {
+		t.Fatalf("no turn-root user message in provider.lastMessages")
 	}
 	// Layout B: original user text is preserved in user message with dynamic_context block.
 	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.Contains(lastMessage.Content, "explain how to list files") {

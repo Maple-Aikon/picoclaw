@@ -144,8 +144,10 @@ func TestTurnProfile_DisabledPreservesDefaultHistoryAndPrompt(t *testing.T) {
 	if got != "profile response" {
 		t.Fatalf("runAgentLoop() = %q, want profile response", got)
 	}
-	if len(provider.messages) != 4 {
-		t.Fatalf("provider messages len = %d, want system + history + user", len(provider.messages))
+	if len(provider.messages) != 5 {
+		// A1 (2026-11-17): the phase affordance is a dedicated USER message
+		// appended at the TAIL => one extra message.
+		t.Fatalf("provider messages len = %d, want system + history + user + tail affordance", len(provider.messages))
 	}
 	if !reflect.DeepEqual(provider.messages[1:3], initialHistory) {
 		t.Fatalf("provider history = %#v, want %#v", provider.messages[1:3], initialHistory)
@@ -191,8 +193,11 @@ func TestTurnProfile_HistoryOffSuppressesHistoryAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runAgentLoop() error = %v", err)
 	}
-	if len(provider.messages) != 2 {
-		t.Fatalf("provider messages len = %d, want system + current user", len(provider.messages))
+	if len(provider.messages) != 3 {
+		// A1 (2026-11-17): the phase affordance is a dedicated USER message
+		// appended at the TAIL of the request => one extra message.
+		t.Fatalf("provider messages len = %d, want external system prompt + user + tail affordance",
+			len(provider.messages))
 	}
 	// Layout B: dynamic context (time/runtime) prepends user[0], so the raw user
 	// text is the suffix — assert with Contains instead of exact equality.
@@ -234,8 +239,11 @@ func TestTurnProfile_ProcessMessageUsesEnabledTurnProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if len(provider.messages) != 2 {
-		t.Fatalf("provider messages len = %d, want system + current user", len(provider.messages))
+	if len(provider.messages) != 3 {
+		// A1 (2026-11-17): the phase affordance is a dedicated USER message
+		// appended at the TAIL of the request => one extra message.
+		t.Fatalf("provider messages len = %d, want external system prompt + user + tail affordance",
+			len(provider.messages))
 	}
 	// Layout B: dynamic context (time/runtime/session/sender) prepends user[0],
 	// so the raw user text is the suffix — assert with Contains instead of
@@ -488,8 +496,12 @@ func TestTurnProfile_SystemPromptOffUsesExternalPromptOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runAgentLoop() error = %v", err)
 	}
+	// A1 (2026-11-17): a turn profile with the system prompt OFF produces NO
+	// phase affordance (the affordance is part of the prompt payload and is
+	// suppressed together with the default system prompt) => the message
+	// count is unchanged: external system prompt + user.
 	if len(provider.messages) != 2 {
-		t.Fatalf("messages len = %d, want system + user", len(provider.messages))
+		t.Fatalf("messages len = %d, want external system prompt + user", len(provider.messages))
 	}
 	if strings.TrimSpace(provider.messages[0].Content) != "External prompt only." {
 		t.Fatalf("system prompt = %q, want external only", provider.messages[0].Content)
@@ -522,6 +534,9 @@ func TestTurnProfile_SystemPromptOffBlankTurnStillSendsMessage(t *testing.T) {
 		t.Fatalf("runAgentLoop() error = %v", err)
 	}
 	if len(provider.messages) != 1 {
+		// A1 (2026-11-17): a turn profile with the system prompt OFF
+		// produces NO phase affordance (it is part of the prompt payload)
+		// => the message count is unchanged.
 		t.Fatalf(
 			"provider messages len = %d, want one blank user message: %#v",
 			len(provider.messages),

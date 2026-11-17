@@ -133,6 +133,28 @@ type PromptBuildRequest struct {
 	AllowedTools                []string
 	ToolUseFallback             bool
 
+	// SuppressPhaseAffordance tells BuildMessagesFromPrompt NOT to render
+	// the phase affordance (the <goal_phase> banner + the
+	// <goal_phase_channel>) into the turn-root user message.
+	//
+	// A1 (2026-11-17): the affordance used to ride in the turn-root user
+	// message, which sits at wire INDEX 2 with ~138 messages after it.
+	// Rewriting it in place on a phase transition changed bytes in the
+	// MIDDLE of the request and cost the provider prefix cache for the
+	// WHOLE current turn (measured: uncached / this-turn-traffic ~= 1.00;
+	// 80.6% of all uncached tokens were spent at phase transitions).
+	//
+	// The affordance is now APPENDED AT THE TAIL of the request as one
+	// dedicated USER message (see goal_phase_affordance_tail.go). The
+	// turn-root user message therefore stays byte-constant for the whole
+	// turn — which is what keeps the prefix cache alive.
+	//
+	// This flag exists so the DIRECT-CALL path (tests, EstimateSystemTokens,
+	// side-question) keeps its affordance in user[0] — the lever (a)
+	// contract C2/C4 assert on it — while the PRODUCTION path opts out
+	// and gets the tail affordance instead.
+	SuppressPhaseAffordance bool
+
 	// GoalPhase is the per-turn goal lifecycle phase at prompt-build time
 	// (string(GoalPhaseSet / GoalPhaseOpen / GoalPhaseCheckpoint / GoalPhaseFinal)).
 	// Empty means "no phase info available" (e.g. legacy callers / tests).

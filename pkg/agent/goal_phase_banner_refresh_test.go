@@ -248,27 +248,51 @@ func TestPhaseRebuild_RefreshesBannerOnPhaseChange(t *testing.T) {
 
 	result := ts.maybeRebuildPromptForStateChange(messages, exec, nil, 25)
 
-	userMsg := ""
+	// A1 (2026-11-17): the banner is NOT refreshed in place inside the
+	// turn-root user message any more — that mid-array rewrite is
+	// what killed the provider prefix cache for the whole current turn
+	// (measured: uncached / this-turn-traffic ~= 1.00). The banner now
+	// lives in a dedicated USER message at the TAIL of the request.
+	//
+	// So this test now asserts the NEW contract (contract C5: update the
+	// old test to assert the NEW location, do not delete it):
+	//   1. the turn-root user message keeps its original text and stays
+	//      byte-constant (NO banner in it);
+	//   2. the banner itself is rendered from the CURRENT phase.
+	rootMsg := ""
 	for _, m := range result {
 		if m.Role == "user" {
-			userMsg = m.Content
+			rootMsg = m.Content
+			break
 		}
 	}
-	if userMsg == "" {
+	if rootMsg == "" {
 		t.Fatal("expected a user message in the rebuilt result")
 	}
+	// The rebuild hook must NOT mutate the turn-root user message at all —
+	// it stays byte-identical to what the turn was built with. (The
+	// fixture pre-seeds a SET banner to simulate the legacy shape; A1
+	// guarantees the hook leaves it alone instead of rewriting it
+	// in place.)
+	if rootMsg != "user request"+bannerSeparator+setBanner {
+		t.Errorf("the rebuild hook mutated the turn-root user message (A1): %s%s", nl, rootMsg)
+	}
+	if !strings.Contains(rootMsg, "user request") {
+		t.Errorf("original user text was lost: %s%s", nl, rootMsg)
+	}
 
-	got := bannerPhase(userMsg)
+	// The affordance rendered for the CURRENT phase must say CHECKPOINT
+	// with the current phase-start iteration (25).
+	ts.agent.PhaseOverrideForTest = string(GoalPhaseCheckpoint)
+	affordance := phaseAffordanceText(phaseAffordanceRequest(ts.agent.ContextBuilder, ts, 25))
+	got := bannerPhase(affordance)
 	if got == "SET" {
-		t.Errorf("banner still reports SET after a CHECKPOINT phase change (stale-banner bug): %s%s", nl, userMsg)
+		t.Errorf("banner still reports SET after a CHECKPOINT phase change (stale-banner bug): %s%s", nl, affordance)
 	}
 	if got != "CHECKPOINT" {
-		t.Errorf("expected banner phase = CHECKPOINT, got %q%s%s", got, nl, userMsg)
+		t.Errorf("expected banner phase = CHECKPOINT, got %q%s%s", got, nl, affordance)
 	}
-	if gotIter := bannerIter(userMsg); gotIter != "25" {
+	if gotIter := bannerIter(affordance); gotIter != "25" {
 		t.Errorf("expected banner iter = 25, got %q", gotIter)
-	}
-	if !strings.Contains(userMsg, "user request") {
-		t.Errorf("original user text was lost: %s%s", nl, userMsg)
 	}
 }

@@ -112,7 +112,6 @@ func (p *Pipeline) CallLLM(
 	// injections; counting at the builder (buildToolExecErrorRetryMessage)
 	// would over-count, because checkToolExecErrorRecovery has two
 	// callsites and the same failure can build the message twice while
-	// injecting it once.
 	if recoveryMsg := ts.recoveryHintMessage(); recoveryMsg.Content != "" {
 		exec.callMessages = append(append([]providers.Message(nil), exec.callMessages...), recoveryMsg)
 		countRecoveryAutoLoadInject(ts, recoveryMsg.Content)
@@ -596,6 +595,46 @@ func (p *Pipeline) callLLMCore(
 	toolDefsForCall []providers.ToolDefinition,
 	iteration int,
 ) (*providers.LLMResponse, error) {
+	// A1 (2026-11-17) — TURN-TAIL PHASE AFFORDANCE.
+	//
+	// The phase affordance (the <goal_phase> banner + the
+	// <goal_phase_channel>) is APPENDED AT THE TAIL of the request, as a
+	// dedicated USER message. It is NOT written into the turn-root user
+	// message any more.
+	//
+	// WHY (measured, A1 2026-11-16/17): the turn-root user message sits at
+	// wire INDEX 2 ([0] system, [1] assistant, [2] user) with ~138
+	// messages after it. Rewriting it in place on a phase transition
+	// changed bytes in the MIDDLE of the request, and since MiniMax caches
+	// by PREFIX that invalidated the cache for every message after it — i.e.
+	// the whole current turn. Measured: uncached / this-turn-traffic ~=
+	// 1.00, and 80.6% of all uncached tokens were spent at phase
+	// transitions.
+	//
+	// Controlled probe at the API level (real payload + real key):
+	//   V-INPLACE (rewrite in place = old behavior) uncached 18.848
+	//   V-TAIL    (one dedicated USER message at the tail) uncached  3.293
+	//   V-NONE    (control)                             uncached  3.191
+	// => V-TAIL is 5.7x better.
+	//
+	// WHY HERE (callLLMCore) AND NOT IN CallLLM: callLLMCore is the single
+	// choke point every provider call goes through (main path, recall
+	// path, hook-replay path). Appending here guarantees the affordance
+	// is present on EVERY request and on exactly ONE request (it is
+	// applied to the local slice, never to exec.messages — so it cannot
+	// accumulate across iterations/phase transitions).
+	//
+	// 🐞 This also closes the stale-channel bug: <goal_phase_channel> used
+	// to be appended ONCE at turn build (context.go) and never refreshed, so
+	// it said "SET (iter 1)" in 100% of prompts that also carried a banner
+	// (measured 35/35 on prompt_history.log) while the banner said the real
+	// phase. The measured consequence was a misfire rate of 54.42% at
+	// CHECKPOINT (metric: runtime event agent.tool.exec_skipped).
+	// Rendering banner + channel TOGETHER here means they can never
+	// disagree again.
+	messagesForCall = appendPhaseAffordanceAtTail(messagesForCall,
+		phaseAffordanceText(phaseAffordanceRequest(ts.agent.ContextBuilder, ts, iteration)),
+	)
 	providerCtx, providerCancel := context.WithCancel(turnCtx)
 	ts.setProviderCancel(providerCancel)
 	defer func() {

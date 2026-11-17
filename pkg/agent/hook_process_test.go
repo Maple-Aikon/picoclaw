@@ -129,7 +129,16 @@ func (p *blockedToolProvider) Chat(
 	}
 
 	return &providers.LLMResponse{
-		Content: messages[len(messages)-1].Content,
+		// A1 (2026-11-17): the phase affordance is a dedicated USER
+		// message at the TAIL, so the tool result is the last message
+		// that is NOT the affordance.
+		Content: func() string {
+			m, ok := a1LastNonAffordanceMessage(messages)
+			if !ok {
+				return ""
+			}
+			return m.Content
+		}(),
 	}, nil
 }
 

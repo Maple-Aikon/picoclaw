@@ -289,14 +289,31 @@ func TestH2_Rebuild_BannerRefreshesOnTransition(t *testing.T) {
 
 	out := ts.maybeRebuildPromptForStateChange(messages, exec, nil, 25)
 
-	if got := bannerPhase(out[1].Content); got != "CHECKPOINT" {
-		t.Errorf("expected the banner to refresh to CHECKPOINT on transition, got %q in %q", got, out[1].Content)
-	}
+	// A1 (2026-11-17): the banner is NOT refreshed in place inside the
+	// turn-root user message any more — that mid-array rewrite is
+	// what killed the provider prefix cache for the whole current turn.
+	// The banner lives in a dedicated USER message at the TAIL.
+	//
+	// The turn-root user message must keep the user's original text and
+	// must stay byte-identical: the rebuild hook must NOT rewrite it
+	// in place (A1 — that mid-array rewrite killed the prefix cache).
+	// The fixture pre-seeds an OPEN banner to simulate the legacy shape;
+	// A1 guarantees the hook leaves it alone.
 	if !strings.Contains(out[1].Content, "userMsg1") {
 		t.Errorf("the user's original text was lost: %q", out[1].Content)
 	}
+	if out[1].Content != "userMsg1"+bannerSeparator+openBanner {
+		t.Errorf("the rebuild hook mutated the turn-root user message (A1): %q", out[1].Content)
+	}
+
+	// The affordance rendered for the CURRENT phase must say CHECKPOINT
+	// with the current phase-start iteration (25).
+	affordance := phaseAffordanceText(phaseAffordanceRequest(ts.agent.ContextBuilder, ts, 25))
+	if got := bannerPhase(affordance); got != "CHECKPOINT" {
+		t.Errorf("expected the banner to refresh to CHECKPOINT on transition, got %q in %q", got, affordance)
+	}
 	// The phase-start iteration must be the iteration the NEW phase began.
-	if got := bannerPhaseStartIter(out[1].Content); got != "25" {
+	if got := bannerPhaseStartIter(affordance); got != "25" {
 		t.Errorf("expected phase_start_iter = 25 after the transition, got %q", got)
 	}
 }

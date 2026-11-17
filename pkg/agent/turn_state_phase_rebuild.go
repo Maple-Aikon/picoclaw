@@ -105,12 +105,12 @@ func (ts *turnState) maybeRebuildPromptForStateChange(
 
 	if IsAgentDebugEnabled() {
 		agentDebugf("prompt_cache", map[string]any{
-			"event_stage":               "phase_change_check",
-			"iteration":                 iteration,
-			"ts_current_goal_phase":     currentPhase,
+			"event_stage":                "phase_change_check",
+			"iteration":                  iteration,
+			"ts_current_goal_phase":      currentPhase,
 			"ts_last_built_prompt_phase": ts.lastBuiltPromptPhase,
 			"ts_last_built_prompt_iter":  ts.lastBuiltPromptIteration,
-			"rebuild_needed":            stateChanged,
+			"rebuild_needed":             stateChanged,
 		})
 	}
 	if !stateChanged {
@@ -178,27 +178,26 @@ func (ts *turnState) maybeRebuildPromptForStateChange(
 	if len(messages) > 1 {
 		newMessages = append(newMessages, messages[1:]...)
 	}
-	// Phase 12.80 (Gói A / P2): refresh the goal-phase banner in the
-	// CURRENT turn's user message.
+	// A1 (2026-11-17): the goal-phase banner is NO LONGER refreshed in place
+	// here.
 	//
-	// The banner lives in the user message tail (not the system prompt),
-	// so replacing messages[0] alone leaves the LLM reading the banner
-	// rendered at the turn's FIRST iteration — always `phase="SET"`.
-	// The runtime allowlist had meanwhile moved to CHECKPOINT, so the
-	// banner contradicted the wire (measured misfire: 52.9% of tool
-	// choices at CHECKPOINT were gate-rejected).
+	// It used to be: refreshGoalPhaseBannerInMessages() rewrote the
+	// <goal_phase> block INSIDE the turn-root user message — a mid-array
+	// rewrite that changed bytes in the MIDDLE of the request and cost the
+	// provider prefix cache for the WHOLE current turn (measured: uncached
+	// / this-turn-traffic ~= 1.00; 80.6% of all uncached tokens were spent
+	// at phase transitions).
 	//
-	// The banner is refreshed HERE (not inside BuildMessagesFromPrompt)
-	// because the rebuild path deliberately keeps messages[1:] — the
-	// already-built user message with its media metadata — instead of
-	// re-appending it. Refresh in place instead.
+	// The banner now lives ONLY at the TAIL of the request, appended as a
+	// dedicated USER message (goal_phase_affordance_tail.go, applied in
+	// callLLMCore). The turn-root user message therefore stays
+	// byte-constant for the whole turn.
 	//
-	// currentTurnStart is exec.currentTurnStart: the index of the first
-	// message belonging to this turn. Messages before it are history and
-	// must not be touched.
-	if banner := formatDynamicGoalPhaseBanner(rebuildPromptReq); banner != "" {
-		newMessages = refreshGoalPhaseBannerInMessages(newMessages, exec.currentTurnStart, banner)
-	}
+	// The banner + the phase channel are rendered TOGETHER there, which
+	// also closes the stale-channel bug (the channel used to say
+	// "SET (iter 1)" in 100% of prompts that carried a banner — measured
+	// 35/35 on prompt_history.log — while the banner said the real phase;
+	// the measured consequence was a 54.42% CHECKPOINT misfire rate).
 	ts.lastBuiltPromptPhase = currentPhase
 	ts.lastBuiltPromptIteration = iteration
 	if IsAgentDebugEnabled() {
