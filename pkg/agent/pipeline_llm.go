@@ -632,9 +632,19 @@ func (p *Pipeline) callLLMCore(
 	// CHECKPOINT (metric: runtime event agent.tool.exec_skipped).
 	// Rendering banner + channel TOGETHER here means they can never
 	// disagree again.
-	messagesForCall = appendPhaseAffordanceAtTail(messagesForCall,
-		phaseAffordanceText(phaseAffordanceRequest(ts.agent.ContextBuilder, ts, iteration)),
-	)
+	// The affordance string is captured ONCE and reused for BOTH the wire
+	// append and the observability capture, so the captured bytes are
+	// byte-identical to the bytes the provider receives BY CONSTRUCTION
+	// (not a re-render that could drift). See phase_affordance_capture.go.
+	phaseAffordance := phaseAffordanceText(phaseAffordanceRequest(ts.agent.ContextBuilder, ts, iteration))
+	messagesForCall = appendPhaseAffordanceWithCapture(messagesForCall, phaseAffordance,
+		phaseAffordanceCaptureInput{
+			turnID:         ts.turnID,
+			sessionKey:     ts.sessionKey,
+			iteration:      iteration,
+			phase:          string(ts.currentGoalPhase()),
+			phaseStartIter: ts.currentPhaseStartIter(),
+		})
 	providerCtx, providerCancel := context.WithCancel(turnCtx)
 	ts.setProviderCancel(providerCancel)
 	defer func() {

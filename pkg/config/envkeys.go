@@ -57,6 +57,14 @@ const (
 	// cannot store user content.
 	EnvReplayPromptLog = "PICOCLAW_REPLAY_PROMPT_LOG"
 
+	// EnvPhaseAffordanceLog opts out of the phase-affordance capture file
+	// (logs/phase_affordance.log) written by the Go-side capture at the
+	// point the turn-tail affordance is appended to the request. Default:
+	// ON (parity with the JS hook which always logs prompt content). Set
+	// to "0" / "false" to disable in deployments that cannot store the
+	// affordance text.
+	EnvPhaseAffordanceLog = "PICOCLAW_PHASE_AFFORDANCE_LOG"
+
 	// EnvAgentStrictPhases opts in to runtime telemetry for unknown-phase
 	// lookups in PhasePolicyFor / ToolPolicyForPhase. When set ("1"/"true"/
 	// "yes"/"on"), every miss is logged + counted as agent_phase_lookup_miss
