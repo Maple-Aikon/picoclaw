@@ -51,31 +51,33 @@ import (
 
 // tkEntryScore is the per-entry metric set.
 type tkEntryScore struct {
-	Name           string `json:"name"`
-	Class          string `json:"class"`
-	SrcBytes       int    `json:"src_bytes"`
-	RenderedBytes  int    `json:"rendered_bytes"`
-	OverCap        bool   `json:"over_cap"`
-	H2             int    `json:"h2"`
-	BodySections   int    `json:"body_sections"`
-	Fixed          int    `json:"fixed"`
-	Room           int    `json:"room"`
-	BodyBudget     int    `json:"body_budget"`
-	SharePerSec    int    `json:"share_per_section"`
-	DigestBytes    int    `json:"digest_bytes"`
-	PayloadBytes   int    `json:"payload_bytes"`
-	Slack          int    `json:"slack"`
-	ExcerptTotal   int    `json:"excerpt_total"`
-	MinExcerpt     int    `json:"min_excerpt"`
-	Starved        int    `json:"starved"`
-	TitleLost      int    `json:"title_lost"`
-	FirstLineCut   int    `json:"first_line_cut"`
-	ClaimCut       int    `json:"claim_cut"`
-	MinClaimMargin int    `json:"min_claim_margin"`
-	MaxFirstLine   int    `json:"max_first_line"`
-	MedianFirst    int    `json:"median_first_line"`
-	Fallback       bool   `json:"fallback"`
-	GenericTitles  int    `json:"generic_titles"`
+	Name            string `json:"name"`
+	Class           string `json:"class"`
+	SrcBytes        int    `json:"src_bytes"`
+	RenderedBytes   int    `json:"rendered_bytes"`
+	OverCap         bool   `json:"over_cap"`
+	H2              int    `json:"h2"`
+	BodySections    int    `json:"body_sections"`
+	Fixed           int    `json:"fixed"`
+	Room            int    `json:"room"`
+	BodyBudget      int    `json:"body_budget"`
+	SharePerSec     int    `json:"share_per_section"`
+	DigestBytes     int    `json:"digest_bytes"`
+	PayloadBytes    int    `json:"payload_bytes"`
+	Slack           int    `json:"slack"`
+	ExcerptTotal    int    `json:"excerpt_total"`
+	MinExcerpt      int    `json:"min_excerpt"`
+	Starved         int    `json:"starved"`
+	TitleLost       int    `json:"title_lost"`
+	FirstLineCut    int    `json:"first_line_cut"`
+	ClaimCut        int    `json:"claim_cut"`
+	MinClaimMargin  int    `json:"min_claim_margin"`
+	H3Total         int    `json:"h3_total"`
+	H3BodyInPayload int    `json:"h3_body_in_payload"`
+	MaxFirstLine    int    `json:"max_first_line"`
+	MedianFirst     int    `json:"median_first_line"`
+	Fallback        bool   `json:"fallback"`
+	GenericTitles   int    `json:"generic_titles"`
 }
 
 // tkSectionScore is the per-section detail (only for requested entries).
@@ -297,6 +299,25 @@ func TestZZModeBRegroupScore(t *testing.T) {
 				if len(firstLine) > sc.MaxFirstLine {
 					sc.MaxFirstLine = len(firstLine)
 				}
+				// H3 BODY SURVIVAL.
+				//
+				// The digest splits on H2 only. An H3 heading and its
+				// body are just BODY TEXT of the enclosing H2 section,
+				// and the excerpt only reaches the first line of that
+				// body. So an H3 lesson in an R1 entry is usually
+				// RUNTIME-DEAD: present in the file, absent from the
+				// payload. Measured 2026-11-23: `exec` has 58 H3 and
+				// 0 of their bodies reach the payload.
+				//
+				// A lesson that must auto-load belongs in the H2 TITLE
+				// or the H2's FIRST BODY LINE - never in an H3 of an R1
+				// entry.
+				for _, h3 := range tkH3FirstLines(s.body) {
+					sc.H3Total++
+					if strings.Contains(final, h3) {
+						sc.H3BodyInPayload++
+					}
+				}
 				if detailSet[tg.name] {
 					details[tg.name] = append(details[tg.name], tkSectionScore{
 						Heading:    s.heading,
@@ -440,6 +461,36 @@ func tkFixedOverhead(secs []h2Section) int {
 		}
 	}
 	return fixed
+}
+
+// tkH3FirstLines returns the first body line of every H3 inside a
+// section body.
+//
+// WHY: the digest splits on H2 only. An H3 heading and its body are
+// just BODY TEXT of the enclosing H2 section, and the excerpt only
+// reaches the first line of that body. So an H3 lesson in an R1 entry is
+// usually RUNTIME-DEAD: present in the file, absent from the payload.
+// Measured 2026-11-23: `exec` has 58 H3 and 0 of their bodies reach the
+// payload.
+func tkH3FirstLines(body string) []string {
+	var out []string
+	lines := strings.Split(body, string(rune(tkNL)))
+	for i, l := range lines {
+		s := strings.TrimSpace(l)
+		if !strings.HasPrefix(s, "### ") {
+			continue
+		}
+		// The first non-empty, non-heading line AFTER the H3.
+		for j := i + 1; j < len(lines); j++ {
+			t := strings.TrimSpace(lines[j])
+			if t == "" || strings.HasPrefix(t, "#") {
+				continue
+			}
+			out = append(out, t)
+			break
+		}
+	}
+	return out
 }
 
 // tkMedianFirstLine returns the median length of the first body line of
