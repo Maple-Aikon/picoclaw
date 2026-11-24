@@ -30,6 +30,31 @@ type PidFileData struct {
 
 var pidMu sync.Mutex
 
+// pidLiveness describes the state of a recorded PID as seen by the OS.
+//
+// The distinction between pidAlive and pidZombie matters: a zombie
+// still occupies its PID slot, still answers signal(0) and still keeps
+// its /proc/<pid>/comm name, but it has already exited and can do no
+// work. Treating a zombie as a live gateway is what allowed a stale
+// PID file to block gateway startup.
+//
+// See docs/design/stale-pid-file-blocks-gateway-startup.md.
+type pidLiveness int
+
+const (
+	// pidDead means no process occupies that PID any more.
+	pidDead pidLiveness = iota
+	// pidZombie means the process has exited but its parent has not
+	// reaped it yet. The PID slot is still occupied and will only be
+	// released when the parent reaps it.
+	pidZombie
+	// pidAlive means a live process occupies that PID.
+	pidAlive
+)
+
+// processLiveness probes the OS for the state of the given PID.
+// Implemented per platform in pidfile_unix.go / pidfile_windows.go.
+
 // pidFilePath returns the absolute path for the PID file given the home directory.
 func pidFilePath(homePath string) string {
 	return filepath.Join(homePath, pidFileName)
@@ -61,9 +86,28 @@ func WritePidFile(homePath, host string, port int) (*PidFileData, error) {
 			// PID 1 is typically init/systemd on the host or the entrypoint
 			// inside a container. When a container stops and leaves behind a
 			// PID file on a shared volume, the host's PID 1 (init) would
-			// pass the isProcessRunning check, blocking new gateway starts.
+			// pass the liveness check, blocking new gateway starts.
 			// Treat recorded PID 1 as always stale.
-			if data.PID != 1 && isProcessRunning(data.PID) {
+			//
+			// A zombie is also stale: it has already exited, but its PID
+			// slot is still occupied because its parent has not reaped it
+			// yet. Such a process still answers signal(0) and still keeps
+			// its "picoclaw" comm name, so without this check it would be
+			// mistaken for a live gateway and block startup.
+			// See docs/design/stale-pid-file-blocks-gateway-startup.md.
+			//
+			// The liveness probe reads /proc/<pid>/stat, so it is done
+			// once and reused for every branch below.
+			liveness := pidDead
+			if data.PID != 1 {
+				liveness = processLiveness(data.PID)
+			}
+			switch {
+			case data.PID == 1:
+				logger.Warnf("found pid file (PID: 1) which is always treated as stale")
+			case liveness == pidZombie:
+				logger.Warnf("found pid file (PID: %d) but process is a zombie (already exited, not reaped)", data.PID)
+			case liveness == pidAlive:
 				// Verify the process is actually a picoclaw instance.
 				// If the PID was reused by an unrelated process
 				// (e.g. systemd-resolved after a kill -9), treat
@@ -144,10 +188,20 @@ func ReadPidFileWithCheck(homePath string) *PidFileData {
 		return nil
 	}
 
-	if !isProcessRunning(data.PID) {
+	// A zombie has already exited but still occupies its PID slot, so it
+	// owns no port and cannot serve the gateway. Treat it like a dead
+	// process and clean the PID file up.
+	// See docs/design/stale-pid-file-blocks-gateway-startup.md.
+	switch processLiveness(data.PID) {
+	case pidZombie:
+		logger.Debugf("process is a zombie (already exited), remove pid file: %s", pidPath)
+		os.Remove(pidPath)
+		return nil
+	case pidDead:
 		logger.Debugf("process not running, remove pid file: %s", pidPath)
 		os.Remove(pidPath)
 		return nil
+	case pidAlive:
 	}
 
 	return data

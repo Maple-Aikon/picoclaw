@@ -18,6 +18,26 @@ var (
 	stillActive                    = uint32(259)
 )
 
+// processLiveness probes the OS for the state of the given PID.
+//
+// Windows has no zombie concept: a terminated process is fully reaped
+// by the kernel as soon as its last handle is closed, and
+// GetExitCodeProcess reports the real exit code rather than the
+// STILL_ACTIVE sentinel. The PID slot is therefore never held by a
+// dead-but-unreaped process, so the pidZombie state cannot occur here.
+//
+// The asymmetry is deliberate and documented: the zombie-aware
+// detection added for Unix (see
+// docs/design/stale-pid-file-blocks-gateway-startup.md) has no
+// Windows counterpart, and Windows therefore keeps the pre-existing
+// behaviour of "exited process => PID free".
+func processLiveness(pid int) pidLiveness {
+	if isProcessRunning(pid) {
+		return pidAlive
+	}
+	return pidDead
+}
+
 // isProcessRunning checks whether a process with the given PID is alive
 // on Windows using OpenProcess + GetExitCodeProcess.
 func isProcessRunning(pid int) bool {
