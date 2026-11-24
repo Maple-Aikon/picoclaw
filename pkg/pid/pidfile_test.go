@@ -2,9 +2,13 @@ package pid
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // tmpDir returns a clean temporary directory for a test.
@@ -339,5 +343,232 @@ func TestReadPidFileUnlockedInvalidPID(t *testing.T) {
 	_, err := readPidFileUnlocked(path)
 	if err == nil {
 		t.Error("expected error for invalid PID")
+	}
+}
+
+// --- Zombie-aware PID file handling -------------------------------------
+//
+// A zombie process still occupies its PID slot, still answers
+// signal(0) and still keeps its /proc/<pid>/comm name — but it has
+// already exited and can do no work. Treating it as a live gateway is
+// what let a stale PID file block gateway startup.
+//
+// See docs/design/stale-pid-file-blocks-gateway-startup.md.
+
+// spawnZombie starts a child process named "picoclaw" that exits
+// immediately and is never Wait()ed, so the kernel leaves it as a
+// zombie. It returns the child's PID.
+//
+// The symlink trick is needed because /proc/<pid>/comm is derived from
+// the executable's basename, so a plain "true" would not reproduce the
+// real-world case where the zombie kept the name "picoclaw".
+func spawnZombie(t *testing.T) int {
+	t.Helper()
+	if os.Getpid() == 1 {
+		t.Skip("test not meaningful when running as PID 1")
+	}
+
+	binDir := t.TempDir()
+	link := filepath.Join(binDir, "picoclaw")
+	if err := os.Symlink("/bin/true", link); err != nil {
+		t.Skipf("cannot create picoclaw symlink: %v", err)
+	}
+
+	cmd := exec.Command(link)
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start child process: %v", err)
+	}
+	// Deliberately NOT calling cmd.Wait() — that is what leaves the
+	// child unreaped, i.e. a zombie.
+	t.Cleanup(func() {
+		// Best-effort reap so the test does not leak a zombie entry.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	return cmd.Process.Pid
+}
+
+// waitForZombie waits until the given PID reaches zombie state 'Z'.
+// Returns false if it never does.
+func waitForZombie(t *testing.T, pid int) bool {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			// Process was reaped already — nothing to test.
+			return false
+		}
+		state := raw[strings.LastIndex(string(raw), ")")+2]
+		if state == 'Z' {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+// TestWritePidFileZombiePID verifies that a PID file pointing at a
+// zombie process does NOT block startup. This is the regression test
+// for the incident where the gateway refused to start with
+// "gateway is already running" although the recorded process had
+// already exited.
+func TestWritePidFileZombiePID(t *testing.T) {
+	dir := tmpDir(t)
+
+	zombiePID := spawnZombie(t)
+	if !waitForZombie(t, zombiePID) {
+		t.Skip("could not create a zombie process in this environment")
+	}
+
+	stale := PidFileData{PID: zombiePID, Token: "deadbeef12345678deadbeef12345678"}
+	raw, _ := json.MarshalIndent(stale, "", "  ")
+	if err := os.WriteFile(filepath.Join(dir, pidFileName), raw, 0o600); err != nil {
+		t.Fatalf("failed to write stale pid file: %v", err)
+	}
+
+	data, err := WritePidFile(dir, "127.0.0.1", 18790)
+	if err != nil {
+		t.Fatalf("WritePidFile with zombie PID failed: %v", err)
+	}
+	if data.PID != os.Getpid() {
+		t.Errorf("PID = %d, want %d", data.PID, os.Getpid())
+	}
+}
+
+// TestReadPidFileWithCheckZombiePID verifies that a PID file pointing
+// at a zombie process is treated as stale: the check returns nil and
+// removes the file.
+func TestReadPidFileWithCheckZombiePID(t *testing.T) {
+	dir := tmpDir(t)
+
+	zombiePID := spawnZombie(t)
+	if !waitForZombie(t, zombiePID) {
+		t.Skip("could not create a zombie process in this environment")
+	}
+
+	stale := PidFileData{PID: zombiePID, Token: "deadbeef12345678deadbeef12345678"}
+	raw, _ := json.MarshalIndent(stale, "", "  ")
+	path := filepath.Join(dir, pidFileName)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("failed to write stale pid file: %v", err)
+	}
+
+	data := ReadPidFileWithCheck(dir)
+	if data != nil {
+		t.Errorf("expected nil for zombie PID, got %+v", data)
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("zombie PID file should be removed")
+	}
+}
+
+// TestWritePidFileLiveInstanceStillBlocked is the negative control for
+// the zombie fix: a LIVE process named "picoclaw" must still block a
+// second instance. Without this test, a fix that simply always
+// treats the recorded PID as stale would pass the zombie test while
+// silently breaking the singleton guarantee (two gateways fighting
+// over the same port).
+func TestWritePidFileLiveInstanceStillBlocked(t *testing.T) {
+	dir := tmpDir(t)
+
+	livePID := spawnLivePicoclaw(t)
+
+	stale := PidFileData{PID: livePID, Token: "deadbeef12345678deadbeef12345678"}
+	raw, _ := json.MarshalIndent(stale, "", "  ")
+	if err := os.WriteFile(filepath.Join(dir, pidFileName), raw, 0o600); err != nil {
+		t.Fatalf("failed to write pid file: %v", err)
+	}
+
+	_, err := WritePidFile(dir, "127.0.0.1", 18790)
+	if err == nil {
+		t.Fatal("WritePidFile should refuse to start when a live picoclaw instance holds the PID")
+	}
+	if !strings.Contains(err.Error(), "gateway is already running") {
+		t.Errorf("error = %v, want it to mention 'gateway is already running'", err)
+	}
+}
+
+// spawnLivePicoclaw starts a child process named "picoclaw" that stays
+// alive, and returns its PID.
+func spawnLivePicoclaw(t *testing.T) int {
+	t.Helper()
+
+	binDir := t.TempDir()
+	link := filepath.Join(binDir, "picoclaw")
+	if err := os.Symlink("/bin/sleep", link); err != nil {
+		t.Skipf("cannot create picoclaw symlink: %v", err)
+	}
+
+	cmd := exec.Command(link, "60")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start child process: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	// Give the child a moment to become a real, running process.
+	time.Sleep(50 * time.Millisecond)
+	return cmd.Process.Pid
+}
+
+// TestIsZombieFromStat exercises the /proc/<pid>/stat parser.
+func TestIsZombieFromStat(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "live running process",
+			content: "1234 (picoclaw) R 1 1234 1234 0 -1 4194304 100 0 0 0 0 0 0 0 20 0 1 0",
+			want:    false,
+		},
+		{
+			name:    "zombie process",
+			content: "1234 (picoclaw) Z 1 1234 1234 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0",
+			want:    true,
+		},
+		{
+			name:    "sleeping process",
+			content: "1234 (picoclaw) S 1 1234 1234 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0",
+			want:    false,
+		},
+		{
+			name:    "comm containing a space",
+			content: "1234 (my proc) Z 1 1234 1234 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0",
+			want:    true,
+		},
+		{
+			name:    "comm containing a closing parenthesis",
+			content: "1234 (weird)name) Z 1 1234 1234 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0",
+			want:    true,
+		},
+		{
+			name:    "malformed without parenthesis",
+			content: "no parens here",
+			want:    false,
+		},
+		{
+			name:    "empty content",
+			content: "",
+			want:    false,
+		},
+		{
+			name:    "truncated after parenthesis",
+			content: "1234 (picoclaw) ",
+			want:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isZombieFromStat(tc.content); got != tc.want {
+				t.Errorf("isZombieFromStat(%q) = %v, want %v", tc.content, got, tc.want)
+			}
+		})
 	}
 }
