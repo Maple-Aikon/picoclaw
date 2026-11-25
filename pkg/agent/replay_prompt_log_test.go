@@ -5,6 +5,7 @@
 // Coverage: render format (JSON header, markers, escaping, caps), atomic
 // append under concurrency, file perms, env opt-out (Q5A), and the
 // [RECALL FAILED] single-block contract (A-F14).
+
 package agent
 
 import (
@@ -38,7 +39,7 @@ func TestReplayPromptLog_RendersBlock(t *testing.T) {
 			{Role: "user", Content: "Run horus protocol"},
 		},
 		resp: &providers.LLMResponse{
-			Content:    "Recovered.",
+			Content:      "Recovered.",
 			FinishReason: "stop",
 			ToolCalls: []providers.ToolCall{
 				{ID: "call-1", Name: "complete_goal", Arguments: map[string]any{"summary": "done"}},
@@ -145,7 +146,15 @@ func TestReplayPromptLog_WritesBlock(t *testing.T) {
 	pipeline := NewPipeline(al)
 	ts, exec := setupRecallTestTurnState(t, al, pipeline)
 
-	if _, err := pipeline.RecallLLM(context.Background(), context.Background(), ts, exec, 1, "handleGoalRecovery", nil); err != nil {
+	if _, err := pipeline.RecallLLM(
+		context.Background(),
+		context.Background(),
+		ts,
+		exec,
+		1,
+		"handleGoalRecovery",
+		nil,
+	); err != nil {
 		t.Fatalf("RecallLLM returned error: %v", err)
 	}
 
@@ -251,8 +260,16 @@ func TestReplayPromptLog_ConcurrentAppenders_NoInterleave(t *testing.T) {
 					marker = "[JS-HOOK]"
 					footer = "[JS-END]"
 				}
-				block := fmt.Sprintf("%s ID: turn-%d-%d | Helper: concurrent | Iteration: %d\n    [SYSTEM]: content-%d-%d\n%s\n",
-					marker, g, i, i, g, i, footer)
+				block := fmt.Sprintf(
+					"%s ID: turn-%d-%d | Helper: concurrent | Iteration: %d\n    [SYSTEM]: content-%d-%d\n%s\n",
+					marker,
+					g,
+					i,
+					i,
+					g,
+					i,
+					footer,
+				)
 				blocks[g] = append(blocks[g], block)
 				if err := writeReplayPromptLog(path, block); err != nil {
 					t.Errorf("write %d-%d: %v", g, i, err)
@@ -311,11 +328,11 @@ func TestReplayPromptLog_FileMode_0640(t *testing.T) {
 
 	// Pre-existing file with looser perms gets tightened by Chmod.
 	loosePath := filepath.Join(t.TempDir(), "prompt.log")
-	if err := os.WriteFile(loosePath, []byte("old"), 0o644); err != nil {
-		t.Fatalf("seed loose file: %v", err)
+	if err2 := os.WriteFile(loosePath, []byte("old"), 0o644); err2 != nil {
+		t.Fatalf("seed loose file: %v", err2)
 	}
-	if err := writeReplayPromptLog(loosePath, ">>> [RECALL START] y\n<<< [RECALL END]\n"); err != nil {
-		t.Fatalf("append to loose file: %v", err)
+	if err2 := writeReplayPromptLog(loosePath, ">>> [RECALL START] y\n<<< [RECALL END]\n"); err2 != nil {
+		t.Fatalf("append to loose file: %v", err2)
 	}
 	info, err = os.Stat(loosePath)
 	if err != nil {
@@ -339,7 +356,7 @@ func TestReplayPromptLog_TruncatesHugeMessages(t *testing.T) {
 			{Role: "user", Content: huge},
 		},
 		resp: &providers.LLMResponse{
-			Content: strings.Repeat("y", 2*1024*1024), // 2MB response
+			Content:      strings.Repeat("y", 2*1024*1024), // 2MB response
 			FinishReason: "stop",
 		},
 	}
@@ -378,7 +395,15 @@ func TestReplayPromptLog_EnvOptOut(t *testing.T) {
 		defer cleanup()
 		pipeline := NewPipeline(al)
 		ts, exec := setupRecallTestTurnState(t, al, pipeline)
-		if _, err := pipeline.RecallLLM(context.Background(), context.Background(), ts, exec, 1, "handleGoalRecovery", nil); err != nil {
+		if _, err := pipeline.RecallLLM(
+			context.Background(),
+			context.Background(),
+			ts,
+			exec,
+			1,
+			"handleGoalRecovery",
+			nil,
+		); err != nil {
 			t.Fatalf("RecallLLM returned error: %v", err)
 		}
 	}

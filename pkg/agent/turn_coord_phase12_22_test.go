@@ -22,6 +22,7 @@
 //
 // See plan file ~/.picoclaw/workspace/memory/plan/picoclaw-phase12.21-
 // phase-stuck-comprehensive-recovery-20260727.md §Phase 12.22.
+
 package agent
 
 import (
@@ -33,7 +34,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/agent/goal"
 	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/tools/shared"
+	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
 
 func toolNamesOf(r *providers.LLMResponse) string {
@@ -146,12 +147,12 @@ func setupRestrictedPhaseGoalAndPipeline(
 // checkToolExecErrorRecovery → pipeline.handleGoalRecovery in turn_coord.go:370
 // for GoalPhaseCheckpoint. Rather than exercising the full runTurn loop (which
 // requires extensive Telegram-channel scaffolding), this test verifies:
-//   1. checkToolExecErrorRecovery correctly classifies a Checkpoint-phase
-//      IsAllowed block as RetrySameIteration (counter < cap) and returns
-//      a non-empty msg.
-//   2. pipeline.handleGoalRecovery re-runs callLLMCore same-iter and the
-//      new attempt's tool_calls land on exec.response.ToolCalls.
-//   3. Iteration counter stays unchanged across the BoundedRetry attempt.
+//  1. checkToolExecErrorRecovery correctly classifies a Checkpoint-phase
+//     IsAllowed block as RetrySameIteration (counter < cap) and returns
+//     a non-empty msg.
+//  2. pipeline.handleGoalRecovery re-runs callLLMCore same-iter and the
+//     new attempt's tool_calls land on exec.response.ToolCalls.
+//  3. Iteration counter stays unchanged across the BoundedRetry attempt.
 //
 // This is the unit-level proof for the Phase 12.22 wire change in
 // turn_coord.go:370. The end-to-end integration test
@@ -200,14 +201,14 @@ func TestPhase12_22_CheckpointToolBlock_SameIterRetry(t *testing.T) {
 	// and the message landed in exec.messages[-1]. Now feed that message
 	// into checkToolExecErrorRecovery to confirm it returns RetrySameIter.
 	// checkToolExecErrorRecovery returns (toolName, msg) with semantics:
-//   - archive case (counter exhausted): returns (toolName, msg) — toolName
-//     is the failing tool name (used for archive log)
-//   - retry case (counter < cap): returns ("", msg) — Phase 12.18 design
-//     propagates msg for callers (tests + future same-iter recovery) to
-//     inspect, but toolName is intentionally empty because the caller
-//     decides retry based on msg presence, not toolName.
-// For Phase 12.22 wiring, the retry case (msg non-empty + toolName "")
-// is the one that triggers same-iter BoundedRetry.
+	//   - archive case (counter exhausted): returns (toolName, msg) — toolName
+	//     is the failing tool name (used for archive log)
+	//   - retry case (counter < cap): returns ("", msg) — Phase 12.18 design
+	//     propagates msg for callers (tests + future same-iter recovery) to
+	//     inspect, but toolName is intentionally empty because the caller
+	//     decides retry based on msg presence, not toolName.
+	// For Phase 12.22 wiring, the retry case (msg non-empty + toolName "")
+	// is the one that triggers same-iter BoundedRetry.
 	exec.messages = append(exec.messages, providers.Message{
 		Role:    "tool",
 		Content: `tool "read_file" is temporarily unavailable (allowed tools: [complete_goal goal_progress])`,
@@ -218,7 +219,8 @@ func TestPhase12_22_CheckpointToolBlock_SameIterRetry(t *testing.T) {
 
 	startIter := ts.CurrentIteration()
 	// Phase 12.46: pre-check stamps typed ErrInvalidInput on gate blocks.
-	ts.lastToolResult = toolshared.ErrorResult(`tool "read_file" is temporarily unavailable`).WithErrorKind(toolshared.ErrInvalidInput)
+	ts.lastToolResult = toolshared.ErrorResult(`tool "read_file" is temporarily unavailable`).
+		WithErrorKind(toolshared.ErrInvalidInput)
 	toolName, msg := checkToolExecErrorRecovery(ts, exec)
 	if toolName != "" {
 		t.Errorf("expected toolName=empty for retry case (Phase 12.18 design), got %q", toolName)
@@ -383,8 +385,11 @@ func TestPhase12_22_CheckpointToolBlock_Exhaustion_ArchivesWithPhaseStuckReason(
 		t.Errorf("expected NO phase enum literal in lastPhaseStuckError (Phase 12.43), got %q", ts.lastPhaseStuckError)
 	}
 	if !strings.HasPrefix(ts.lastPhaseStuckError, "BoundedRetry exhausted") {
-		t.Errorf("expected lastPhaseStuckError = %q (Phase 12.51a.1 F02: recordPhaseStuckArchive msg wins over OnExhausted bare constant), got %q",
-			"BoundedRetry exhausted", ts.lastPhaseStuckError)
+		t.Errorf(
+			"expected lastPhaseStuckError = %q (Phase 12.51a.1 F02: recordPhaseStuckArchive msg wins over OnExhausted bare constant), got %q",
+			"BoundedRetry exhausted",
+			ts.lastPhaseStuckError,
+		)
 	}
 }
 
@@ -569,7 +574,9 @@ func TestPhase12_22_SingleIterCheckpoint_LowCap_ReachesArchive(t *testing.T) {
 	// would be false at this point and the loop would fall through to
 	// toolLimitResponse.
 	if !ts.goalArchiveRequested {
-		t.Errorf("Phase 12.22 wire failed: expected goalArchiveRequested=true, got false (user would see 'I've reached max_tool_iterations...')")
+		t.Errorf(
+			"Phase 12.22 wire failed: expected goalArchiveRequested=true, got false (user would see 'I've reached max_tool_iterations...')",
+		)
 	}
 
 	// Iteration MUST stay at startIter (no iter bump during same-iter

@@ -270,7 +270,9 @@ func (t *SetGoalTool) Execute(ctx context.Context, args map[string]any) *toolsha
 		return invalidInputForLLM("set_goal: 'name' is required and must be non-empty")
 	}
 	if !goalNameRe.MatchString(name) {
-		return invalidInputForLLM("set_goal: 'name' must match ^[A-Za-z0-9_-]{1,64}$ (ASCII letters, digits, hyphen, underscore; max 64 chars)")
+		return invalidInputForLLM(
+			"set_goal: 'name' must match ^[A-Za-z0-9_-]{1,64}$ (ASCII letters, digits, hyphen, underscore; max 64 chars)",
+		)
 	}
 	if objective == "" {
 		return invalidInputForLLM("set_goal: 'objective' is required and must be non-empty")
@@ -312,12 +314,25 @@ func (t *SetGoalTool) Execute(ctx context.Context, args map[string]any) *toolsha
 		return invalidInputForLLM("set_goal: validation failed: " + err.Error())
 	}
 	if err := store.Write(sessionKey, g); err != nil {
-		log.Printf("DEBUG[12.16] set_goal Write FAILED session=%s name=%s replaced=%v err=%v", sessionKey, name, replaced, err)
+		log.Printf(
+			"DEBUG[12.16] set_goal Write FAILED session=%s name=%s replaced=%v err=%v",
+			sessionKey,
+			name,
+			replaced,
+			err,
+		)
 		if tr := mapStoreError(err); tr != nil {
 			return tr
 		}
 	}
-	log.Printf("DEBUG[12.16] set_goal Write OK session=%s name=%s status=%s replaced=%v workspace=%s", sessionKey, name, g.Status, replaced, t.workspace)
+	log.Printf(
+		"DEBUG[12.16] set_goal Write OK session=%s name=%s status=%s replaced=%v workspace=%s",
+		sessionKey,
+		name,
+		g.Status,
+		replaced,
+		t.workspace,
+	)
 	// Phase 11: StatusSnapshot / cross-turn reminder mechanism removed
 	// (per-turn scope — the goal exists only for this turn, no need to
 	// seed cross-turn context). The prompt-injection slot that used to
@@ -526,10 +541,14 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 	next := strings.TrimSpace(stringArg(args, "next_action"))
 
 	if len(completed) == 0 && len(blockers) == 0 && len(remaining) == 0 && next == "" && !drift {
-		return invalidInputForLLM("goal_progress: at least one of completed_steps, blockers, remaining_steps, next_action, or drift_detected=true must be set")
+		return invalidInputForLLM(
+			"goal_progress: at least one of completed_steps, blockers, remaining_steps, next_action, or drift_detected=true must be set",
+		)
 	}
 	if drift && next == "" {
-		return invalidInputForLLM("goal_progress: when drift_detected=true you MUST also provide next_action describing how to realign")
+		return invalidInputForLLM(
+			"goal_progress: when drift_detected=true you MUST also provide next_action describing how to realign",
+		)
 	}
 	// Phase 12.80 (Goi A): remaining_steps is NO LONGER rejected when
 	// empty. It is still REQUIRED for the iteration-cap extension - an
@@ -610,7 +629,6 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 			// cap-free notice so the LLM doesn't re-attempt extend.
 			summary += "\nNo further extension is possible this turn."
 		}
-
 	}
 
 	// Phase 12.80 (Goi A): explain what an empty remaining_steps means
@@ -675,7 +693,10 @@ func (t *GoalProgressTool) Execute(ctx context.Context, args map[string]any) *to
 			// Phase 12.35: switched from synchronous ExtendIterationCap to
 			// RequestExtendIterationCap — deferred-extend semantics keep phase
 			// stable mid-iter.
-			_ = ext.RequestExtendIterationCap(amount, "goal_progress: checkpoint extend by MaxIterationsPerCheckpoint (clamped to ceiling if exceeded)")
+			_ = ext.RequestExtendIterationCap(
+				amount,
+				"goal_progress: checkpoint extend by MaxIterationsPerCheckpoint (clamped to ceiling if exceeded)",
+			)
 		}
 	}
 
@@ -747,7 +768,9 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, args map[string]any) *to
 	// final reply on the LLM's behalf — that would defeat the audit trail.
 	summary := strings.TrimSpace(stringArg(args, "summary"))
 	if summary == "" {
-		return invalidInputForLLM("complete_goal: `summary` is required (1-1000 chars). Provide your final user-facing reply.")
+		return invalidInputForLLM(
+			"complete_goal: `summary` is required (1-1000 chars). Provide your final user-facing reply.",
+		)
 	}
 	// Phase 12.44 (owner decision 2026-08-03): summaries longer than the
 	// wire cap are TRUNCATED for the archive (never rejected) — the FULL
@@ -795,7 +818,12 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, args map[string]any) *to
 			return tr
 		}
 	}
-	log.Printf("DEBUG[12.16] complete_goal Write OK session=%s name=%s summary_len=%d", sessionKey, g.Name, len(summary))
+	log.Printf(
+		"DEBUG[12.16] complete_goal Write OK session=%s name=%s summary_len=%d",
+		sessionKey,
+		g.Name,
+		len(summary),
+	)
 	if err := store.Archive(sessionKey); err != nil {
 		log.Printf("DEBUG[12.16] complete_goal Archive FAILED session=%s name=%s err=%v", sessionKey, g.Name, err)
 		if tr := mapStoreError(err); tr != nil {
@@ -815,7 +843,11 @@ func (t *CompleteGoalTool) Execute(ctx context.Context, args map[string]any) *to
 	// Phase 12.58.4: explanation dropped — the tool-feedback explanation
 	// path (Phase 12.58.3) already publishes the LLM's content text.
 	if ts := TurnStateFromContext(ctx); ts != nil && summary != "" {
-		ts.PublishGoalSummary(ctx, ToolCallPhaseFromContext(ctx), summary) // FULL summary — no truncate, void, best-effort
+		ts.PublishGoalSummary(
+			ctx,
+			ToolCallPhaseFromContext(ctx),
+			summary,
+		) // FULL summary — no truncate, void, best-effort
 	}
 	// Phase 11: mark the turn as finalized so the iteration loop breaks
 	// immediately after this tool result is processed. Without this, the

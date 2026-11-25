@@ -40,7 +40,7 @@ func TestToolNameFromMessages_ResolvesRealToolName(t *testing.T) {
 
 // TestToolNameFromMessages_UnknownCallID verifies the helper returns ""
 // for an ID that is not in any assistant message — the caller then falls
-// back to the call-id (pre-Phase-12.62 behaviour).
+// back to the call-id (pre-Phase-12.62 behavior).
 func TestToolNameFromMessages_UnknownCallID(t *testing.T) {
 	messages := []providers.Message{
 		{

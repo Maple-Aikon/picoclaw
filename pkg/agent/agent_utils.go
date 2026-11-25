@@ -183,7 +183,6 @@ func toolFeedbackExplanationFromToolCalls(toolCalls []providers.ToolCall) string
 	return ""
 }
 
-
 // toolFeedbackCardExplanationForRender returns the explanation text to embed
 // inside the tool_feedback card body. When a standalone explanation message
 // will already publish on a separate track (explanation_messages=true AND
@@ -392,7 +391,14 @@ func iterContextHeader(ts *turnState, phase GoalPhase, icon string) string {
 		return ""
 	}
 	if ts.turnID != "" {
-		return fmt.Sprintf("%s %s (#%d/%d) Goal-%s", icon, ts.turnID, ts.iteration, ts.maxIterationsCap, goalPhaseDisplayName(phase))
+		return fmt.Sprintf(
+			"%s %s (#%d/%d) Goal-%s",
+			icon,
+			ts.turnID,
+			ts.iteration,
+			ts.maxIterationsCap,
+			goalPhaseDisplayName(phase),
+		)
 	}
 	return fmt.Sprintf("%s (#%d/%d) Goal-%s", icon, ts.iteration, ts.maxIterationsCap, goalPhaseDisplayName(phase))
 }

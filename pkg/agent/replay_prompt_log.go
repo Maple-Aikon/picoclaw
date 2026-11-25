@@ -214,11 +214,11 @@ func escapeReplayLine(s string) string {
 
 // clipReplayLine truncates s to at most max runes and appends a visible
 // "...[truncated N bytes]" marker when content was cut (A-F02/B-F02).
-func clipReplayLine(s string, max int) string {
-	if utf8.RuneCountInString(s) <= max {
+func clipReplayLine(s string, limit2 int) string {
+	if utf8.RuneCountInString(s) <= limit2 {
 		return s
 	}
-	trunc := truncateReplayRunes(s, max)
+	trunc := truncateReplayRunes(s, limit2)
 	return trunc + fmt.Sprintf("...[truncated %d bytes]", len(s)-len(trunc))
 }
 
@@ -227,14 +227,14 @@ func clipReplayLine(s string, max int) string {
 // diacritic. Rune-safe (Phase 12.28.3: byte length != rune count).
 // Pattern copied from pkg/agent/goal/text.go (Phase 12.44) — kept local
 // to avoid a public API change in the goal package for one log helper.
-func truncateReplayRunes(s string, max int) string {
-	if max <= 0 || s == "" {
+func truncateReplayRunes(s string, limit2 int) string {
+	if limit2 <= 0 || s == "" {
 		return ""
 	}
-	if utf8.RuneCountInString(s) <= max {
+	if utf8.RuneCountInString(s) <= limit2 {
 		return s
 	}
-	out := []rune(s)[:max]
+	out := []rune(s)[:limit2]
 	for len(out) > 0 && unicode.Is(unicode.Mn, out[len(out)-1]) {
 		out = out[:len(out)-1]
 	}
@@ -255,8 +255,8 @@ func writeReplayPromptLog(path string, block string) error {
 		return err
 	}
 	defer f.Close()
-	if err := f.Chmod(0o640); err != nil {
-		return err
+	if err2 := f.Chmod(0o640); err2 != nil {
+		return err2
 	}
 	_, err = f.WriteString(block)
 	return err

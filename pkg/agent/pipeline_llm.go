@@ -809,9 +809,10 @@ func (p *Pipeline) proceedPastLLM(
 		runtimeevents.KindAgentLLMResponse,
 		ts.eventMeta("runTurn", "turn.llm.response"),
 		LLMResponsePayload{
-			ContentLen:   len(exec.response.Content),
-			ToolCalls:    len(exec.response.ToolCalls),
-			HasReasoning: exec.response.Reasoning != "" || exec.response.ReasoningContent != "" || len(exec.response.ReasoningDetails) > 0,
+			ContentLen: len(exec.response.Content),
+			ToolCalls:  len(exec.response.ToolCalls),
+			HasReasoning: exec.response.Reasoning != "" || exec.response.ReasoningContent != "" ||
+				len(exec.response.ReasoningDetails) > 0,
 		},
 	)
 
@@ -939,7 +940,11 @@ func (p *Pipeline) proceedPastLLM(
 	// id unique giữ nguyên format provider. Đặt SAU strip site (final-report
 	// iter): strip không gọi helper → toolCallSeq không đổi (T11b guard).
 	if len(exec.normalizedToolCalls) > 0 {
-		exec.normalizedToolCalls = ts.rewriteToolCallIDs(exec.normalizedToolCalls, collectToolCallIDs(exec.messages), time.Now)
+		exec.normalizedToolCalls = ts.rewriteToolCallIDs(
+			exec.normalizedToolCalls,
+			collectToolCallIDs(exec.messages),
+			time.Now,
+		)
 	}
 
 	toolNames := make([]string, 0, len(exec.normalizedToolCalls))
@@ -1128,7 +1133,14 @@ func (p *Pipeline) handleHookReplay(
 			)
 			// Phase 12.30: log retry attempt.
 			if IsAgentDebugEnabled() {
-				AgentDebugRetryAttempt(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), rc.Attempt+1, "HookReplay")
+				AgentDebugRetryAttempt(
+					ts.turnID,
+					ts.sessionKey,
+					iteration,
+					ts.currentGoalPhase(),
+					rc.Attempt+1,
+					"HookReplay",
+				)
 			}
 			logger.DebugCF("agent", "Replaying LLM (same iteration)", map[string]any{
 				"agent_id":  ts.agent.ID,
@@ -1235,7 +1247,6 @@ func (p *Pipeline) handleHookReplay(
 		}
 		return RetryDecisionDone, nil
 	})
-
 	if err != nil {
 		return ControlBreak, err
 	}
@@ -1352,7 +1363,14 @@ func (p *Pipeline) handleGoalRecovery(
 			})
 			// Phase 12.30: log retry attempt.
 			if IsAgentDebugEnabled() {
-				AgentDebugRetryAttempt(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), rc.Attempt+1, "GoalRecovery")
+				AgentDebugRetryAttempt(
+					ts.turnID,
+					ts.sessionKey,
+					iteration,
+					ts.currentGoalPhase(),
+					rc.Attempt+1,
+					"GoalRecovery",
+				)
 			}
 		},
 		OnExhausted: func(rc RetryContext) {
@@ -1456,7 +1474,9 @@ func (p *Pipeline) handleGoalRecovery(
 			// retries used). This is the "exhausted" terminal — archive the
 			// goal and exit the retry loop with RetryDecisionAbort, so the
 			// caller returns ControlBreak and the loop terminates the turn.
-			if ts.emptyResponseRecoveryCount >= EmptyResponseRecoveryCap || ts.textOnlySoftRetriesDone > 0 || ts.textOnlyHardRetriesDone > 0 || ts.toolExecRecoveryAttempts != nil {
+			if ts.emptyResponseRecoveryCount >= EmptyResponseRecoveryCap || ts.textOnlySoftRetriesDone > 0 ||
+				ts.textOnlyHardRetriesDone > 0 ||
+				ts.toolExecRecoveryAttempts != nil {
 				logFields["action"] = "exhausted_archive"
 				logger.InfoCF("agent", "Goal recovery exhausted in same iteration", logFields)
 				if rc.Attempt > 0 {
@@ -1494,7 +1514,6 @@ func (p *Pipeline) handleGoalRecovery(
 		}
 		return RetryDecisionDone, nil
 	})
-
 	if err != nil {
 		return ControlBreak, err
 	}
@@ -1538,7 +1557,11 @@ func (p *Pipeline) stageRecoveryToolCalls(ts *turnState, exec *turnExecution, tu
 	}
 	// Phase 12.61: layer-1 rewrite (dup/empty/occupied) — mirror proceedPastLLM.
 	if len(exec.normalizedToolCalls) > 0 {
-		exec.normalizedToolCalls = ts.rewriteToolCallIDs(exec.normalizedToolCalls, collectToolCallIDs(exec.messages), time.Now)
+		exec.normalizedToolCalls = ts.rewriteToolCallIDs(
+			exec.normalizedToolCalls,
+			collectToolCallIDs(exec.messages),
+			time.Now,
+		)
 	}
 	reasoningContent := responseReasoningContent(exec.response)
 	assistantMsg := providers.Message{
@@ -1707,7 +1730,14 @@ func (p *Pipeline) RecallLLM(
 					})
 				}
 				// Tier 1.1: pass Usage (replay path — resp is *providers.LLMResponse).
-				AgentDebugLLMResponse(ts.turnID, ts.sessionKey, iteration, ts.currentGoalPhase(), resp.Usage, toolSummaries)
+				AgentDebugLLMResponse(
+					ts.turnID,
+					ts.sessionKey,
+					iteration,
+					ts.currentGoalPhase(),
+					resp.Usage,
+					toolSummaries,
+				)
 			}
 			logReplayPromptBlock(replayBlockInput{
 				turnID:     ts.turnID,

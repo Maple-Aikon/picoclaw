@@ -80,9 +80,12 @@ func (ts *turnState) finalizeGoalOnTurnEndWithCount(reason string, count int) er
 	g, err := store.Read(sessionKey)
 	if err != nil {
 		// Goal file missing or unreadable — nothing to finalize.
+		// A missing/unreadable goal file is the NORMAL case here: there
+		// is nothing to finalize, so the error is logged and swallowed
+		// on purpose.
 		logger.DebugCF("agent", "finalizeGoalOnTurnEnd: no active goal to archive",
 			map[string]any{"session": sessionKey, "reason": reason, "error": err.Error()})
-		return nil
+		return nil //nolint:nilerr // intentional: no goal file means nothing to archive
 	}
 	if g == nil {
 		return nil
@@ -121,11 +124,11 @@ func (ts *turnState) finalizeGoalOnTurnEndWithCount(reason string, count int) er
 
 	logger.InfoCF("agent", "Goal aborted by finalizeGoalOnTurnEnd",
 		map[string]any{
-			"agent_id":     ts.agent.ID,
-			"session":      sessionKey,
-			"name":         g.Name,
-			"reason":       reason,
-			"aborted_at":   now.Format(time.RFC3339),
+			"agent_id":   ts.agent.ID,
+			"session":    sessionKey,
+			"name":       g.Name,
+			"reason":     reason,
+			"aborted_at": now.Format(time.RFC3339),
 		})
 	return nil
 }
@@ -163,7 +166,7 @@ func (ts *turnState) goalArchiveRequestedFromState() string {
 //   - No workspace / no session key / no store → return nil (no-op).
 //   - No active goal on disk → return nil (idempotent).
 //   - Active goal on disk → mark StatusAborted + AbortReason="stale_turn_boundary"
-//     + AbortedAt=now, write back, then move to archive/ dir.
+//   - AbortedAt=now, write back, then move to archive/ dir.
 //   - All errors are propagated (caller logs but does not fail SetupTurn
 //     because the worst case is a stale file that the LLM will
 //     surface via view_goal — recoverable on the next iteration).
@@ -181,7 +184,10 @@ func archiveStaleGoalOnTurnStart(al *AgentLoop, sessionKey string) error {
 	// non-[set_goal] tools at iter 1). Production callers MUST leave
 	// skipGoalArchiveOnTurnStart=false.
 	if al.skipGoalArchiveOnTurnStart.Load() {
-		log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart SKIP skipGoalArchiveOnTurnStart=true session=%s", sessionKey)
+		log.Printf(
+			"DEBUG[12.16] archiveStaleGoalOnTurnStart SKIP skipGoalArchiveOnTurnStart=true session=%s",
+			sessionKey,
+		)
 		return nil
 	}
 	if al.goalStore() == nil {
@@ -203,11 +209,20 @@ func archiveStaleGoalOnTurnStart(al *AgentLoop, sessionKey string) error {
 		if g == nil {
 			log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart no-op session=%s goal=nil", sessionKey)
 		} else {
-			log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart no-op session=%s status=%s (not active)", sessionKey, g.Status)
+			log.Printf(
+				"DEBUG[12.16] archiveStaleGoalOnTurnStart no-op session=%s status=%s (not active)",
+				sessionKey,
+				g.Status,
+			)
 		}
 		return nil
 	}
-	log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart ARCHIVING session=%s name=%s status=%s", sessionKey, g.Name, g.Status)
+	log.Printf(
+		"DEBUG[12.16] archiveStaleGoalOnTurnStart ARCHIVING session=%s name=%s status=%s",
+		sessionKey,
+		g.Name,
+		g.Status,
+	)
 	now := time.Now().UTC()
 	g.Status = goal.StatusAborted
 	g.AbortedAt = &now
@@ -229,6 +244,7 @@ func archiveStaleGoalOnTurnStart(al *AgentLoop, sessionKey string) error {
 	log.Printf("DEBUG[12.16] archiveStaleGoalOnTurnStart Archive OK session=%s name=%s", sessionKey, g.Name)
 	return nil
 }
+
 // archiveAndResetPriorTurnGoal is the Phase 12.25 cross-turn scope hook.
 // It is fired at the START of every new turn (after SetupTurn, BEFORE the
 // Phase 12.9 cap+1 pre-loop bump) to enforce the per-turn goal scope:

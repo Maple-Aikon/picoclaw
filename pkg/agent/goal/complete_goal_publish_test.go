@@ -33,6 +33,7 @@ func (s *publishSpy) PublishToUser(_ context.Context, text string) {
 	s.published = append(s.published, text)
 	s.finalizedAtPublish = append(s.finalizedAtPublish, s.finalized)
 }
+
 func (s *publishSpy) PublishGoalSummary(_ context.Context, phase, summary string) {
 	s.phases = append(s.phases, phase)
 	s.published = append(s.published, summary)
@@ -92,14 +93,21 @@ func TestCompleteGoalTool_TruncatesArchivedSummaryAt1000Runes(t *testing.T) {
 	}
 	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{"summary": full})
 	if res.IsError {
-		t.Fatalf("2000-rune summary must NOT be rejected (truncate, not reject); got isErr=%v msg=%q", res.IsError, res.ForLLM)
+		t.Fatalf(
+			"2000-rune summary must NOT be rejected (truncate, not reject); got isErr=%v msg=%q",
+			res.IsError,
+			res.ForLLM,
+		)
 	}
 	// Channel got the FULL original.
 	if spy.publishedCount() != 1 {
 		t.Fatalf("expected exactly 1 publish, got %d", spy.publishedCount())
 	}
 	if utf8.RuneCountInString(spy.published[0]) != 2000 {
-		t.Errorf("published summary must be the FULL 2000 runes (no truncate), got %d runes", utf8.RuneCountInString(spy.published[0]))
+		t.Errorf(
+			"published summary must be the FULL 2000 runes (no truncate), got %d runes",
+			utf8.RuneCountInString(spy.published[0]),
+		)
 	}
 	// Archive got exactly 1000 runes.
 	store := newStoreFromCtx(ctx, ws)
@@ -246,7 +254,11 @@ func TestCompleteGoalTool_PublishesFullSummaryUncut(t *testing.T) {
 	full := vnRunes(5000)
 	res := NewCompleteGoalTool(ws).Execute(ctx, map[string]any{"summary": full})
 	if res.IsError {
-		t.Fatalf("5000-rune summary must be accepted (truncate archived only); got isErr=%v msg=%q", res.IsError, res.ForLLM)
+		t.Fatalf(
+			"5000-rune summary must be accepted (truncate archived only); got isErr=%v msg=%q",
+			res.IsError,
+			res.ForLLM,
+		)
 	}
 	if spy.publishedCount() != 1 {
 		t.Fatalf("expected exactly 1 publish, got %d", spy.publishedCount())

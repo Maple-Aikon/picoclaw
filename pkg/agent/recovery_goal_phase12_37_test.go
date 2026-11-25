@@ -31,7 +31,10 @@ func TestEmptyResponse_FiresAtRestrictedPhases_Phase12_37(t *testing.T) {
 		if action != RecoveryRetrySameIteration {
 			t.Fatalf("phase=%s: want RecoveryRetrySameIteration, got %v", phase, action)
 		}
-		if !strings.HasPrefix(msg, EmptyResponseRecoveryMessage) { // Phase 12.38: suffix appended via buildEmptyResponseRetryMessageWithPhase
+		if !strings.HasPrefix(
+			msg,
+			EmptyResponseRecoveryMessage,
+		) { // Phase 12.38: suffix appended via buildEmptyResponseRetryMessageWithPhase
 			t.Fatalf("phase=%s: want soft msg, got %q", phase, msg)
 		}
 		if ts.emptyResponseRecoveryCount != 1 {
@@ -84,10 +87,10 @@ func TestEmptyResponse_FinalPostReport_Silent_Phase12_37(t *testing.T) {
 	ts := newPhase5TurnState(t)
 	ts.emptyResponseRecoveryCount = 0
 	action, _ := evaluateRecovery(ts, RecoveryContext{
-		Phase:                 "final",
-		Iteration:             10,
-		TextEmpty:             true,
-		HasToolCalls:          false,
+		Phase:                  "final",
+		Iteration:              10,
+		TextEmpty:              true,
+		HasToolCalls:           false,
 		PostCompleteGoalReport: true,
 	})
 	if action != RecoveryNone {
@@ -108,7 +111,10 @@ func TestEmptyResponse_Open_StillFires_Phase12_37(t *testing.T) {
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("want RetrySameIteration, got %v", action)
 	}
-	if !strings.HasPrefix(msg, EmptyResponseRecoveryMessage) { // Phase 12.38: suffix appended via buildEmptyResponseRetryMessageWithPhase
+	if !strings.HasPrefix(
+		msg,
+		EmptyResponseRecoveryMessage,
+	) { // Phase 12.38: suffix appended via buildEmptyResponseRetryMessageWithPhase
 		t.Fatalf("want soft msg, got %q", msg)
 	}
 	if ts.emptyResponseRecoveryCount != 1 {
@@ -139,7 +145,10 @@ func TestTextOnlyRestricted_FirstAttempt_SoftMessage_Phase12_37(t *testing.T) {
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("want RetrySameIteration, got %v", action)
 	}
-	if !strings.HasPrefix(msg, TextOnlySoftRetryMessage) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
+	if !strings.HasPrefix(
+		msg,
+		TextOnlySoftRetryMessage,
+	) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
 		t.Fatalf("want soft msg, got %q", msg)
 	}
 	if ts.textOnlySoftRetriesDone != 1 {
@@ -164,7 +173,10 @@ func TestTextOnlyRestricted_SecondAttempt_StillSoft_Phase12_37(t *testing.T) {
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("want RetrySameIteration, got %v", action)
 	}
-	if !strings.HasPrefix(msg, TextOnlySoftRetryMessage) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
+	if !strings.HasPrefix(
+		msg,
+		TextOnlySoftRetryMessage,
+	) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
 		t.Fatalf("want soft msg on 2nd attempt, got %q", msg)
 	}
 	if ts.textOnlySoftRetriesDone != 2 {
@@ -218,10 +230,10 @@ func TestTextOnlyRestricted_FinalPostReport_Silent_Phase12_37(t *testing.T) {
 	ts := newPhase5TurnState(t)
 	ts.textOnlySoftRetriesDone = 0
 	action, _ := evaluateRecovery(ts, RecoveryContext{
-		Phase:                 "final",
-		Iteration:             10,
-		TextEmpty:             false,
-		HasToolCalls:          false,
+		Phase:                  "final",
+		Iteration:              10,
+		TextEmpty:              false,
+		HasToolCalls:           false,
 		PostCompleteGoalReport: true,
 	})
 	if action != RecoveryNone {

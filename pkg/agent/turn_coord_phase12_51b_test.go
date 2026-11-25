@@ -13,6 +13,7 @@
 //
 // Tests assert behavior at the helper entrypoint only; full turn loop
 // behavior is covered by live verify (plan v13 §5.2 V1-V6).
+
 package agent
 
 import (
@@ -34,9 +35,12 @@ func TestApplyFallbackForEmptyResponse_CheckpointIterCap_ReturnsCheckpointRetry(
 	const sessionKey = "test-12-51b-w7-checkpoint"
 	st := goal.NewStore(agent.Workspace)
 	g := &goal.Goal{
-		Name:        "escape-hatch-w7",
-		Description: goal.Description{Objective: "branch 1.5 test", SuccessCriteria: []string{"phase-agnostic message returned"}},
-		Status:      goal.StatusActive,
+		Name: "escape-hatch-w7",
+		Description: goal.Description{
+			Objective:       "branch 1.5 test",
+			SuccessCriteria: []string{"phase-agnostic message returned"},
+		},
+		Status: goal.StatusActive,
 	}
 	if err := st.Write(sessionKey, g); err != nil {
 		t.Fatalf("seed goal: %v", err)
@@ -75,9 +79,12 @@ func TestApplyFallbackForEmptyResponse_FinalIterCap_ReturnsFinalRetry(t *testing
 	const sessionKey = "test-12-51b-w8-final"
 	st := goal.NewStore(agent.Workspace)
 	g := &goal.Goal{
-		Name:        "final-escape-w8",
-		Description: goal.Description{Objective: "branch 1.5 final test", SuccessCriteria: []string{"phase-agnostic final msg"}},
-		Status:      goal.StatusActive,
+		Name: "final-escape-w8",
+		Description: goal.Description{
+			Objective:       "branch 1.5 final test",
+			SuccessCriteria: []string{"phase-agnostic final msg"},
+		},
+		Status: goal.StatusActive,
 	}
 	if err := st.Write(sessionKey, g); err != nil {
 		t.Fatalf("seed goal: %v", err)
@@ -235,11 +242,12 @@ func TestApplyFallbackForEmptyResponse_CheckpointNoGoalFinalized_ReturnsRetry(t 
 // W13 (precedence) — goalSummary beats everything else, including phase-stuck
 // and the new retry hint. Plan §3.5 documents the FULL preference order
 // (lines 779-781 verified at HEAD):
-//   1. goal.Summary (when goalFinalized + empty assistantText)
-//   2. branch 1.5 retry hint (when iter=cap + active goal + phase ∈ Checkpoint/Final)
-//   3. phaseStuckFallbackMessage (when StatusAborted + AbortReason)
-//   4. toolLimitResponse (when iter>=cap)
-//   5. opts.DefaultResponse
+//  1. goal.Summary (when goalFinalized + empty assistantText)
+//  2. branch 1.5 retry hint (when iter=cap + active goal + phase ∈ Checkpoint/Final)
+//  3. phaseStuckFallbackMessage (when StatusAborted + AbortReason)
+//  4. toolLimitResponse (when iter>=cap)
+//  5. opts.DefaultResponse
+//
 // This test verifies goal.Summary precedence by setting all 3 higher-priority
 // conditions simultaneously and asserting goal.Summary wins.
 func TestApplyFallbackForEmptyResponse_GoalSummaryPrecedenceOverRetryHint(t *testing.T) {

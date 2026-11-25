@@ -25,6 +25,12 @@ func TestZZModeA1117TailBody(t *testing.T) {
 		}
 		auto := store.LoadForEscalation(name)
 		fmt.Printf("### %s : srcH2=%d autoB=%d\n", name, len(heads), len(auto))
+		if len(heads) == 0 {
+			// No H2 heading at all (empty or heading-less entry). The
+			// index below would panic with "index out of range [-1]".
+			fmt.Printf("  !! NO H2 HEADING in %s (srcH2=%d)\n", name, len(heads))
+			continue
+		}
 		last := heads[len(heads)-1]
 		idx := strings.Index(auto, last)
 		fmt.Printf("LAST_SRC_HEADING: %s\n", last)

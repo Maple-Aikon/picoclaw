@@ -345,10 +345,10 @@ func TestParseResponseBody(t *testing.T) {
 				ToolCalls:    []ToolCall{},
 				FinishReason: "stop",
 				Usage: &UsageInfo{
-					PromptTokens:         1000,
-					CompletionTokens:     100,
-					TotalTokens:          1100,
-					CacheReadInputTokens: 600,
+					PromptTokens:          1000,
+					CompletionTokens:      100,
+					TotalTokens:           1100,
+					CacheReadInputTokens:  600,
 					CacheWriteInputTokens: 400,
 				},
 				Reasoning:        "",
@@ -380,10 +380,10 @@ func TestParseResponseBody(t *testing.T) {
 				ToolCalls:    []ToolCall{},
 				FinishReason: "stop",
 				Usage: &UsageInfo{
-					PromptTokens:         500,
-					CompletionTokens:     50,
-					TotalTokens:          550,
-					CacheReadInputTokens: 0,
+					PromptTokens:          500,
+					CompletionTokens:      50,
+					TotalTokens:           550,
+					CacheReadInputTokens:  0,
 					CacheWriteInputTokens: 0,
 				},
 				Reasoning:        "",
@@ -819,19 +819,19 @@ func TestProviderChatErrors(t *testing.T) {
 func TestChatExtraBody(t *testing.T) {
 	tests := []struct {
 		name       string
-		extraBody   map[string]any
+		extraBody  map[string]any
 		wantFields map[string]any
 	}{
 		{
-			name:     "thinking adaptive injected",
+			name:      "thinking adaptive injected",
 			extraBody: map[string]any{"thinking": map[string]any{"type": "adaptive"}},
 			wantFields: map[string]any{
 				"thinking": map[string]any{"type": "adaptive"},
 			},
 		},
 		{
-			name:     "nil extra body is no-op",
-			extraBody: nil,
+			name:       "nil extra body is no-op",
+			extraBody:  nil,
 			wantFields: map[string]any{},
 		},
 	}
@@ -843,11 +843,15 @@ func TestChatExtraBody(t *testing.T) {
 
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				gotPath = r.URL.Path
-				gotAPIKey = r.Header.Get("X-API-Key")
+				gotAPIKey = r.Header.Get("X-Api-Key")
 				gotVersion = r.Header.Get("Anthropic-Version")
 				_ = json.NewDecoder(r.Body).Decode(&gotBody)
 				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":1,"output_tokens":1}}`))
+				_, _ = w.Write(
+					[]byte(
+						`{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":1,"output_tokens":1}}`,
+					),
+				)
 			}))
 			defer srv.Close()
 
@@ -907,7 +911,11 @@ func TestChatExtraBodyDoesNotOverrideCoreFields(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":1,"output_tokens":1}}`))
+		_, _ = w.Write(
+			[]byte(
+				`{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":1,"output_tokens":1}}`,
+			),
+		)
 	}))
 	defer srv.Close()
 
@@ -941,24 +949,24 @@ func TestParseResponseBodyThinking(t *testing.T) {
 		wantToolCalls    int
 	}{
 		{
-			name: "thinking + text blocks",
-			body: `{"id":"msg-t","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Let me reason about this step by step.","signature":"sig-abc"},{"type":"text","text":"The answer is 42."}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":10,"output_tokens":20}}`,
+			name:             "thinking + text blocks",
+			body:             `{"id":"msg-t","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Let me reason about this step by step.","signature":"sig-abc"},{"type":"text","text":"The answer is 42."}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":10,"output_tokens":20}}`,
 			wantContent:      "The answer is 42.",
 			wantReasoning:    "Let me reason about this step by step.",
 			wantFinishReason: "stop",
 			wantToolCalls:    0,
 		},
 		{
-			name: "thinking only (reasoning-only response)",
-			body: `{"id":"msg-r","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"I should call set_goal now.","signature":"sig-xyz"}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":10,"output_tokens":20}}`,
+			name:             "thinking only (reasoning-only response)",
+			body:             `{"id":"msg-r","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"I should call set_goal now.","signature":"sig-xyz"}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":10,"output_tokens":20}}`,
 			wantContent:      "",
 			wantReasoning:    "I should call set_goal now.",
 			wantFinishReason: "stop",
 			wantToolCalls:    0,
 		},
 		{
-			name: "thinking + tool_use (no text)",
-			body: `{"id":"msg-tt","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Tool time.","signature":"sig-1"},{"type":"tool_use","id":"tu-1","name":"set_goal","input":{"objective":"x"}}],"stop_reason":"tool_use","model":"MiniMax-M3","usage":{"input_tokens":10,"output_tokens":20}}`,
+			name:             "thinking + tool_use (no text)",
+			body:             `{"id":"msg-tt","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Tool time.","signature":"sig-1"},{"type":"tool_use","id":"tu-1","name":"set_goal","input":{"objective":"x"}}],"stop_reason":"tool_use","model":"MiniMax-M3","usage":{"input_tokens":10,"output_tokens":20}}`,
 			wantContent:      "",
 			wantReasoning:    "Tool time.",
 			wantFinishReason: "tool_calls",
@@ -1036,7 +1044,7 @@ func TestBuildRequestBody_ToolCallFunctionNameFallback(t *testing.T) {
 
 	var toolUse map[string]any
 	for _, block := range content {
-		if b, ok := block.(map[string]any); ok && b["type"] == "tool_use" {
+		if b, ok2 := block.(map[string]any); ok2 && b["type"] == "tool_use" {
 			toolUse = b
 			break
 		}
@@ -1050,7 +1058,7 @@ func TestBuildRequestBody_ToolCallFunctionNameFallback(t *testing.T) {
 	if toolUse["name"] != "set_goal" {
 		t.Errorf("tool_use name = %v, want set_goal", toolUse["name"])
 	}
-	if input, ok := toolUse["input"].(map[string]any); !ok || input["objective"] != "x" {
+	if input, ok2 := toolUse["input"].(map[string]any); !ok2 || input["objective"] != "x" {
 		t.Errorf("tool_use input = %v, want {objective: x} parsed from Function.Arguments", toolUse["input"])
 	}
 
@@ -1067,6 +1075,7 @@ func TestBuildRequestBody_ToolCallFunctionNameFallback(t *testing.T) {
 		t.Errorf("tool_result tool_use_id = %v, want call_1", toolContent[0]["tool_use_id"])
 	}
 }
+
 // TestParseResponseBody_UnescapesDoubleEscapedToolArgs is a wire-level test
 // for the MiniMax-M3 double-escape quirk on the Anthropic-compatible path:
 // the model serializes a real newline as the literal 2-char "\\n" inside the

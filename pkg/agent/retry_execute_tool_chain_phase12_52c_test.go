@@ -9,6 +9,7 @@
 // (it is never reset — verified by grep — so it persists into the next turn),
 // and phaseStuckFallbackMessage must never render "failed 0 attempt(s)" when
 // the per-iteration counters were reset at the next turn boundary.
+
 package agent
 
 import (
@@ -96,8 +97,8 @@ func TestFinalizePhaseStuckArchive_StampsAttemptCount(t *testing.T) {
 	})
 	ts.sessionKey = "t2-fd"
 	ws := t.TempDir()
-	ts.workspace = ws                  // hasGoal() reads ts.workspace
-	ts.agent.Workspace = ws            // finalizeGoalOnTurnEnd writes via agent.Workspace
+	ts.workspace = ws       // hasGoal() reads ts.workspace
+	ts.agent.Workspace = ws // finalizeGoalOnTurnEnd writes via agent.Workspace
 	if err := goal.NewStore(ws).Write(ts.sessionKey, &goal.Goal{
 		Name:        "fd",
 		Status:      goal.StatusActive,

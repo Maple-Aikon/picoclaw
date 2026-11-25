@@ -1186,8 +1186,13 @@ func TestProcessMessage_UseCommandLoadsRequestedSkill(t *testing.T) {
 		t.Fatalf("no turn-root user message in provider.lastMessages")
 	}
 	// Layout B: dynamic context is prepended to user[0], original text is included in turn.
-	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.Contains(lastMessage.Content, "explain how to list files") {
-		t.Fatalf("last provider message = %+v, want user message with dynamic_context prefix and %q included", lastMessage, "explain how to list files")
+	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") ||
+		!strings.Contains(lastMessage.Content, "explain how to list files") {
+		t.Fatalf(
+			"last provider message = %+v, want user message with dynamic_context prefix and %q included",
+			lastMessage,
+			"explain how to list files",
+		)
 	}
 }
 
@@ -1336,7 +1341,11 @@ func TestProcessMessage_BtwCommandIncludesRequestContextAndMedia(t *testing.T) {
 		t.Fatalf("user message missing current sender context:\n%s", lastMessage.Content)
 	}
 	if !strings.HasSuffix(lastMessage.Content, "describe this image") {
-		t.Fatalf("last provider message = %+v, want user suffix %q after dynamic_context block", lastMessage, "describe this image")
+		t.Fatalf(
+			"last provider message = %+v, want user suffix %q after dynamic_context block",
+			lastMessage,
+			"describe this image",
+		)
 	}
 	if !reflect.DeepEqual(lastMessage.Media, []string{"media://image-1"}) {
 		t.Fatalf("last provider media = %#v, want media ref", lastMessage.Media)
@@ -1407,8 +1416,13 @@ func TestProcessMessage_BtwCommandUsesIsolatedProvider(t *testing.T) {
 		t.Fatalf("no turn-root user message in provider.lastMessages")
 	}
 	// Layout B: dynamic context prepended to user[0], stripped /btw text is the suffix.
-	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.HasSuffix(lastMessage.Content, "explain isolation") {
-		t.Fatalf("last provider message = %+v, want dynamic_context prefix and %q suffix", lastMessage, "explain isolation")
+	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") ||
+		!strings.HasSuffix(lastMessage.Content, "explain isolation") {
+		t.Fatalf(
+			"last provider message = %+v, want dynamic_context prefix and %q suffix",
+			lastMessage,
+			"explain isolation",
+		)
 	}
 
 	// Verify main session history was NOT modified
@@ -1646,8 +1660,13 @@ func TestProcessMessage_UseCommandArmsSkillForNextMessage(t *testing.T) {
 		t.Fatalf("no turn-root user message in provider.lastMessages")
 	}
 	// Layout B: original user text is preserved in user message with dynamic_context block.
-	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") || !strings.Contains(lastMessage.Content, "explain how to list files") {
-		t.Fatalf("last provider message = %+v, want unchanged follow-up user message containing dynamic_context and %q", lastMessage, "explain how to list files")
+	if !strings.HasPrefix(lastMessage.Content, "<dynamic_context>") ||
+		!strings.Contains(lastMessage.Content, "explain how to list files") {
+		t.Fatalf(
+			"last provider message = %+v, want unchanged follow-up user message containing dynamic_context and %q",
+			lastMessage,
+			"explain how to list files",
+		)
 	}
 }
 
@@ -7983,8 +8002,11 @@ func TestProcessMessage_DoesNotLeakReasoningContentWhenNoReasoningChannel(t *tes
 		t.Fatalf("processMessage() error = %v", err)
 	}
 	if response != defaultResponse {
-		t.Fatalf("processMessage() response = %q, want DefaultResponse %q (reasoning content must not leak into main response)",
-			response, defaultResponse)
+		t.Fatalf(
+			"processMessage() response = %q, want DefaultResponse %q (reasoning content must not leak into main response)",
+			response,
+			defaultResponse,
+		)
 	}
 
 	// Drain outbound channel for a short window and assert no message ever
@@ -8048,8 +8070,11 @@ func TestProcessMessage_ReasoningOnlyRoutesToReasoningChannelWhenConfigured(t *t
 		t.Fatalf("processMessage() error = %v", err)
 	}
 	if response != defaultResponse {
-		t.Fatalf("processMessage() response = %q, want DefaultResponse %q (reasoning-only must NEVER be promoted to main response — reasoning-only = silent)",
-			response, defaultResponse)
+		t.Fatalf(
+			"processMessage() response = %q, want DefaultResponse %q (reasoning-only must NEVER be promoted to main response — reasoning-only = silent)",
+			response,
+			defaultResponse,
+		)
 	}
 
 	// Expect reasoning content to also land in the configured reasoning channel

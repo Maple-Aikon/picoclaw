@@ -7,6 +7,7 @@
 
 // Package bedrock provides a stub implementation when built without the bedrock tag.
 // To enable AWS Bedrock support, build with: go build -tags bedrock
+
 package bedrock
 
 import (

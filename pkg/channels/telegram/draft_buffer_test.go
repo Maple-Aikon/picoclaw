@@ -16,7 +16,7 @@ type fakePusher struct {
 	mu          sync.Mutex
 	pushCalls   []string
 	clearCalls  int
-	pushErrAt   int    // 0 = never fail; N = fail on the Nth push
+	pushErrAt   int // 0 = never fail; N = fail on the Nth push
 	pushErr     error
 	pushDelay   time.Duration
 	currentCall int32 // atomic counter matching len(pushCalls) but lock-free
@@ -123,7 +123,7 @@ func TestDraftBuffer_CancelDropsAndClears(t *testing.T) {
 	if err := b.Cancel(context.Background()); err != nil {
 		t.Errorf("second Cancel returned %v, want nil", err)
 	}
-	calls, clears = fp.snapshot()
+	_, clears = fp.snapshot()
 	if clears != 1 {
 		t.Errorf("second Cancel should not re-clear, got %d ClearDraft calls", clears)
 	}

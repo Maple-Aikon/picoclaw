@@ -324,7 +324,11 @@ func TestGoalProgressTool_DriftRequiresNextAction(t *testing.T) {
 		"drift_detected":  true,
 	})
 	if !res.IsError || res.ErrKind != toolshared.ErrInvalidInput {
-		t.Errorf("expected invalid_input when drift=true without next_action, got isErr=%v kind=%q", res.IsError, res.ErrKind)
+		t.Errorf(
+			"expected invalid_input when drift=true without next_action, got isErr=%v kind=%q",
+			res.IsError,
+			res.ErrKind,
+		)
 	}
 }
 
@@ -617,15 +621,15 @@ func TestStringSliceArg_WhitespaceOnlyDrops(t *testing.T) {
 // goal_progress → ExtendIterationCap wire contract without needing a real
 // turnState. Tracks call count and last reason.
 type fakeExtender struct {
-	mu             sync.Mutex
-	remaining      int
-	canExtend      bool
-	iterCap        int
-	maxPerCheck    int
-	maxCap         int
-	extendCalls    int
-	lastReason     string
-	lastN          int
+	mu          sync.Mutex
+	remaining   int
+	canExtend   bool
+	iterCap     int
+	maxPerCheck int
+	maxCap      int
+	extendCalls int
+	lastReason  string
+	lastN       int
 	// Phase 12.35: deferred-extend semantics.
 	requestCalls       int // times RequestExtendIterationCap was invoked
 	pendingFlushAmount int // amount staged by RequestExtendIterationCap
@@ -633,7 +637,7 @@ type fakeExtender struct {
 	flushedApplied     int // times FlushPendingExtend returned applied=true
 }
 
-func (f *fakeExtender) RemainingIterations() int { return f.remaining }
+func (f *fakeExtender) RemainingIterations() int    { return f.remaining }
 func (f *fakeExtender) CanExtendIterationCap() bool { return f.canExtend }
 func (f *fakeExtender) IterationCap() int {
 	if f.iterCap == 0 {
@@ -641,18 +645,21 @@ func (f *fakeExtender) IterationCap() int {
 	}
 	return f.iterCap
 }
+
 func (f *fakeExtender) MaxIterationsPerCheckpoint() int {
 	if f.maxPerCheck == 0 {
 		return 20
 	}
 	return f.maxPerCheck
 }
+
 func (f *fakeExtender) MaxIterationsCap() int {
 	if f.maxCap == 0 {
 		return 200
 	}
 	return f.maxCap
 }
+
 func (f *fakeExtender) ExtendIterationCap(n int, reason string) (int, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -661,6 +668,7 @@ func (f *fakeExtender) ExtendIterationCap(n int, reason string) (int, int) {
 	f.lastN = n
 	return f.IterationCap() + n, n
 }
+
 // RequestExtendIterationCap stages a deferred extend. Returns true unless
 // at ceiling (matches real *turnState behavior). The fake's CanExtendIterationCap
 // flag is the gate; if false, the request is rejected.
@@ -683,6 +691,7 @@ func (f *fakeExtender) RequestExtendIterationCap(n int, reason string) bool {
 	}
 	return true
 }
+
 // FlushPendingExtend applies any staged request (mimics the real agent loop
 // end-of-iter hook). Returns applied=true if a request was staged.
 func (f *fakeExtender) FlushPendingExtend() (bool, int, int) {
@@ -701,11 +710,13 @@ func (f *fakeExtender) FlushPendingExtend() (bool, int, int) {
 	f.pendingFlushReason = ""
 	return true, f.iterCap, delta
 }
+
 func (f *fakeExtender) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.extendCalls
 }
+
 func (f *fakeExtender) recorded() (string, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1079,7 +1090,10 @@ func TestGoalProgressTool_AcceptsRemainingSteps_WithBlockers(t *testing.T) {
 		t.Errorf("expected flush to apply, got applied=false")
 	}
 	if ext.callCount() != 1 {
-		t.Errorf("expected 1 ExtendIterationCap call after flush when remaining_steps non-empty, got %d", ext.callCount())
+		t.Errorf(
+			"expected 1 ExtendIterationCap call after flush when remaining_steps non-empty, got %d",
+			ext.callCount(),
+		)
 	}
 }
 
@@ -1323,7 +1337,10 @@ func TestGoalProgressResultNoCapClaim(t *testing.T) {
 		t.Fatalf("goal_progress returned error: %s", res.ForLLM)
 	}
 	if strings.Contains(res.ForLLM, "Iteration cap") {
-		t.Errorf("result must NOT state cap extension (Phase 12.40.1 — cap claims in history poison later phases), got: %s", res.ForLLM)
+		t.Errorf(
+			"result must NOT state cap extension (Phase 12.40.1 — cap claims in history poison later phases), got: %s",
+			res.ForLLM,
+		)
 	}
 	if !strings.Contains(res.ForLLM, "Logged progress entry") {
 		t.Errorf("result must still log the progress entry, got: %s", res.ForLLM)
@@ -1368,8 +1385,8 @@ type mockExtenderForTest struct {
 	canExtend        bool
 }
 
-func (m *mockExtenderForTest) RemainingIterations() int         { return 0 }
-func (m *mockExtenderForTest) CanExtendIterationCap() bool       { return m.canExtend }
+func (m *mockExtenderForTest) RemainingIterations() int    { return 0 }
+func (m *mockExtenderForTest) CanExtendIterationCap() bool { return m.canExtend }
 func (m *mockExtenderForTest) ExtendIterationCap(n int, reason string) (int, int) {
 	m.currentCap += n
 	if m.currentCap > m.maxCap {
@@ -1377,7 +1394,7 @@ func (m *mockExtenderForTest) ExtendIterationCap(n int, reason string) (int, int
 	}
 	return m.currentCap, n
 }
-func (m *mockExtenderForTest) IterationCap() int              { return m.currentCap }
+func (m *mockExtenderForTest) IterationCap() int               { return m.currentCap }
 func (m *mockExtenderForTest) MaxIterationsPerCheckpoint() int { return m.maxPerCheckpoint }
 func (m *mockExtenderForTest) MaxIterationsCap() int           { return m.maxCap }
 func (m *mockExtenderForTest) RequestExtendIterationCap(n int, reason string) bool {
@@ -1390,6 +1407,7 @@ func (m *mockExtenderForTest) RequestExtendIterationCap(n int, reason string) bo
 	}
 	return true
 }
+
 func (m *mockExtenderForTest) FlushPendingExtend() (applied bool, newCap int, delta int) {
 	return false, m.currentCap, 0
 }

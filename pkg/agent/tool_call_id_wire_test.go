@@ -196,10 +196,16 @@ func TestToolCallIDRewrite_RecoveryPath(t *testing.T) {
 	provider := &payloadCaptureProvider{responses: []*providers.LLMResponse{
 		{ToolCalls: []providers.ToolCall{setGoalTC()}, FinishReason: "tool_calls"},
 		// iter 2 = OPEN: view_goal chạy bình thường
-		{ToolCalls: []providers.ToolCall{{ID: "call-vg", Name: "view_goal", Arguments: map[string]any{}}}, FinishReason: "tool_calls"},
+		{
+			ToolCalls:    []providers.ToolCall{{ID: "call-vg", Name: "view_goal", Arguments: map[string]any{}}},
+			FinishReason: "tool_calls",
+		},
 		// iter 3 = CHECKPOINT (maxIters=3): view_goal bị gate chặn →
 		// retryExecuteToolChain → RecallLLM (call 4)
-		{ToolCalls: []providers.ToolCall{{ID: "call-vg2", Name: "view_goal", Arguments: map[string]any{}}}, FinishReason: "tool_calls"},
+		{
+			ToolCalls:    []providers.ToolCall{{ID: "call-vg2", Name: "view_goal", Arguments: map[string]any{}}},
+			FinishReason: "tool_calls",
+		},
 		// recall response: 2 calls cùng id fix_0 → rewrite tại recallAndCheckTool
 		{ToolCalls: []providers.ToolCall{completeGoalTC("fix_0"), completeGoalTC("fix_0")}, FinishReason: "tool_calls"},
 		{Content: "final", FinishReason: "stop"},

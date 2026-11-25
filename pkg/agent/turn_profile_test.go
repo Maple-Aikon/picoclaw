@@ -96,6 +96,7 @@ func newTurnProfileAgentLoop(
 	al.SetGoalPhaseForTest("open")
 	return al
 }
+
 func writeTurnProfileSkill(t *testing.T, workspace, name, body string) {
 	t.Helper()
 	dir := filepath.Join(workspace, "skills", name)

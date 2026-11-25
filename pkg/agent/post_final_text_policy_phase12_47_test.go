@@ -1,6 +1,7 @@
 // Phase 12.47 (T13, P6) — Text-policy invariant: every string emitted at the
 // post_final path (gate-skip message) must NOT claim phase/iter/cap state
 // (Phase 12.43 assertNoPhaseClaim pattern, extended by invariant).
+
 package agent
 
 import (

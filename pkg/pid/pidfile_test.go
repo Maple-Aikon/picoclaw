@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -481,6 +482,17 @@ func TestWritePidFileLiveInstanceStillBlocked(t *testing.T) {
 		t.Fatalf("failed to write pid file: %v", err)
 	}
 
+	// Sanity: the PRODUCTION reader must be able to read back the PID
+	// file we just wrote. If it cannot, WritePidFile would legitimately
+	// treat the file as absent and start a second instance, and the
+	// failure below would be an opaque "should refuse to start".
+	// Checking here names the real cause.
+	if data, err := readPidFileUnlocked(filepath.Join(dir, pidFileName)); err != nil {
+		t.Fatalf("production reader cannot read the pid file we wrote: %v", err)
+	} else if data.PID != livePID {
+		t.Fatalf("pid file holds PID %d, want %d", data.PID, livePID)
+	}
+
 	_, err := WritePidFile(dir, "127.0.0.1", 18790)
 	if err == nil {
 		t.Fatal("WritePidFile should refuse to start when a live picoclaw instance holds the PID")
@@ -497,8 +509,17 @@ func spawnLivePicoclaw(t *testing.T) int {
 
 	binDir := t.TempDir()
 	link := filepath.Join(binDir, "picoclaw")
-	if err := os.Symlink("/bin/sleep", link); err != nil {
-		t.Skipf("cannot create picoclaw symlink: %v", err)
+	// COPY the binary instead of symlinking it. The kernel publishes
+	// the process comm at exec time; with a symlink the resulting comm
+	// depends on how the kernel resolves the link, and with a symlink
+	// the child may not have reached exec yet when the test checks it.
+	// A copy makes comm deterministic.
+	raw, err := os.ReadFile("/bin/sleep")
+	if err != nil {
+		t.Skipf("cannot read /bin/sleep: %v", err)
+	}
+	if err := os.WriteFile(link, raw, 0o755); err != nil {
+		t.Skipf("cannot create picoclaw copy: %v", err)
 	}
 
 	cmd := exec.Command(link, "60")
@@ -510,9 +531,23 @@ func spawnLivePicoclaw(t *testing.T) int {
 		_ = cmd.Wait()
 	})
 
-	// Give the child a moment to become a real, running process.
-	time.Sleep(50 * time.Millisecond)
-	return cmd.Process.Pid
+	// Wait until the kernel has actually published the comm name. The
+	// singleton check reads /proc/<pid>/comm, and comm is only set
+	// when the child reaches exec. A fixed sleep is a race on a loaded
+	// CI runner, so poll for the real thing instead.
+	commPath := filepath.Join("/proc", strconv.Itoa(cmd.Process.Pid), "comm")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		comm, readErr := os.ReadFile(commPath)
+		if readErr == nil && strings.Contains(string(comm), "picoclaw") {
+			return cmd.Process.Pid
+		}
+		if time.Now().After(deadline) {
+			t.Skipf("child process comm never became %q (last comm=%q, err=%v)",
+				"picoclaw", string(comm), readErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // TestIsZombieFromStat exercises the /proc/<pid>/stat parser.

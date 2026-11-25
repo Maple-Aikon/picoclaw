@@ -1,4 +1,4 @@
-// Package openai_responses_common provides shared utilities for providers
+// Package openai_responses_common — provides shared utilities for providers
 // that use the OpenAI Responses API (e.g., Azure, Codex).
 package openai_responses_common
 

@@ -60,7 +60,6 @@ func (p *Pipeline) retryExecuteToolChain(
 	allowedTools []string,
 	phase string,
 ) (Control, error) {
-
 	// Step 5 (Task 5 — this commit): wrap Steps 1-4 in
 	// BoundedRetry(MaxAttempts=ToolExecErrorRetryCap=3) so transient
 	// tool-execution errors get same-iter retry budget (Phase 12.22
@@ -100,7 +99,14 @@ func (p *Pipeline) retryExecuteToolChain(
 				ts.lastPhaseStuckError = policy.StuckBucket.AbortReason()
 			} else {
 				ts.lastPhaseStuckError = computePhaseStuckAbortReasonForPhase(
-					currentPhase, ts.setGoalAttemptCount, ts.setGoalArchiveFlag, ts.goalProgressAttemptCount, ts.goalProgressArchiveFlag, ts.completeGoalAttemptCount, ts.completeGoalArchiveFlag)
+					currentPhase,
+					ts.setGoalAttemptCount,
+					ts.setGoalArchiveFlag,
+					ts.goalProgressAttemptCount,
+					ts.goalProgressArchiveFlag,
+					ts.completeGoalAttemptCount,
+					ts.completeGoalArchiveFlag,
+				)
 			}
 			logger.InfoCF("agent", "retryExecuteToolChain: attempts exhausted",
 				map[string]any{
@@ -111,7 +117,7 @@ func (p *Pipeline) retryExecuteToolChain(
 					"reason":     ts.lastPhaseStuckError,
 				})
 		},
-		}, func(ctx context.Context, rc RetryContext) (RetryDecision, error) {
+	}, func(ctx context.Context, rc RetryContext) (RetryDecision, error) {
 		ctrl, err := p.retryExecuteToolChainOnce(ctx, turnCtx, ts, exec, iteration,
 			recoveryHint, allowedTools, phase)
 		innerResult = ctrl
@@ -414,13 +420,13 @@ func allowlistContains(allowlist []string, name string) bool {
 //   - Always assigns the returned *providers.LLMResponse to exec.response so
 //     downstream callers see the fresh response (Phase 12.26 contract).
 //   - Examines exec.response.ToolCalls[0].Name:
-//     * tool name == "" OR not in allowedTools → calls onWrongTool(firstTool)
-//       which decides what to do (re-prompt / break / etc.). This callback is
-//       path-specific — Path 2 re-prompts with stronger hint; Path 4 just
-//       builds a fresh phase-aware recovery message and breaks.
-//     * tool name in allowedTools → returns (ControlToolLoop, firstTool, nil)
-//       so the caller can proceed (Path 4 → ExecuteTools, Path 2 → return to
-//       caller which executes externally).
+//   - tool name == "" OR not in allowedTools → calls onWrongTool(firstTool)
+//     which decides what to do (re-prompt / break / etc.). This callback is
+//     path-specific — Path 2 re-prompts with stronger hint; Path 4 just
+//     builds a fresh phase-aware recovery message and breaks.
+//   - tool name in allowedTools → returns (ControlToolLoop, firstTool, nil)
+//     so the caller can proceed (Path 4 → ExecuteTools, Path 2 → return to
+//     caller which executes externally).
 //   - LLM call fatal error → returns (ControlBreak, "", err) so caller can
 //     abort the BoundedRetry loop.
 //
@@ -492,7 +498,11 @@ func (p *Pipeline) recallAndCheckTool(
 	// Phase 12.61: layer-1 rewrite (dup/empty/occupied) — mirror proceedPastLLM
 	// + stageRecoveryToolCalls trước khi append assistant message.
 	if exec.response != nil && len(exec.normalizedToolCalls) > 0 {
-		exec.normalizedToolCalls = ts.rewriteToolCallIDs(exec.normalizedToolCalls, collectToolCallIDs(exec.messages), time.Now)
+		exec.normalizedToolCalls = ts.rewriteToolCallIDs(
+			exec.normalizedToolCalls,
+			collectToolCallIDs(exec.messages),
+			time.Now,
+		)
 	}
 
 	firstTool := ""

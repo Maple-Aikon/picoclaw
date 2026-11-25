@@ -98,7 +98,11 @@ jobs:
         run: go generate ./...
 
       - name: Run race detector (shared-state packages)
-        run: go test -race -count=1 ./pkg/tools/... ./pkg/channels/...
+        # The goolm tag is REQUIRED: without it mautrix falls back to its
+        # libolm cgo backend, which needs the native olm/olm.h header
+        # (not installed on the runner) => pkg/channels/matrix fails to
+        # build and the whole race job fails before running a single test.
+        run: go test -race -count=1 -tags goolm,stdjson ./pkg/tools/... ./pkg/channels/...
 
   integration:
     name: Integration Tests

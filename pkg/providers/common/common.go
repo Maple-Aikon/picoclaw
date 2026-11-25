@@ -3,7 +3,7 @@
 //
 // Copyright (c) 2026 PicoClaw contributors
 
-// Package common provides shared utilities used by multiple LLM provider
+// Package common — provides shared utilities used by multiple LLM provider
 // implementations (openai_compat, azure, etc.).
 package common
 
@@ -70,12 +70,12 @@ func NewHTTPClient(proxy string) *http.Client {
 // It mirrors protocoltypes.Message but omits SystemParts, which is an
 // internal field that would be unknown to third-party endpoints.
 type openaiMessage struct {
-	Role             string              `json:"role"`
-	Content          string              `json:"content"`
-	ReasoningContent string              `json:"reasoning_content,omitempty"`
-	ReasoningDetails []ReasoningDetail   `json:"reasoning_details,omitempty"`
-	ToolCalls        []openaiToolCall    `json:"tool_calls,omitempty"`
-	ToolCallID       string              `json:"tool_call_id,omitempty"`
+	Role             string            `json:"role"`
+	Content          string            `json:"content"`
+	ReasoningContent string            `json:"reasoning_content,omitempty"`
+	ReasoningDetails []ReasoningDetail `json:"reasoning_details,omitempty"`
+	ToolCalls        []openaiToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID       string            `json:"tool_call_id,omitempty"`
 }
 
 type openaiToolCall struct {

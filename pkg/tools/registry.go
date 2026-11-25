@@ -24,18 +24,18 @@ type ToolEntry struct {
 }
 
 type ToolRegistry struct {
-	tools          map[string]*ToolEntry
-	sigTrackers    map[string]*SignatureFailureTracker // key: composite (channel:chatID); see getOrCreateSigTracker
-	mu             sync.RWMutex
-	sigTrackerMu   sync.Mutex // serializes lazy allocation of per-session SignatureFailureTrackers
-	version        atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
-	mediaStore      media.MediaStore
-	allowlist       map[string]struct{}
-	phase           string // active goal phase for per-phase allowlist semantics (Phase 12.5); "" = no phase info
-	projectionFrozen bool  // when true, ToProviderDefs projects all tools to keep prompt cache prefix 100% frozen
-	cfg             *config.ToolsConfig // optional; nil → fallback DefaultToolTimeoutSeconds
-	timeoutStats    *ToolTimeoutStats   // Q3 metric; nil-safe via lazy init
-	knowledgeStore  *ToolKnowledgeStore // optional persistent "lessons learned" per tool; nil = feature off
+	tools            map[string]*ToolEntry
+	sigTrackers      map[string]*SignatureFailureTracker // key: composite (channel:chatID); see getOrCreateSigTracker
+	mu               sync.RWMutex
+	sigTrackerMu     sync.Mutex    // serializes lazy allocation of per-session SignatureFailureTrackers
+	version          atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
+	mediaStore       media.MediaStore
+	allowlist        map[string]struct{}
+	phase            string              // active goal phase for per-phase allowlist semantics (Phase 12.5); "" = no phase info
+	projectionFrozen bool                // when true, ToProviderDefs projects all tools to keep prompt cache prefix 100% frozen
+	cfg              *config.ToolsConfig // optional; nil → fallback DefaultToolTimeoutSeconds
+	timeoutStats     *ToolTimeoutStats   // Q3 metric; nil-safe via lazy init
+	knowledgeStore   *ToolKnowledgeStore // optional persistent "lessons learned" per tool; nil = feature off
 
 	// seenFirstSuccess tracks (channel:chatID:tool:errKind) keys for which we
 	// have already appended the "consider saving" soft prompt at the execution
@@ -107,7 +107,7 @@ func (r *ToolRegistry) ProjectionFrozen() bool {
 }
 
 // SetToolsConfig attaches the loaded ToolsConfig so that resolveToolTimeout can
-// honour per-tool and root TimeoutSeconds. Safe to call nil; cleared by passing nil.
+// honor per-tool and root TimeoutSeconds. Safe to call nil; cleared by passing nil.
 func (r *ToolRegistry) SetToolsConfig(cfg *config.ToolsConfig) {
 	r.cfg = cfg
 }
@@ -682,7 +682,6 @@ func (r *ToolRegistry) sigTrackerFor(channel, chatID string) *SignatureFailureTr
 	return tr
 }
 
-
 func (r *ToolRegistry) ExecuteWithContext(
 	ctx context.Context,
 	name string,
@@ -728,7 +727,6 @@ func (r *ToolRegistry) ExecuteWithContext(
 			fmt.Sprintf("tool %q not found", name),
 		).WithError(fmt.Errorf("tool not found"))
 	}
-
 
 	// Validate arguments against the tool's declared schema.
 	if err := validateToolArgs(tool.Parameters(), args); err != nil {
@@ -827,18 +825,26 @@ func (r *ToolRegistry) ExecuteWithContext(
 		case <-ctx.Done():
 			// Timeout or parent cancellation fired before tool returned.
 			timedOutKind := TimedOutParentCancelled
-			errMsg := fmt.Sprintf("Tool '%s' was cancelled before it could complete (%v). The underlying operation may still be running but the agent loop has moved on.", name, ctx.Err())
+			errMsg := fmt.Sprintf(
+				"Tool '%s' was canceled before it could complete (%v). The underlying operation may still be running but the agent loop has moved on.",
+				name,
+				ctx.Err(),
+			)
 			deadlineExceeded := errors.Is(ctx.Err(), context.DeadlineExceeded)
 			if deadlineExceeded {
 				timedOutKind = TimedOutDeadlineExceeded
-				errMsg = fmt.Sprintf("Tool '%s' exceeded timeout (%v) and was cancelled. The underlying operation may still be running but the agent loop has moved on.", name, timeout)
+				errMsg = fmt.Sprintf(
+					"Tool '%s' exceeded timeout (%v) and was canceled. The underlying operation may still be running but the agent loop has moved on.",
+					name,
+					timeout,
+				)
 			}
 			logger.WarnCF("tool", "Tool execution timeout (orphan goroutine)",
 				map[string]any{
 					"tool":              name,
 					"timeout_seconds":   timeout.Seconds(),
 					"deadline_exceeded": deadlineExceeded,
-					"parent_cancelled":  !deadlineExceeded && ctx.Err() != nil,
+					"parent_canceled":   !deadlineExceeded && ctx.Err() != nil,
 				})
 			// Q3: increment in-memory counter before the result is built so even
 			// the timeout-failure path yields the metric.

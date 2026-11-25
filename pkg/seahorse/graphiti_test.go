@@ -111,7 +111,6 @@ func TestRemember_NoDaemonURL_Drops(t *testing.T) {
 	}
 }
 
-
 // -----------------------------------------------------------------------------
 // Migration v3 — HTTP transport tests (T-A3.1, T-A3.2)
 // -----------------------------------------------------------------------------
@@ -446,10 +445,10 @@ type mockDaemon struct {
 	calls       int
 	maxInflight int32
 	current     int32
-	dedupSet    map[string]bool // dedup keys seen so far
-	status      int             // status to return (default 202)
-	body        string          // body to return (default JSON success)
-	hold        chan struct{}   // if non-nil, block handler until closed
+	dedupSet    map[string]bool  // dedup keys seen so far
+	status      int              // status to return (default 202)
+	body        string           // body to return (default JSON success)
+	hold        chan struct{}    // if non-nil, block handler until closed
 	handler     http.HandlerFunc // optional override; nil → use default handle
 }
 
@@ -472,7 +471,7 @@ func newMockDaemon() *mockDaemon {
 func (md *mockDaemon) handle(w http.ResponseWriter, r *http.Request) {
 	// /health must return an "alive" falkor_ok for daemonHealthOK to
 	// pass. We serve the CURRENT production shape (bool) here — the
-	// daemon's probe() returns a bool and http_server.py serialises it
+	// daemon's probe() returns a bool and http_server.py serializes it
 	// directly (live payload: {"status":"ready","falkor_ok":true,...}).
 	//
 	// The mock used to serve the legacy string shape ("alive"); keeping
@@ -859,9 +858,9 @@ func TestRemember_HTTP_WireShape(t *testing.T) {
 	// /health routes to the default healthy response so daemonHealthOK
 	// passes — without this, the gate would drop the call.
 	var captured struct {
-		Content          string `json:"content"`
-		Name             string `json:"name"`
-		GroupID          string `json:"group_id"`
+		Content           string `json:"content"`
+		Name              string `json:"name"`
+		GroupID           string `json:"group_id"`
 		SourceDescription string `json:"source_description"`
 	}
 	var capturedOnce sync.Once

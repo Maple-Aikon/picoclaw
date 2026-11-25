@@ -140,7 +140,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	// Phase 12.9 cross-turn final-report-iter mechanism with explicit
 	// per-turn scope. Order: archive FIRST → reset SECOND (see
 	// archiveAndResetPriorTurnGoal doc for rationale).
-	if err := archiveAndResetPriorTurnGoal(al, ts); err != nil {
+	if err2 := archiveAndResetPriorTurnGoal(al, ts); err2 != nil {
 		// archiveAndResetPriorTurnGoal already logs; continue regardless.
 	}
 
@@ -162,8 +162,8 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	// not here — so the in-loop goalFinalized block below can detect
 	// "already sent" and break cleanly on the second pass.
 	if ts.goalFinalized && !ts.postCompleteGoalReportSent {
-		if cap := ts.iteration + 1; cap > ts.iterationCap {
-			ts.iterationCap = cap
+		if capacity2 := ts.iteration + 1; capacity2 > ts.iterationCap {
+			ts.iterationCap = capacity2
 		}
 	}
 
@@ -340,7 +340,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			map[string]any{
 				"agent_id":  ts.agent.ID,
 				"iteration": iteration,
-				"max":         ts.iterationCap,
+				"max":       ts.iterationCap,
 			})
 
 		// Phase 12.30: log per-iter phase + tools-visible snapshot for
@@ -445,11 +445,11 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			if finalContent == "" {
 				finalContent = al.applyFallbackForEmptyResponse(ts)
 			}
-			result, finalizeErr := pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
+			result3, finalizeErr := pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
 			if finalizeErr != nil {
 				turnStatus = TurnEndStatusError
 			}
-			return result, finalizeErr
+			return result3, finalizeErr
 		case ControlToolLoop:
 			// Execute tools via Pipeline
 			toolCtrl := pipeline.ExecuteTools(ctx, turnCtx, ts, exec, iteration)
@@ -470,8 +470,8 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				// generic toolLimitResponse fallback. Open phase keeps the
 				// historical iter-bump behavior.
 				// Phase 12.46: SET pre-goal (hasGoal=false, phase=Set) gets the
-			// same tool-exec/gate-block same-iter recovery as every phase.
-			if ts.hasGoal() || ts.currentGoalPhase() == GoalPhaseSet {
+				// same tool-exec/gate-block same-iter recovery as every phase.
+				if ts.hasGoal() || ts.currentGoalPhase() == GoalPhaseSet {
 					archiveTool, archiveMsg := checkToolExecErrorRecovery(ts, exec)
 					if archiveTool != "" && ts.hasGoal() {
 						ts.goalArchiveRequested = true
@@ -483,7 +483,10 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 							})
 						turnStatus = TurnEndStatusError
 						// Phase 12.43 verification: %s=archiveTool (tool name, not phase) — safe.
-						return turnResult{}, fmt.Errorf("goal archive requested after tool-exec retries exhausted for %s", archiveTool)
+						return turnResult{}, fmt.Errorf(
+							"goal archive requested after tool-exec retries exhausted for %s",
+							archiveTool,
+						)
 					} else if archiveMsg != "" {
 						// Phase 12.37 GAP #4: isRestricted gate REMOVED.
 						// Tool-exec errors at OPEN now route through
@@ -507,13 +510,16 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 							// letting the existing graceful-interrupt
 							// handling pick up the abort.
 							if ts.gracefulInterrupt || ts.gracefulTerminalUsed {
-								logger.InfoCF("agent", "Phase 12.25 §X2: skipping retryLLMForBlockedTool due to graceful interrupt",
+								logger.InfoCF(
+									"agent",
+									"Phase 12.25 §X2: skipping retryLLMForBlockedTool due to graceful interrupt",
 									map[string]any{
-										"agent_id":            ts.agent.ID,
-										"phase":               string(currentPhase),
-										"graceful_interrupt":  ts.gracefulInterrupt,
-										"graceful_term_used":  ts.gracefulTerminalUsed,
-									})
+										"agent_id":           ts.agent.ID,
+										"phase":              string(currentPhase),
+										"graceful_interrupt": ts.gracefulInterrupt,
+										"graceful_term_used": ts.gracefulTerminalUsed,
+									},
+								)
 								// Phase 12.36: apply deferred extend before graceful-interrupt exit.
 								// Same-bug-class as retry path's line 551. Idempotent if no request staged.
 								_, _ = al.applyDeferredExtend(ts)
@@ -558,12 +564,11 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 									return turnResult{}, fmt.Errorf("hook requested turn abort")
 								}
 								if exec.allResponsesHandled {
-									messages = exec.messages
-									result, finalizeErr := pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, "")
+									result2, finalizeErr := pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, "")
 									if finalizeErr != nil {
 										turnStatus = TurnEndStatusError
 									}
-									return result, finalizeErr
+									return result2, finalizeErr
 								}
 								// Archive-after-exhaustion path:
 								// retryExecuteToolChain stamped
@@ -572,14 +577,19 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 								// it here so finalizeGoalOnTurnEnd picks up
 								// the right AbortReason.
 								if ts.goalArchiveRequested {
-									logger.InfoCF("agent", "Goal archive triggered by tool-exec recovery exhaustion at restricted phase",
+									logger.InfoCF(
+										"agent",
+										"Goal archive triggered by tool-exec recovery exhaustion at restricted phase",
 										map[string]any{
 											"agent_id":        ts.agent.ID,
 											"phase":           string(currentPhase),
 											"archive_request": ts.goalArchiveRequested,
-										})
+										},
+									)
 									turnStatus = TurnEndStatusError
-									return turnResult{}, fmt.Errorf("goal archive requested after tool-exec recovery exhaustion (see goal archive log for details)")
+									return turnResult{}, fmt.Errorf(
+										"goal archive requested after tool-exec recovery exhaustion (see goal archive log for details)",
+									)
 								}
 								// Phase 12.46: retry chain exhausted WITHOUT a goal
 								// (SET pre-goal gate-blocked tool) — nothing was
@@ -587,7 +597,6 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 								// fall through to the normal post-tool-exec
 								// continuation; the loop exits at iterationCap and
 								// the empty-content fallback publishes the reply.
-								messages = exec.messages
 								break
 							case ControlContinue, ControlToolLoop:
 								// Same-iter retry succeeded — the helper
@@ -612,12 +621,15 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 								al.bumpCapForFinalReportIter(ts)
 								continue
 							default:
-								logger.WarnCF("agent", "Unexpected control signal from goal recovery at restricted phase",
+								logger.WarnCF(
+									"agent",
+									"Unexpected control signal from goal recovery at restricted phase",
 									map[string]any{
 										"agent_id": ts.agent.ID,
 										"phase":    string(currentPhase),
 										"ctrl":     ctrl,
-									})
+									},
+								)
 							}
 						}
 						// Open phase: legacy behavior — pendingRecoveryMessage
@@ -672,11 +684,11 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				if exec.allResponsesHandled {
 					finalContent = ""
 				}
-				result, finalizeErr := pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
+				result2, finalizeErr := pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
 				if finalizeErr != nil {
 					turnStatus = TurnEndStatusError
 				}
-				return result, finalizeErr
+				return result2, finalizeErr
 			}
 		}
 	}
@@ -727,8 +739,8 @@ func (al *AgentLoop) bumpCapForFinalReportIter(ts *turnState) {
 	if ts == nil || !ts.goalFinalized || ts.postCompleteGoalReportSent {
 		return
 	}
-	if cap := ts.iteration + 1; cap > ts.iterationCap {
-		ts.iterationCap = cap
+	if capacity2 := ts.iteration + 1; capacity2 > ts.iterationCap {
+		ts.iterationCap = capacity2
 	}
 }
 
@@ -762,7 +774,7 @@ func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
 	if ts.postCompleteGoalReportSent {
 		logger.WarnCF("agent", "Final-report iter produced empty text; silent skip (by design)",
 			map[string]any{
-				"agent_id":       ts.agentID,
+				"agent_id":      ts.agentID,
 				"session_key":   ts.sessionKey,
 				"iteration":     ts.currentIteration(),
 				"iteration_cap": ts.iterationCap,
@@ -796,7 +808,17 @@ func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
 		goalSummary = g.Summary
 		hadGoal = true
 	}
-	log.Printf("DEBUG[12.16] applyFallbackForEmptyResponse session=%s goalFinalized=%v assistantText=%q hadGoal=%v goalSummaryLen=%d iter=%d iterCap=%d ts.iteration=%d", ts.sessionKey, ts.goalFinalized, ts.assistantText, hadGoal, len(goalSummary), ts.currentIteration(), ts.iterationCap, ts.iteration)
+	log.Printf(
+		"DEBUG[12.16] applyFallbackForEmptyResponse session=%s goalFinalized=%v assistantText=%q hadGoal=%v goalSummaryLen=%d iter=%d iterCap=%d ts.iteration=%d",
+		ts.sessionKey,
+		ts.goalFinalized,
+		ts.assistantText,
+		hadGoal,
+		len(goalSummary),
+		ts.currentIteration(),
+		ts.iterationCap,
+		ts.iteration,
+	)
 	if goalSummary != "" {
 		return goalSummary
 	}
@@ -813,15 +835,22 @@ func (al *AgentLoop) applyFallbackForEmptyResponse(ts *turnState) string {
 	// (catches LLM escapes from Phase 12.51a Path 4 + aggressive Phase 12.23
 	// cleanup). Phase 12.40 invariant: no cap claims; Phase 12.46: SET
 	// text-only stays silent — Set is excluded below by design.
-	if ts.currentIteration() > 1 && ts.currentIteration() >= ts.iterationCap && hasActiveGoal && !ts.goalFinalized && !ts.postCompleteGoalReportSent {
+	if ts.currentIteration() > 1 && ts.currentIteration() >= ts.iterationCap && hasActiveGoal && !ts.goalFinalized &&
+		!ts.postCompleteGoalReportSent {
 		// Phase 12.52a Item B: resolve the phase from the cached goal —
 		// ts.currentGoalPhase() would trigger a second store read via
 		// ts.hasGoal() and break the single-read invariant.
-		phase := GoalPhaseOpen
+		var phase GoalPhase
 		if ts.agent != nil && ts.agent.PhaseOverrideForTest != "" {
 			phase = GoalPhase(ts.agent.PhaseOverrideForTest)
 		} else {
-			phase = ResolveGoalPhase(hasActiveGoal, ts.iteration, ts.iterationCap, ts.maxIterationsCap, ts.goalFinalized)
+			phase = ResolveGoalPhase(
+				hasActiveGoal,
+				ts.iteration,
+				ts.iterationCap,
+				ts.maxIterationsCap,
+				ts.goalFinalized,
+			)
 		}
 		switch phase {
 		case GoalPhaseCheckpoint:
@@ -1345,6 +1374,7 @@ func (al *AgentLoop) sideQuestionModelConfig(
 	clone := *modelCfg
 	return &clone, nil
 }
+
 // applyDeferredExtend applies any staged RequestExtendIterationCap request
 // that was set during ExecuteTools. Phase 12.35 wires goal_progress to defer
 // the iterationCap bump to end-of-iter so phase does not flip mid-iter
@@ -1361,18 +1391,17 @@ func (al *AgentLoop) sideQuestionModelConfig(
 // so simply re-reading ts.currentIteration() at the top of the next
 // pass picks up the new cap without explicit bump management here.
 func (al *AgentLoop) applyDeferredExtend(ts *turnState) (newCap int, delta int) {
-	applied, cap, delta := ts.FlushPendingExtend()
+	applied, capacity2, delta := ts.FlushPendingExtend()
 	if !applied {
 		return 0, 0
 	}
 	logger.DebugCF("agent", "Phase 12.35: applied deferred iterationCap extend from goal_progress at end of iter",
 		map[string]any{
-			"agent_id":   ts.agent.ID,
-			"iter":       ts.currentIteration(),
-			"new_cap":    cap,
-			"delta":      delta,
-			"phase":      string(ts.currentGoalPhase()),
+			"agent_id": ts.agent.ID,
+			"iter":     ts.currentIteration(),
+			"new_cap":  capacity2,
+			"delta":    delta,
+			"phase":    string(ts.currentGoalPhase()),
 		})
-	return cap, delta
+	return capacity2, delta
 }
-

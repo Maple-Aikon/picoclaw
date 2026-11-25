@@ -105,9 +105,9 @@ func TestP76dLiveStoreLosesNothing(t *testing.T) {
 			continue
 		}
 		content := string(raw)
-		real := strings.TrimSpace(content)
+		realValue2 := strings.TrimSpace(content)
 		prod := extractBody(content)
-		if realH2, prodH2 := p76dCountH2(real), p76dCountH2(prod); realH2 != prodH2 {
+		if realH2, prodH2 := p76dCountH2(realValue2), p76dCountH2(prod); realH2 != prodH2 {
 			losing++
 			t.Errorf("STILL LOSING entry=%s realH2=%d prodH2=%d", name, realH2, prodH2)
 		}

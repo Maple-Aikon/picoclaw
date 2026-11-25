@@ -50,9 +50,9 @@ type ReasoningDetail struct {
 }
 
 type UsageInfo struct {
-	PromptTokens         int `json:"prompt_tokens"`
-	CompletionTokens     int `json:"completion_tokens"`
-	TotalTokens          int `json:"total_tokens"`
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 	// CacheReadInputTokens is the number of input tokens read from the
 	// provider's prompt cache (e.g. AWS Bedrock CacheReadInputTokens,
 	// Anthropic cache_read_input_tokens). Zero for providers that do
@@ -96,17 +96,17 @@ type Attachment struct {
 }
 
 type Message struct {
-	Role             string         `json:"role"`
-	Content          string         `json:"content"`
-	ModelName        string         `json:"model_name,omitempty"`
-	CreatedAt        *time.Time     `json:"created_at,omitempty"`
-	Media            []string       `json:"media,omitempty"`
-	Attachments      []Attachment   `json:"attachments,omitempty"`
-	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	Role             string            `json:"role"`
+	Content          string            `json:"content"`
+	ModelName        string            `json:"model_name,omitempty"`
+	CreatedAt        *time.Time        `json:"created_at,omitempty"`
+	Media            []string          `json:"media,omitempty"`
+	Attachments      []Attachment      `json:"attachments,omitempty"`
+	ReasoningContent string            `json:"reasoning_content,omitempty"`
 	ReasoningDetails []ReasoningDetail `json:"reasoning_details,omitempty"`
-	SystemParts      []ContentBlock   `json:"system_parts,omitempty"` // structured system blocks for cache-aware adapters
-	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
-	ToolCallID       string         `json:"tool_call_id,omitempty"`
+	SystemParts      []ContentBlock    `json:"system_parts,omitempty"` // structured system blocks for cache-aware adapters
+	ToolCalls        []ToolCall        `json:"tool_calls,omitempty"`
+	ToolCallID       string            `json:"tool_call_id,omitempty"`
 
 	// IterContext is a one-line user-facing progress context for tool-call
 	// messages (e.g. "📊 #3/250 · Goal-Checkpoint"). It is display-only

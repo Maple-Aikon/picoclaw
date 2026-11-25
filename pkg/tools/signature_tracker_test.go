@@ -242,7 +242,7 @@ func TestEscalationHint_MultilineShape(t *testing.T) {
 	if !strings.Contains(got, fmt.Sprintf("%q", "t")) {
 		t.Errorf("expected %q in output, got %q", fmt.Sprintf("%q", "t"), got)
 	}
-}// --- Phase 2 knowledge wire tests (tool-knowledge-...-20260718) ---
+} // --- Phase 2 knowledge wire tests (tool-knowledge-...-20260718) ---
 
 // At threshold: knowledge body, when non-empty, is appended inside the
 // "=== Saved Knowledge ===" section so the LLM sees prior lessons for

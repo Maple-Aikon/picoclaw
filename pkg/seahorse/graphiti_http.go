@@ -15,6 +15,7 @@
 // Fire-and-forget semantics: callers do not retry. A failure logs at
 // warn (or info for 409 DUPLICATE_EPISODE) and returns. The daemon's
 // queue is the source of truth for retry/DLQ — not the client.
+
 package seahorse
 
 import (
@@ -35,7 +36,7 @@ import (
 // surface stays the high-level helpers in graphiti.go.
 const (
 	graphitiEnvDaemonURL  = "GRAPHITI_DAEMON_URL"
-	graphitiDefaultDaemon  = "http://127.0.0.1:8765"
+	graphitiDefaultDaemon = "http://127.0.0.1:8765"
 	graphitiEpisodesPath  = "/episodes"
 	graphitiHealthPath    = "/health"
 	graphitiHealthTTLSec  = 30
@@ -151,7 +152,7 @@ func daemonHealthOK() (falkor bool, version string) {
 		falkor = healthCache.falkorOK
 		version = healthCache.version
 		healthCache.mu.RUnlock()
-		return
+		return falkor, version
 	}
 	healthCache.mu.RUnlock()
 
@@ -218,7 +219,7 @@ func daemonHealthOK() (falkor bool, version string) {
 	//
 	//   - bool   — current producer (janus-graph daemon
 	//     falkordb_supervisor.probe() returns bool; http_server.py
-	//     serialises it directly). Live payload:
+	//     serializes it directly). Live payload:
 	//     {"status":"ready","falkor_ok":true,...}
 	//   - string — older producer, where probe() returned the
 	//     ProbeState str-Enum (ALIVE="alive"), which json.dumps
@@ -305,9 +306,9 @@ func resetGraphitiHTTPForTest() {
 // timestamp never participated in dedup. Removal makes names readable
 // in MCP dashboards.
 type postEpisodeRequest struct {
-	Content          string `json:"content"`
-	Name             string `json:"name,omitempty"`
-	GroupID          string `json:"group_id,omitempty"`
+	Content           string `json:"content"`
+	Name              string `json:"name,omitempty"`
+	GroupID           string `json:"group_id,omitempty"`
 	SourceDescription string `json:"source_description,omitempty"`
 }
 
@@ -327,7 +328,10 @@ type postEpisodeResponse struct {
 // Does NOT consult the health gate — callers (rememberInGraphiti's
 // wrapping goroutine) own that policy so this function stays
 // composable + unit-testable in isolation.
-func postGraphitiEpisode(ctx context.Context, content, name, groupID, sourceDesc string) (episodeID, version string, err error) {
+func postGraphitiEpisode(
+	ctx context.Context,
+	content, name, groupID, sourceDesc string,
+) (episodeID, version string, err error) {
 	url := resolveGraphitiEpisodesURL()
 	if url == "" {
 		return "", "", fmt.Errorf("graphiti daemon disabled (GRAPHITI_DAEMON_URL=off)")
@@ -406,11 +410,11 @@ func (e *httpStatusError) Error() string {
 // to keep this file self-contained. Renamed from truncate() to avoid
 // collision with short_engine.go's truncate (which has a different
 // signature).
-func truncateBody(s string, max int) string {
-	if len(s) <= max {
+func truncateBody(s string, limit2 int) string {
+	if len(s) <= limit2 {
 		return s
 	}
-	return s[:max] + "..."
+	return s[:limit2] + "..."
 }
 
 // bytesReader is a tiny adapter so we can pass []byte to http.NewRequest

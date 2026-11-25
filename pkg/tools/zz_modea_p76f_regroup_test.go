@@ -62,7 +62,7 @@ func p76fBackupPath(t *testing.T) string {
 //	p1112 base (pre-11-12) -> live: PROSE missing = 0 of 2 074
 //	heading titles missing        : 0
 //
-// The heading LEVEL is a structural artefact of the regroup; the CONTENT
+// The heading LEVEL is a structural artifact of the regroup; the CONTENT
 // is what must survive.
 func p76fProseLines(t *testing.T, path string) []string {
 	t.Helper()
@@ -219,8 +219,12 @@ func TestP76fNoProseLoss(t *testing.T) {
 	for h, want := range baseCount {
 		got := p76fTitleMatchCount(h, ta)
 		if got < want {
-			t.Errorf("HEADING TITLE MULTIPLICITY LOST: %q appeared %d time(s) in the base, %d match(es) in the live file",
-				h, want, got)
+			t.Errorf(
+				"HEADING TITLE MULTIPLICITY LOST: %q appeared %d time(s) in the base, %d match(es) in the live file",
+				h,
+				want,
+				got,
+			)
 		}
 	}
 }

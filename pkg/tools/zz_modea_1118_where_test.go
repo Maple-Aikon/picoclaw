@@ -76,10 +76,3 @@ func TestZZModeA1118Where(t *testing.T) {
 		fmt.Printf("##### END %s #####%s%s", name, nl, nl)
 	}
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

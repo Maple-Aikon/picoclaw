@@ -46,10 +46,14 @@ var v0DefaultFields = []string{"api_key", "api_base", "proxy", "request_timeout"
 // Row order is significant: entries appear in the same order as the rules.
 func v0ProvidersMapToModelList(providers map[string]any, userProvider, userModel string) []any {
 	rules := []v0ProviderRule{
-		{keys: []string{"openai", "gpt"}, protocol: "openai", defModel: "openai/gpt-5.4",
-			fields: []string{"api_key", "api_base", "proxy", "request_timeout", "auth_method", "web_search"}},
-		{keys: []string{"anthropic", "claude"}, protocol: "anthropic", defModel: "anthropic/claude-sonnet-4.6",
-			fields: []string{"api_key", "api_base", "proxy", "request_timeout", "auth_method"}},
+		{
+			keys: []string{"openai", "gpt"}, protocol: "openai", defModel: "openai/gpt-5.4",
+			fields: []string{"api_key", "api_base", "proxy", "request_timeout", "auth_method", "web_search"},
+		},
+		{
+			keys: []string{"anthropic", "claude"}, protocol: "anthropic", defModel: "anthropic/claude-sonnet-4.6",
+			fields: []string{"api_key", "api_base", "proxy", "request_timeout", "auth_method"},
+		},
 		{keys: []string{"litellm"}, protocol: "litellm", defModel: "litellm/auto"},
 		{keys: []string{"openrouter"}, protocol: "openrouter", defModel: "openrouter/auto"},
 		{keys: []string{"groq"}, protocol: "groq", defModel: "groq/llama-3.1-70b-versatile"},
@@ -64,16 +68,24 @@ func v0ProvidersMapToModelList(providers map[string]any, userProvider, userModel
 		{keys: []string{"cerebras"}, protocol: "cerebras", defModel: "cerebras/llama-3.3-70b"},
 		{keys: []string{"vivgrid"}, protocol: "vivgrid", defModel: "vivgrid/auto"},
 		{keys: []string{"volcengine", "doubao"}, protocol: "volcengine", defModel: "volcengine/doubao-pro"},
-		{keys: []string{"github_copilot", "copilot"}, protocol: "github-copilot", defModel: "github-copilot/gpt-5.4",
-			fields: []string{"api_key", "api_base", "connect_mode"}},
-		{keys: []string{"antigravity"}, protocol: "antigravity", defModel: "antigravity/gemini-2.0-flash",
-			fields: []string{"api_key", "auth_method"}},
+		{
+			keys: []string{"github_copilot", "copilot"}, protocol: "github-copilot", defModel: "github-copilot/gpt-5.4",
+			fields: []string{"api_key", "api_base", "connect_mode"},
+		},
+		{
+			keys: []string{"antigravity"}, protocol: "antigravity", defModel: "antigravity/gemini-2.0-flash",
+			fields: []string{"api_key", "auth_method"},
+		},
 		{keys: []string{"qwen", "tongyi"}, protocol: "qwen", defModel: "qwen/qwen-max"},
 		{keys: []string{"mistral"}, protocol: "mistral", defModel: "mistral/mistral-small-latest"},
 		{keys: []string{"avian"}, protocol: "avian", defModel: "avian/deepseek/deepseek-v3.2"},
 		{keys: []string{"minimax"}, protocol: "minimax", defModel: "minimax/minimax"},
 		{keys: []string{"longcat"}, protocol: "longcat", defModel: "longcat/LongCat-Flash-Thinking"},
-		{keys: []string{"modelscope"}, protocol: "modelscope", defModel: "modelscope/Qwen/Qwen3-235B-A22B-Instruct-2507"},
+		{
+			keys:     []string{"modelscope"},
+			protocol: "modelscope",
+			defModel: "modelscope/Qwen/Qwen3-235B-A22B-Instruct-2507",
+		},
 		{keys: []string{"novita"}, protocol: "novita", defModel: "novita/auto"},
 	}
 

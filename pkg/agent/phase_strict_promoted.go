@@ -190,9 +190,9 @@ func ensurePromotionState() *PromotionState {
 	if err := savePromotionStateFresh(fresh); err != nil {
 		logger.WarnCF("agent", "strict-mode FirstSeenAt persist failed (in-memory OK)",
 			map[string]any{
-				"event":        "agent_phase_firstseen_persist_failed",
+				"event":         "agent_phase_firstseen_persist_failed",
 				"first_seen_at": fresh.FirstSeenAt,
-				"err":          err.Error(),
+				"err":           err.Error(),
 			})
 	}
 	return fresh
@@ -248,9 +248,9 @@ func promoteLocked(now int64) {
 			if err := savePromotionStateFresh(fresh); err != nil {
 				logger.WarnCF("agent", "strict-mode promotion persist failed (in-memory OK)",
 					map[string]any{
-						"event":      "agent_phase_promotion_persist_failed",
+						"event":       "agent_phase_promotion_persist_failed",
 						"promoted_at": fresh.PromotedAt,
-						"err":        err.Error(),
+						"err":         err.Error(),
 					})
 			}
 			return

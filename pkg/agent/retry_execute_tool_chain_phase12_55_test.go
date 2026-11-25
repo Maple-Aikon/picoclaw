@@ -11,6 +11,7 @@
 //
 // Q4: backoff delay 3s/6s/10s applies to the same-iter recovery retries;
 // tests override the package-level var with small schedules.
+
 package agent
 
 import (
@@ -216,7 +217,11 @@ func TestRetryExecuteToolChain_CheckpointExhaustion_DelayBetweenRetries(t *testi
 		t.Errorf("elapsed = %v, want >= 60ms (2 sleeps x 40ms via recoveryBackoffDelays)", elapsed)
 	}
 	if ctrl != ControlBreak || !ts.goalArchiveRequested {
-		t.Errorf("ctrl = %v, goalArchiveRequested = %v; want ControlBreak + archive (Q3 restricted)", ctrl, ts.goalArchiveRequested)
+		t.Errorf(
+			"ctrl = %v, goalArchiveRequested = %v; want ControlBreak + archive (Q3 restricted)",
+			ctrl,
+			ts.goalArchiveRequested,
+		)
 	}
 }
 
@@ -232,21 +237,35 @@ func TestEvaluateRecovery_Phase1255_DelayPathGuards(t *testing.T) {
 	// Negative: SET text-only is a valid turn end — must not route into
 	// the same-iter BoundedRetry (delay) path.
 	ts := newPhase5TurnState(t)
-	action, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseSet), TextEmpty: false, HasToolCalls: false})
+	action, _ := evaluateRecovery(
+		ts,
+		RecoveryContext{Phase: string(GoalPhaseSet), TextEmpty: false, HasToolCalls: false},
+	)
 	if action != RecoveryNone {
 		t.Errorf("SET text-only action = %v, want RecoveryNone (no delay path)", action)
 	}
 
 	// Negative: OPEN text-only is next-iter carry — no same-iter retry.
 	ts = newPhase5TurnState(t)
-	action, _ = evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: false, HasToolCalls: false})
+	action, _ = evaluateRecovery(
+		ts,
+		RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: false, HasToolCalls: false},
+	)
 	if action != RecoveryRetryNextIteration {
 		t.Errorf("OPEN text-only action = %v, want RecoveryRetryNextIteration (no same-iter delay)", action)
 	}
 
 	// Negative: FINAL + post-report stays silent for empty responses.
 	ts = newPhase5TurnState(t)
-	action, _ = evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseFinal), TextEmpty: true, HasToolCalls: false, PostCompleteGoalReport: true})
+	action, _ = evaluateRecovery(
+		ts,
+		RecoveryContext{
+			Phase:                  string(GoalPhaseFinal),
+			TextEmpty:              true,
+			HasToolCalls:           false,
+			PostCompleteGoalReport: true,
+		},
+	)
 	if action != RecoveryNone {
 		t.Errorf("FINAL post-report empty action = %v, want RecoveryNone", action)
 	}
@@ -254,11 +273,15 @@ func TestEvaluateRecovery_Phase1255_DelayPathGuards(t *testing.T) {
 	// Positive: OPEN empty-response routes into the same-iter retry path
 	// (handleGoalRecovery with RetryDelays).
 	ts = newPhase5TurnState(t)
-	action, _ = evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: true, HasToolCalls: false})
+	action, _ = evaluateRecovery(
+		ts,
+		RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: true, HasToolCalls: false},
+	)
 	if action != RecoveryRetrySameIteration {
 		t.Errorf("OPEN empty action = %v, want RecoveryRetrySameIteration (delay path)", action)
 	}
 }
+
 // =============================================================================
 // T5b (round-trip, F12) — after OPEN no-archive exhaustion, the next
 // iteration's tool call SUCCEEDS: no archive, no re-triggered recovery,

@@ -46,6 +46,7 @@ package tools
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -77,9 +78,37 @@ func liveStoreWorkspace(t *testing.T) string {
 		if c == "" {
 			continue
 		}
-		if fi, err := os.Stat(c); err == nil && fi.IsDir() {
-			return c
+		if fi, err := os.Stat(c); err != nil || !fi.IsDir() {
+			continue
 		}
+		// The workspace alone is NOT enough, and neither is an EMPTY
+		// knowledge dir: NewToolKnowledgeStore MkdirAll's that dir, so the
+		// very first probe test creates it. A runner that merely HAS
+		// ~/.picoclaw/workspace would then look like a live store while
+		// holding no entries at all, and the probes would fail on a missing
+		// exec.md instead of skipping.
+		//
+		// Require at least one real entry file (.md). That is what
+		// "there is a live store" actually means.
+		dir := filepath.Join(c, DefaultKnowledgeDir)
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		hasEntry := false
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+				hasEntry = true
+				break
+			}
+		}
+		if !hasEntry {
+			continue
+		}
+		return c
 	}
 
 	t.Skipf("live tool knowledge store not reachable; tried %v", candidates)

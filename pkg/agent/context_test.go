@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"testing"
 	"strings"
+	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
@@ -244,7 +244,13 @@ func TestSanitizeHistoryForProvider_ReusedToolCallIDAcrossRounds(t *testing.T) {
 	}
 	// pairing intact: mỗi result khớp assistant call của round nó
 	if result[1].ToolCalls[0].ID != result[2].ToolCallID || result[5].ToolCalls[0].ID != result[6].ToolCallID {
-		t.Fatalf("pairing broken: %s/%s and %s/%s", result[1].ToolCalls[0].ID, result[2].ToolCallID, result[5].ToolCalls[0].ID, result[6].ToolCallID)
+		t.Fatalf(
+			"pairing broken: %s/%s and %s/%s",
+			result[1].ToolCalls[0].ID,
+			result[2].ToolCallID,
+			result[5].ToolCalls[0].ID,
+			result[6].ToolCallID,
+		)
 	}
 }
 
@@ -380,18 +386,48 @@ func TestFormatToolDiscoveryRule_PhaseAware(t *testing.T) {
 		phase             GoalPhase
 		expect            expect
 	}{
-		{"Open_unconditional_bm25", true, false, GoalPhaseOpen,
-			expect{positiveContains: []string{"MUST search using", "tool_search_tool_bm25"}}},
-		{"Set_locked_says_only_set_goal", true, false, GoalPhaseSet,
-			expect{positiveContains: []string{"locked", "set_goal"}, negativeContains: []string{"MUST search using"}}},
-		{"Checkpoint_locked_bm25_only", true, false, GoalPhaseCheckpoint,
-			expect{positiveContains: []string{"locked", "goal_progress", "complete_goal"}, negativeContains: []string{"MUST search using"}}},
-		{"Checkpoint_locked_both_tools", true, true, GoalPhaseCheckpoint,
-			expect{positiveContains: []string{"Do not search", "tool_search_tool_bm25", "tool_search_tool_regex"}, negativeContains: []string{"MUST search using"}}},
-		{"Final_locked_only_complete_goal", true, false, GoalPhaseFinal,
-			expect{positiveContains: []string{"locked", "complete_goal"}, negativeContains: []string{"MUST search using"}}},
-		{"Empty_phase_falls_through_to_open_behavior", true, false, "",
-			expect{positiveContains: []string{"MUST search using"}}},
+		{
+			"Open_unconditional_bm25", true, false, GoalPhaseOpen,
+			expect{positiveContains: []string{"MUST search using", "tool_search_tool_bm25"}},
+		},
+		{
+			"Set_locked_says_only_set_goal", true, false, GoalPhaseSet,
+			expect{positiveContains: []string{"locked", "set_goal"}, negativeContains: []string{"MUST search using"}},
+		},
+		{
+			"Checkpoint_locked_bm25_only",
+			true,
+			false,
+			GoalPhaseCheckpoint,
+			expect{
+				positiveContains: []string{"locked", "goal_progress", "complete_goal"},
+				negativeContains: []string{"MUST search using"},
+			},
+		},
+		{
+			"Checkpoint_locked_both_tools",
+			true,
+			true,
+			GoalPhaseCheckpoint,
+			expect{
+				positiveContains: []string{"Do not search", "tool_search_tool_bm25", "tool_search_tool_regex"},
+				negativeContains: []string{"MUST search using"},
+			},
+		},
+		{
+			"Final_locked_only_complete_goal",
+			true,
+			false,
+			GoalPhaseFinal,
+			expect{
+				positiveContains: []string{"locked", "complete_goal"},
+				negativeContains: []string{"MUST search using"},
+			},
+		},
+		{
+			"Empty_phase_falls_through_to_open_behavior", true, false, "",
+			expect{positiveContains: []string{"MUST search using"}},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -5,7 +5,7 @@
 //
 // Copyright (c) 2026 PicoClaw contributors
 
-// Package bedrock implements the LLM provider interface for AWS Bedrock.
+// Package bedrock — implements the LLM provider interface for AWS Bedrock.
 // It uses the Bedrock Runtime Converse API for unified access to multiple
 // model families (Claude, Llama, Mistral, etc.) with tool/function calling support.
 package bedrock
@@ -158,7 +158,12 @@ func modelDeprecatesTemperature(model string) bool {
 	return strings.Contains(m, "claude-opus-4-8")
 }
 
-func buildConverseParams(messages []Message, tools []ToolDefinition, model string, options map[string]any) converseParams {
+func buildConverseParams(
+	messages []Message,
+	tools []ToolDefinition,
+	model string,
+	options map[string]any,
+) converseParams {
 	bedrockMessages, systemPrompts := convertMessages(messages)
 
 	var inferenceConfig *types.InferenceConfiguration
@@ -411,10 +416,14 @@ func parseStreamResponse(
 				// Usage metadata
 				if e.Value.Usage != nil {
 					usage = &UsageInfo{
-						PromptTokens:         int(aws.ToInt32(e.Value.Usage.InputTokens)),
-						CompletionTokens:     int(aws.ToInt32(e.Value.Usage.OutputTokens)),
-						TotalTokens:          int(aws.ToInt32(e.Value.Usage.InputTokens)) + int(aws.ToInt32(e.Value.Usage.OutputTokens)),
-						CacheReadInputTokens: int(aws.ToInt32(e.Value.Usage.CacheReadInputTokens)),
+						PromptTokens:     int(aws.ToInt32(e.Value.Usage.InputTokens)),
+						CompletionTokens: int(aws.ToInt32(e.Value.Usage.OutputTokens)),
+						TotalTokens: int(
+							aws.ToInt32(e.Value.Usage.InputTokens),
+						) + int(
+							aws.ToInt32(e.Value.Usage.OutputTokens),
+						),
+						CacheReadInputTokens:  int(aws.ToInt32(e.Value.Usage.CacheReadInputTokens)),
 						CacheWriteInputTokens: int(aws.ToInt32(e.Value.Usage.CacheWriteInputTokens)),
 					}
 				}
@@ -789,10 +798,14 @@ func parseResponse(output *bedrockruntime.ConverseOutput) (*LLMResponse, error) 
 	var usage *UsageInfo
 	if output.Usage != nil {
 		usage = &UsageInfo{
-			PromptTokens:         int(aws.ToInt32(output.Usage.InputTokens)),
-			CompletionTokens:     int(aws.ToInt32(output.Usage.OutputTokens)),
-			TotalTokens:          int(aws.ToInt32(output.Usage.InputTokens)) + int(aws.ToInt32(output.Usage.OutputTokens)),
-			CacheReadInputTokens: int(aws.ToInt32(output.Usage.CacheReadInputTokens)),
+			PromptTokens:     int(aws.ToInt32(output.Usage.InputTokens)),
+			CompletionTokens: int(aws.ToInt32(output.Usage.OutputTokens)),
+			TotalTokens: int(
+				aws.ToInt32(output.Usage.InputTokens),
+			) + int(
+				aws.ToInt32(output.Usage.OutputTokens),
+			),
+			CacheReadInputTokens:  int(aws.ToInt32(output.Usage.CacheReadInputTokens)),
 			CacheWriteInputTokens: int(aws.ToInt32(output.Usage.CacheWriteInputTokens)),
 		}
 	}

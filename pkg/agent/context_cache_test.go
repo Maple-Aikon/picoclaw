@@ -376,7 +376,9 @@ func TestCacheInvalidationOnGoalPhaseChange(t *testing.T) {
 	// is asserted against the phase channel instead.
 	promptSet := cb.BuildSystemPromptWithCache("set", false, 0)
 	if promptSet != promptOpen {
-		t.Errorf("system prompt changed across goalPhase transition - lever (a) requires a byte-identical system prefix")
+		t.Errorf(
+			"system prompt changed across goalPhase transition - lever (a) requires a byte-identical system prefix",
+		)
 	}
 	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseSet), 0, ""),
 		"set_goal", "SET phase affordance must reach the LLM via the phase channel")
@@ -458,7 +460,9 @@ func TestCacheInvalidationOnIterationChange(t *testing.T) {
 	// mismatch). Iter 1 prompt has its own iter=1 header.
 	promptIter1Again2 := cb.BuildSystemPromptWithCache("set", false, 1)
 	if promptIter1Again2 != promptIter17 {
-		t.Errorf("system prompt changed across iter change (reverse direction) - lever (a) requires a byte-identical system prefix")
+		t.Errorf(
+			"system prompt changed across iter change (reverse direction) - lever (a) requires a byte-identical system prefix",
+		)
 	}
 	assertPhaseChannelContains(t, cb, phaseChannelReq(string(GoalPhaseSet), 1, ""),
 		"(iter 1)", "SET hint header must reflect iter 1 after the iter-17 cache flip")
@@ -519,7 +523,9 @@ func TestNonOpenPhasesBypassCache(t *testing.T) {
 					t.Errorf("Set phase channel at iter=17 missing '(iter 17)' hint header - Phase 12.16.1 regression")
 				}
 				if strings.Contains(ch, "(iter 1)") {
-					t.Errorf("Set phase channel at iter=17 still contains '(iter 1)' - Phase 12.16.1 stale-text regression")
+					t.Errorf(
+						"Set phase channel at iter=17 still contains '(iter 1)' - Phase 12.16.1 stale-text regression",
+					)
 				}
 			}
 
@@ -1025,8 +1031,10 @@ func TestCache_EstimateSystemTokensDoesNotCorruptCache(t *testing.T) {
 	// Open-phase cache slot MUST still be "open" — EstimateSystemTokens
 	// must not have corrupted it via the no-cache build path.
 	if cb.cachedSystemPromptGoalPhase != "open" {
-		t.Fatalf("EstimateSystemTokens corrupted cache phase: now %q, want \"open\" (the Open-phase cache was overwritten by an empty-phase rebuild)",
-			cb.cachedSystemPromptGoalPhase)
+		t.Fatalf(
+			"EstimateSystemTokens corrupted cache phase: now %q, want \"open\" (the Open-phase cache was overwritten by an empty-phase rebuild)",
+			cb.cachedSystemPromptGoalPhase,
+		)
 	}
 
 	// Set-phase rebuild must still return the hint (deterministic rebuild
@@ -1093,17 +1101,26 @@ func TestCacheInvalidationOnIterationCapChange(t *testing.T) {
 	// system prompt is constant for OPEN.
 	p2 := cb.BuildSystemPromptWithCacheFullKey("open", false, 6, "", 10, 15)
 	if cb.cachedSystemPromptIterationCap != 10 {
-		t.Errorf("Phase 12.72 Fix #2: cap change must invalidate cache baseline (cb.cachedSystemPromptIterationCap=10); got %d", cb.cachedSystemPromptIterationCap)
+		t.Errorf(
+			"Phase 12.72 Fix #2: cap change must invalidate cache baseline (cb.cachedSystemPromptIterationCap=10); got %d",
+			cb.cachedSystemPromptIterationCap,
+		)
 	}
 	// Phase 12.72 Fix #2: OPEN system prompt is constant; the
 	// "Next CHECKPOINT at iter N" / "FINAL phase will be at iter M" text
 	// now lives in user[0], NOT in this system prompt. Both p1 and p2
 	// MUST NOT contain those literal system-side markers.
 	if strings.Contains(p2, "Next CHECKPOINT phase will be at iter 10") {
-		t.Errorf("Phase 12.72 Fix #2: OPEN system prompt must NOT contain dynamic CHECKPOINT marker (moved to user[0]); got:\n%s", p2)
+		t.Errorf(
+			"Phase 12.72 Fix #2: OPEN system prompt must NOT contain dynamic CHECKPOINT marker (moved to user[0]); got:\n%s",
+			p2,
+		)
 	}
 	if strings.Contains(p1, "Next CHECKPOINT phase will be at iter 10") {
-		t.Errorf("Phase 12.72 Fix #2: OPEN system prompt must NOT contain dynamic CHECKPOINT marker (moved to user[0]); got:\n%s", p1)
+		t.Errorf(
+			"Phase 12.72 Fix #2: OPEN system prompt must NOT contain dynamic CHECKPOINT marker (moved to user[0]); got:\n%s",
+			p1,
+		)
 	}
 }
 
@@ -1131,16 +1148,25 @@ func TestCacheInvalidationOnMaxIterationsCapChange(t *testing.T) {
 	p2 := cb.BuildSystemPromptWithCacheFullKey("open", false, 5, "", 15, 20)
 	// Phase 12.72 Fix #2: cap change must invalidate cache baseline.
 	if cb.cachedSystemPromptMaxIterationsCap != 20 {
-		t.Errorf("Phase 12.72 Fix #2: maxCap change must invalidate cache baseline (cb.cachedSystemPromptMaxIterationsCap=20); got %d", cb.cachedSystemPromptMaxIterationsCap)
+		t.Errorf(
+			"Phase 12.72 Fix #2: maxCap change must invalidate cache baseline (cb.cachedSystemPromptMaxIterationsCap=20); got %d",
+			cb.cachedSystemPromptMaxIterationsCap,
+		)
 	}
 	// Phase 12.72 Fix #2: OPEN system prompt must not carry the
 	// "FINAL phase will be at iter 15" / "Next CHECKPOINT phase will be
 	// at iter 15" markers — those live in user[0] now. Lock the contract.
 	if strings.Contains(p1, "FINAL phase will be at iter 15") {
-		t.Errorf("Phase 12.72 Fix #2: OPEN system prompt must NOT contain dynamic FINAL marker (moved to user[0]); got:\n%s", p1)
+		t.Errorf(
+			"Phase 12.72 Fix #2: OPEN system prompt must NOT contain dynamic FINAL marker (moved to user[0]); got:\n%s",
+			p1,
+		)
 	}
 	if strings.Contains(p2, "Next CHECKPOINT phase will be at iter 15") {
-		t.Errorf("Phase 12.72 Fix #2: OPEN system prompt must NOT contain dynamic CHECKPOINT marker (moved to user[0]); got:\n%s", p2)
+		t.Errorf(
+			"Phase 12.72 Fix #2: OPEN system prompt must NOT contain dynamic CHECKPOINT marker (moved to user[0]); got:\n%s",
+			p2,
+		)
 	}
 }
 

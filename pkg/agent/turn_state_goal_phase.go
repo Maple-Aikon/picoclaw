@@ -50,7 +50,13 @@ func (ts *turnState) hasGoal() bool {
 	store := goal.NewStore(ts.workspace)
 	g, err := store.Read(ts.sessionKey)
 	if err != nil || g == nil {
-		log.Printf("DEBUG[12.16] hasGoal session=%s workspace=%s result=NO (err=%v g=%v)", ts.sessionKey, ts.workspace, err, g)
+		log.Printf(
+			"DEBUG[12.16] hasGoal session=%s workspace=%s result=NO (err=%v g=%v)",
+			ts.sessionKey,
+			ts.workspace,
+			err,
+			g,
+		)
 		return false
 	}
 	isActive := g.Status == goal.StatusActive
@@ -76,6 +82,7 @@ func (ts *turnState) iterationCapFinalized() bool {
 	}
 	return ts.iteration >= ts.iterationCap
 }
+
 // currentGoalPhase classifies the turn into one of the 4 goal phases
 // (Phase 11 redesign: set / open / checkpoint / final). Delegates to the
 // package-level ResolveGoalPhase classifier so per-turn wiring and the
@@ -100,7 +107,11 @@ func (ts *turnState) currentGoalPhase() GoalPhase {
 	// GoalPhaseOpen) at iter 1 without driving a set_goal preamble. See
 	// pkg/agent/instance.go for the field contract.
 	if ts.agent.PhaseOverrideForTest != "" {
-		log.Printf("DEBUG[12.16] currentGoalPhase session=%s phaseOverride=%s", ts.sessionKey, ts.agent.PhaseOverrideForTest)
+		log.Printf(
+			"DEBUG[12.16] currentGoalPhase session=%s phaseOverride=%s",
+			ts.sessionKey,
+			ts.agent.PhaseOverrideForTest,
+		)
 		return GoalPhase(ts.agent.PhaseOverrideForTest)
 	}
 	// Phase 12.47 (E3): goal finalized → POST-FINAL, stable until end of
@@ -120,7 +131,16 @@ func (ts *turnState) currentGoalPhase() GoalPhase {
 		ts.maxIterationsCap,
 		ts.goalFinalized,
 	)
-	log.Printf("DEBUG[12.16] currentGoalPhase session=%s hasGoal=%v iter=%d iterCap=%d maxCap=%d goalFinalized=%v -> %s", ts.sessionKey, hasG, ts.iteration, ts.iterationCap, ts.maxIterationsCap, ts.goalFinalized, resolved)
+	log.Printf(
+		"DEBUG[12.16] currentGoalPhase session=%s hasGoal=%v iter=%d iterCap=%d maxCap=%d goalFinalized=%v -> %s",
+		ts.sessionKey,
+		hasG,
+		ts.iteration,
+		ts.iterationCap,
+		ts.maxIterationsCap,
+		ts.goalFinalized,
+		resolved,
+	)
 	return resolved
 }
 

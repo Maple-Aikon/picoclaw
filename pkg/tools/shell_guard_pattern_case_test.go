@@ -451,7 +451,7 @@ func TestGuard_Pattern_CaseSensitiveOptOut(t *testing.T) {
 // "frobnicator" — which is only possible if the command was NOT
 // lowercased before matching.
 //
-// (Under the old behaviour — lowercasing the command — the same pattern
+// (Under the old behavior — lowercasing the command — the same pattern
 // would have matched "frobnicator" and NOT "Frobnicator": the exact
 // inverse.)
 func TestGuard_Pattern_CommandIsNotLowercased(t *testing.T) {

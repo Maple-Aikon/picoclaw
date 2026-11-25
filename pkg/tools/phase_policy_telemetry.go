@@ -11,6 +11,7 @@
 //
 // Strict build: import via a separate file (phase_policy_strict.go) — that
 // path panics BEFORE reaching this hook.
+
 package tools
 
 import "sync/atomic"

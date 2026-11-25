@@ -63,9 +63,11 @@ func (m *failingTool) Name() string { return m.name }
 func (m *failingTool) Description() string {
 	return "mock tool that always fails transiently"
 }
+
 func (m *failingTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
+
 func (m *failingTool) Execute(_ context.Context, _ map[string]any) *toolshared.ToolResult {
 	return toolshared.ErrorResult("network blip").WithErrorKind(toolshared.ErrTransient)
 }

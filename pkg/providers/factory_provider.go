@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	anthropicmessages "github.com/sipeed/picoclaw/pkg/providers/anthropic_messages"
 	"github.com/sipeed/picoclaw/pkg/providers/azure"
 	"github.com/sipeed/picoclaw/pkg/providers/bedrock"
 	"github.com/sipeed/picoclaw/pkg/providers/common"
-	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 // createClaudeAuthProvider creates a Claude provider using OAuth credentials from auth store.
@@ -455,4 +455,3 @@ func extraBodyKeys(extraBody map[string]any) []string {
 	sort.Strings(keys)
 	return keys
 }
-

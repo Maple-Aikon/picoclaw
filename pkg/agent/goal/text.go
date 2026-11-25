@@ -35,14 +35,14 @@ const MaxGoalSummaryRunes = 1000
 // valid UTF-8 that renders as separate emoji. Vietnamese text (the primary
 // concern) is unaffected. Grapheme-perfect handling would require the
 // golang.org/x/text/unicode/norm dependency — deferred (§7.1).
-func truncateRunes(s string, max int) string {
-	if max <= 0 || s == "" {
+func truncateRunes(s string, limit2 int) string {
+	if limit2 <= 0 || s == "" {
 		return ""
 	}
-	if utf8.RuneCountInString(s) <= max {
+	if utf8.RuneCountInString(s) <= limit2 {
 		return s
 	}
-	out := []rune(s)[:max]
+	out := []rune(s)[:limit2]
 	// F17: strip trailing combining marks (Mn) so truncation never leaves a
 	// dangling diacritic (e.g. "Phò" + U+0301 → "Phò").
 	for len(out) > 0 && unicode.Is(unicode.Mn, out[len(out)-1]) {

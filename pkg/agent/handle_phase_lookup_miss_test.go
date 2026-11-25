@@ -1,6 +1,7 @@
 // Phase 12.50 §3.3 — agent-side lookup miss handler tests.
 //
 //go:build !strict_phases
+
 //
 // (Strict build: ToolPolicyForPhase("bogus") panics via phases.MustBeKnown.
 // Callback registry tests assert no-panic behavior in default build only.)
@@ -153,5 +154,7 @@ func TestInitHandler_DoubleRegisterSafe(t *testing.T) {
 
 // Helper import for os usage in some tests (silences "imported and not used"
 // for tests that don't end up referencing os directly).
-var _ = os.Getenv
-var _ atomic.Int64 // keep atomic import (used in some tests)
+var (
+	_ = os.Getenv
+	_ atomic.Int64 // keep atomic import (used in some tests)
+)

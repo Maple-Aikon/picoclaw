@@ -145,7 +145,9 @@ func os_Setenv(key, value string) {
 // Even when phase="" (no phase yet), the field is informational.
 //
 // Wrapper emits an event with these fields when debug is enabled:
-//   turn_id, session_key, iter, phase, registry_count
+//
+//	turn_id, session_key, iter, phase, registry_count
+//
 // Event name = "phase_start_pre_init" (distinct from "phase_start" so
 // downstream grep/dashboards can filter pre-init events separately).
 func TestAgentDebugPhaseStartPreInit_WrapperExists(t *testing.T) {
@@ -209,9 +211,9 @@ func TestAgentDebugLLMResponse_EmitsCacheFields(t *testing.T) {
 	captured := redirectLoggerForTest(t)
 
 	usage := &providers.UsageInfo{
-		PromptTokens:         1000,
-		CompletionTokens:     100,
-		CacheReadInputTokens: 700,
+		PromptTokens:          1000,
+		CompletionTokens:      100,
+		CacheReadInputTokens:  700,
 		CacheWriteInputTokens: 300,
 	}
 	AgentDebugLLMResponse(

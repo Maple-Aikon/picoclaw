@@ -1,4 +1,4 @@
-// Package phases is the tokens-only source of truth for the 5 goal lifecycle
+// Package phases — is the tokens-only source of truth for the 5 goal lifecycle
 // phases (Phase 11/12.x). Both pkg/tools (string-keyed policy table) and
 // pkg/agent (GoalPhase-keyed policy table) reference these constants — a typo
 // in either package becomes a compile error.
@@ -36,11 +36,11 @@ var allTokens = []string{PhaseSet, PhaseOpen, PhaseCheckpoint, PhaseFinal, Phase
 
 // knownSet is the O(1) lookup map for IsKnown.
 var knownSet = map[string]bool{
-	PhaseSet:       true,
-	PhaseOpen:      true,
+	PhaseSet:        true,
+	PhaseOpen:       true,
 	PhaseCheckpoint: true,
-	PhaseFinal:     true,
-	PhasePostFinal: true,
+	PhaseFinal:      true,
+	PhasePostFinal:  true,
 }
 
 // AllTokens returns the canonical ordered list of 5 phase tokens.

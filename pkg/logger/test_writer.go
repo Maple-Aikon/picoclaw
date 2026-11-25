@@ -1,11 +1,12 @@
-// Phase 12.49 — test-only logger writer swap for canary_drift tests.
+// Package logger — Phase 12.49 — test-only logger writer swap for canary_drift tests.
 //
 // Use:
-//   buf := &bytes.Buffer{}
-//   cleanup := logger.WithTestWriter(buf)
-//   defer cleanup()
-//   // ... emit log lines ...
-//   // buf.String() now contains the formatted output.
+//
+//	buf := &bytes.Buffer{}
+//	cleanup := logger.WithTestWriter(buf)
+//	defer cleanup()
+//	// ... emit log lines ...
+//	// buf.String() now contains the formatted output.
 //
 // Caveat: appends a NEW writer to the writers slice. DisableFileLogging
 // does NOT remove test writers — tests should call cleanup() to restore.

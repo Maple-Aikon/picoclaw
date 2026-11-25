@@ -146,8 +146,19 @@ func TestZZModea1112Slack(t *testing.T) {
 		if i >= 12 {
 			break
 		}
-		t.Logf("slack=%-7d file=%-7d h2=%-3d bodySect=%-3d room=%-5d fixed=%-5d sumMin=%-5d starved=%-3d fallback=%-5v %s",
-			r.slack, r.fileB, r.h2, r.bodySect, r.room, r.fixed, r.sumMin, r.starved, r.fallback, r.name)
+		t.Logf(
+			"slack=%-7d file=%-7d h2=%-3d bodySect=%-3d room=%-5d fixed=%-5d sumMin=%-5d starved=%-3d fallback=%-5v %s",
+			r.slack,
+			r.fileB,
+			r.h2,
+			r.bodySect,
+			r.room,
+			r.fixed,
+			r.sumMin,
+			r.starved,
+			r.fallback,
+			r.name,
+		)
 	}
 	neg := 0
 	for _, r := range rows {
@@ -170,8 +181,13 @@ func TestZZModea1112Slack(t *testing.T) {
 			actual = 1
 		}
 		if predicted != actual {
-			t.Errorf("FORMULA DRIFT %s: slack=%d predicts starvation=%d but the production allocator starved %d section(s)",
-				r.name, r.slack, predicted, r.starved)
+			t.Errorf(
+				"FORMULA DRIFT %s: slack=%d predicts starvation=%d but the production allocator starved %d section(s)",
+				r.name,
+				r.slack,
+				predicted,
+				r.starved,
+			)
 		}
 	}
 
@@ -190,8 +206,11 @@ func TestZZModea1112Slack(t *testing.T) {
 	// EVERY body even though slack may be positive.
 	for _, r := range rows {
 		if r.fallback {
-			t.Errorf("HEADINGS_ONLY FALLBACK %s: the digest plan does not fit the cap -> every section body is dropped (slack=%d)",
-				r.name, r.slack)
+			t.Errorf(
+				"HEADINGS_ONLY FALLBACK %s: the digest plan does not fit the cap -> every section body is dropped (slack=%d)",
+				r.name,
+				r.slack,
+			)
 		}
 	}
 }

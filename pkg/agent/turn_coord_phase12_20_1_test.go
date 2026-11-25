@@ -10,7 +10,9 @@ import "testing"
 // still consumed time + emitted publishPicoToolCallInterim events.
 //
 // 12.20.1: loop top condition gains
-//   `&& !(ts.goalFinalized && ts.postCompleteGoalReportSent)`
+//
+//	`&& !(ts.goalFinalized && ts.postCompleteGoalReportSent)`
+//
 // so once the post-body marker flips postCompleteGoalReportSent=true,
 // the loop exits strictly at iter N+1 (or N+2 if LLM retried) instead
 // of letting the LLM loop until cap.
@@ -34,8 +36,11 @@ func TestPhase12_20_1_LoopTopForceExitAfterFinalReport(t *testing.T) {
 	capNotReached := ts.currentIteration() < ts.iterationCap
 
 	if !(inForceExitState && capNotReached) {
-		t.Fatalf("expected (force-exit && cap-reached) state; got force-exit=%v cap=%v — can't validate fix (A) precondition (need scenario where OLD loop condition would still be true)",
-			inForceExitState, capNotReached)
+		t.Fatalf(
+			"expected (force-exit && cap-reached) state; got force-exit=%v cap=%v — can't validate fix (A) precondition (need scenario where OLD loop condition would still be true)",
+			inForceExitState,
+			capNotReached,
+		)
 	}
 
 	// Fix (A) adds `&& !(goalFinalized && postCompleteGoalReportSent)` —
@@ -43,7 +48,9 @@ func TestPhase12_20_1_LoopTopForceExitAfterFinalReport(t *testing.T) {
 	// condition:
 	shouldContinue := capNotReached && !inForceExitState
 	if shouldContinue {
-		t.Errorf("Fix (A) broken: loop should exit when goalFinalized && postCompleteGoalReportSent; condition still true")
+		t.Errorf(
+			"Fix (A) broken: loop should exit when goalFinalized && postCompleteGoalReportSent; condition still true",
+		)
 	}
 }
 
@@ -64,13 +71,13 @@ func TestPhase12_20_1_LoopDoesNotExit_PreFinalReport(t *testing.T) {
 
 	// Mirror pre-loop hook (turn_coord.go:139-143):
 	if ts.goalFinalized && !ts.postCompleteGoalReportSent {
-		if cap := ts.iteration + 1; cap > ts.iterationCap {
-			ts.iterationCap = cap
+		if capacity2 := ts.iteration + 1; capacity2 > ts.iterationCap {
+			ts.iterationCap = capacity2
 		}
 	}
 	// After hook: iterationCap=6 (=5+1). Loop top continues into iter N+1.
 
-	capNotReached := ts.currentIteration() < ts.iterationCap         // 5 < 6 = true
+	capNotReached := ts.currentIteration() < ts.iterationCap              // 5 < 6 = true
 	inForceExitState := ts.goalFinalized && ts.postCompleteGoalReportSent // true && false = false
 
 	shouldContinue := capNotReached && !inForceExitState
@@ -90,7 +97,7 @@ func TestPhase12_20_1_LoopDoesNotExit_PreGoalComplete(t *testing.T) {
 	ts.goalFinalized = false
 	ts.postCompleteGoalReportSent = false
 
-	capNotReached := ts.currentIteration() < ts.iterationCap         // 3 < 10 = true
+	capNotReached := ts.currentIteration() < ts.iterationCap              // 3 < 10 = true
 	inForceExitState := ts.goalFinalized && ts.postCompleteGoalReportSent // false && false = false
 
 	shouldContinue := capNotReached && !inForceExitState

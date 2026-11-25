@@ -73,9 +73,9 @@ type AgentLoop struct {
 	// Run loop select is hit. If busRecvHits=0 while idleTicks=high, main
 	// loop never enters the InboundChan case (channel truly empty or main
 	// loop blocked elsewhere).
-	idleTicks    atomic.Uint64
-	busRecvHits  atomic.Uint64
-	ctxDoneHits  atomic.Uint64
+	idleTicks   atomic.Uint64
+	busRecvHits atomic.Uint64
+	ctxDoneHits atomic.Uint64
 
 	turnSeq atomic.Uint64
 
@@ -179,27 +179,27 @@ type continuationTarget struct {
 }
 
 const (
-	defaultResponse            = "The model returned an empty response. This may indicate a provider error or token limit."
-	toolLimitResponse          = "I've reached `max_tool_iterations` without a final response. Increase `max_tool_iterations` in config.json if this task needs more tool steps."
-	handledToolResponseSummary = "Requested output delivered via tool attachment."
-	sessionKeyAgentPrefix      = "agent:"
-	pendingTurnPrefix          = "pending-"
-	providerReloadGracePeriod  = 30 * time.Second
-	metadataKeyMessageKind     = "message_kind"
-	metadataKeyToolCalls       = "tool_calls"
-	metadataKeyIterContext     = "iter_context"
-	metadataKeyOutboundKind    = "outbound_kind"
-	messageKindThought         = "thought"
-	messageKindToolFeedback          = "tool_feedback"
+	defaultResponse                    = "The model returned an empty response. This may indicate a provider error or token limit."
+	toolLimitResponse                  = "I've reached `max_tool_iterations` without a final response. Increase `max_tool_iterations` in config.json if this task needs more tool steps."
+	handledToolResponseSummary         = "Requested output delivered via tool attachment."
+	sessionKeyAgentPrefix              = "agent:"
+	pendingTurnPrefix                  = "pending-"
+	providerReloadGracePeriod          = 30 * time.Second
+	metadataKeyMessageKind             = "message_kind"
+	metadataKeyToolCalls               = "tool_calls"
+	metadataKeyIterContext             = "iter_context"
+	metadataKeyOutboundKind            = "outbound_kind"
+	messageKindThought                 = "thought"
+	messageKindToolFeedback            = "tool_feedback"
 	messageKindToolFeedbackExplanation = "tool_feedback_explanation"
-	messageKindToolCalls             = "tool_calls"
-	outboundKindFinal          = "final"
-	metadataKeyAccountID       = "account_id"
-	metadataKeyGuildID         = "guild_id"
-	metadataKeyTeamID          = "team_id"
-	metadataKeyReplyToMessage  = "reply_to_message_id"
-	metadataKeyParentPeerKind  = "parent_peer_kind"
-	metadataKeyParentPeerID    = "parent_peer_id"
+	messageKindToolCalls               = "tool_calls"
+	outboundKindFinal                  = "final"
+	metadataKeyAccountID               = "account_id"
+	metadataKeyGuildID                 = "guild_id"
+	metadataKeyTeamID                  = "team_id"
+	metadataKeyReplyToMessage          = "reply_to_message_id"
+	metadataKeyParentPeerKind          = "parent_peer_kind"
+	metadataKeyParentPeerID            = "parent_peer_id"
 )
 
 // registerSharedTools registers tools that are shared across all agents (web, message, spawn).
@@ -273,7 +273,13 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			logPreview := utils.Truncate(msg.Content, 80)
 			logger.InfoCF(
 				"agent",
-				fmt.Sprintf("agent_bus_recv channel=%s sender=%s session=%q content=%q", msg.Channel, msg.SenderID, msg.SessionKey, logPreview),
+				fmt.Sprintf(
+					"agent_bus_recv channel=%s sender=%s session=%q content=%q",
+					msg.Channel,
+					msg.SenderID,
+					msg.SessionKey,
+					logPreview,
+				),
 				map[string]any{
 					"channel":     msg.Channel,
 					"chat_id":     msg.ChatID,

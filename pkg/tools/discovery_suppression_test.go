@@ -24,28 +24,28 @@ func TestDiscoverySuppression_PerPhase(t *testing.T) {
 		want  map[string]bool // tool → visible
 	}{
 		{"set", map[string]bool{
-			"tool_search_tool_bm25":   false,
-			"tool_search_tool_regex":  false,
+			"tool_search_tool_bm25":  false,
+			"tool_search_tool_regex": false,
 			"exec":                   false, // blocked at SET (allowlist = [set_goal])
 		}},
 		{"open", map[string]bool{
-			"tool_search_tool_bm25":   true,
-			"tool_search_tool_regex":  true,
+			"tool_search_tool_bm25":  true,
+			"tool_search_tool_regex": true,
 			"exec":                   true,
 		}},
 		{"checkpoint", map[string]bool{
-			"tool_search_tool_bm25":   false,
-			"tool_search_tool_regex":  false,
+			"tool_search_tool_bm25":  false,
+			"tool_search_tool_regex": false,
 			"exec":                   false, // ABSOLUTE allowlist = [goal_progress, complete_goal]
 		}},
 		{"final", map[string]bool{
-			"tool_search_tool_bm25":   false,
-			"tool_search_tool_regex":  false,
+			"tool_search_tool_bm25":  false,
+			"tool_search_tool_regex": false,
 			"exec":                   false, // ABSOLUTE allowlist = [complete_goal]
 		}},
 		{"post_final", map[string]bool{
-			"tool_search_tool_bm25":   false,
-			"tool_search_tool_regex":  false,
+			"tool_search_tool_bm25":  false,
+			"tool_search_tool_regex": false,
 			"exec":                   false, // hard guard blocks all
 		}},
 	}
@@ -85,7 +85,17 @@ func TestDiscoverySuppression_PerPhase(t *testing.T) {
 			if got != want {
 				p := ToolPolicyForPhase(c.phase)
 				isDisc := isToolDiscoveryToolName(tool)
-				t.Errorf("phase=%q tool=%q (disc=%v): IsAllowed=%v, want %v — policy=%+v allowlist=%+v r.phase=%q", c.phase, tool, isDisc, got, want, p, r.GetAllowlist(), c.phase)
+				t.Errorf(
+					"phase=%q tool=%q (disc=%v): IsAllowed=%v, want %v — policy=%+v allowlist=%+v r.phase=%q",
+					c.phase,
+					tool,
+					isDisc,
+					got,
+					want,
+					p,
+					r.GetAllowlist(),
+					c.phase,
+				)
 			}
 		}
 	}

@@ -8,6 +8,7 @@
 // Approach: invoke the helper with each canonical phase + a known input
 // and assert the policy-driven output matches the expected reference output
 // (captured from the pre-refactor behavior).
+
 package agent
 
 import (
@@ -118,13 +119,37 @@ func policyDrivenContextSuffix(phase GoalPhase) string {
 // Site 8: computePhaseStuckAbortReasonForPhase uses StuckBucket.
 func TestSite8_StuckReason_PolicyDriven(t *testing.T) {
 	// Set/Checkpoint/Final → return stuck reason when count >= 2.
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseSet, 2, false, 0, false, 0, false); got != GoalPhaseSetStuckAbortReason {
+	if got := computePhaseStuckAbortReasonForPhase(
+		GoalPhaseSet,
+		2,
+		false,
+		0,
+		false,
+		0,
+		false,
+	); got != GoalPhaseSetStuckAbortReason {
 		t.Errorf("Set stuck: got %q, want %q", got, GoalPhaseSetStuckAbortReason)
 	}
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseCheckpoint, 0, false, 2, false, 0, false); got != GoalPhaseCheckpointStuckAbortReason {
+	if got := computePhaseStuckAbortReasonForPhase(
+		GoalPhaseCheckpoint,
+		0,
+		false,
+		2,
+		false,
+		0,
+		false,
+	); got != GoalPhaseCheckpointStuckAbortReason {
 		t.Errorf("Checkpoint stuck: got %q, want %q", got, GoalPhaseCheckpointStuckAbortReason)
 	}
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseFinal, 0, false, 0, false, 2, false); got != GoalPhaseFinalStuckAbortReason {
+	if got := computePhaseStuckAbortReasonForPhase(
+		GoalPhaseFinal,
+		0,
+		false,
+		0,
+		false,
+		2,
+		false,
+	); got != GoalPhaseFinalStuckAbortReason {
 		t.Errorf("Final stuck: got %q, want %q", got, GoalPhaseFinalStuckAbortReason)
 	}
 	// Open/PostFinal → empty (no stuck detection).
@@ -235,13 +260,37 @@ func TestSiteCrossTable_PhasesTokensAgree(t *testing.T) {
 // F3a — the archive-flag branch fires even with a zero attempt count
 // (archive is terminal; the flag alone is the stuck signal).
 func TestComputeStuckReason_ArchiveFlagFiresWithZeroCount(t *testing.T) {
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseSet, 0, true, 0, false, 0, false); got != GoalPhaseSetStuckAbortReason {
+	if got := computePhaseStuckAbortReasonForPhase(
+		GoalPhaseSet,
+		0,
+		true,
+		0,
+		false,
+		0,
+		false,
+	); got != GoalPhaseSetStuckAbortReason {
 		t.Errorf("Set (flag=true, count=0): got %q, want %q", got, GoalPhaseSetStuckAbortReason)
 	}
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseCheckpoint, 0, false, 0, true, 0, false); got != GoalPhaseCheckpointStuckAbortReason {
+	if got := computePhaseStuckAbortReasonForPhase(
+		GoalPhaseCheckpoint,
+		0,
+		false,
+		0,
+		true,
+		0,
+		false,
+	); got != GoalPhaseCheckpointStuckAbortReason {
 		t.Errorf("Checkpoint (flag=true, count=0): got %q, want %q", got, GoalPhaseCheckpointStuckAbortReason)
 	}
-	if got := computePhaseStuckAbortReasonForPhase(GoalPhaseFinal, 0, false, 0, false, 0, true); got != GoalPhaseFinalStuckAbortReason {
+	if got := computePhaseStuckAbortReasonForPhase(
+		GoalPhaseFinal,
+		0,
+		false,
+		0,
+		false,
+		0,
+		true,
+	); got != GoalPhaseFinalStuckAbortReason {
 		t.Errorf("Final (flag=true, count=0): got %q, want %q", got, GoalPhaseFinalStuckAbortReason)
 	}
 }

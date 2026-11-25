@@ -39,6 +39,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -177,10 +178,13 @@ func TestTelegramSend_NetworkErrorStaysTemporary(t *testing.T) {
 // --- T4: the animator stops on 429 -------------------------------------
 
 func TestToolFeedbackAnimator_StopsOnRateLimit(t *testing.T) {
-	var calls int
+	// The animator runs its tick loop in its own goroutine, so `calls` is
+	// written from that goroutine while the test goroutine reads it.
+	// A plain int is a DATA RACE under -race; use an atomic counter.
+	var calls atomic.Int64
 	anim := channels.NewToolFeedbackAnimator(
 		func(ctx context.Context, chatID, messageID, content string) error {
-			calls++
+			calls.Add(1)
 			return channels.NewRateLimitError(60*time.Second,
 				errors.New("Too Many Requests"))
 		})
@@ -192,17 +196,18 @@ func TestToolFeedbackAnimator_StopsOnRateLimit(t *testing.T) {
 
 	// Give any (buggy) extra tick a chance to land.
 	time.Sleep(2 * time.Second)
-	require.Equal(t, 1, calls,
-		"the animator must stop calling editMessageText after a 429 (got %d calls)", calls)
+	require.Equal(t, int64(1), calls.Load(),
+		"the animator must stop calling editMessageText after a 429 (got %d calls)", calls.Load())
 }
 
 // --- T4b: Update() must not restart the animator on 429 ---------------
 
 func TestToolFeedbackAnimator_UpdateDoesNotRestartOnRateLimit(t *testing.T) {
-	var calls int
+	// Same as above: the tick goroutine writes `calls` concurrently.
+	var calls atomic.Int64
 	anim := channels.NewToolFeedbackAnimator(
 		func(ctx context.Context, chatID, messageID, content string) error {
-			calls++
+			calls.Add(1)
 			return channels.NewRateLimitError(60*time.Second,
 				errors.New("Too Many Requests"))
 		})
@@ -211,25 +216,25 @@ func TestToolFeedbackAnimator_UpdateDoesNotRestartOnRateLimit(t *testing.T) {
 	// Let the first tick fail with a 429. The animator must stop after
 	// that single call.
 	time.Sleep(4 * time.Second)
-	require.Equal(t, 1, calls,
+	require.Equal(t, int64(1), calls.Load(),
 		"the animator must stop after the first failed edit")
 
 	// Update() itself performs ONE edit call. It must surface the error
 	// but NOT re-Record: re-Record would start a fresh goroutine and
 	// resume the 3-second loop.
-	before := calls
+	before := calls.Load()
 	_, handled, err := anim.Update(context.Background(), "chat", "more")
 	require.True(t, handled)
 	require.Error(t, err)
 	require.ErrorIs(t, err, channels.ErrRateLimit)
-	require.Equal(t, before+1, calls,
+	require.Equal(t, before+1, calls.Load(),
 		"Update() performs exactly one edit call")
 
 	// If Update() had re-Recorded, the animation goroutine would be
 	// running again and would add another call within the 3s tick.
 	// No further call must appear.
 	time.Sleep(5 * time.Second)
-	require.Equal(t, before+1, calls,
+	require.Equal(t, before+1, calls.Load(),
 		"Update() must not restart the animation goroutine after a 429")
 }
 
@@ -331,7 +336,11 @@ func TestTelegramSendMediaGroup_429IsRateLimit(t *testing.T) {
 
 	firstRef, err := store.Store(firstPath, media.MediaMeta{Filename: "first.png", ContentType: "image/png"}, "scope-1")
 	require.NoError(t, err)
-	secondRef, err := store.Store(secondPath, media.MediaMeta{Filename: "second.png", ContentType: "image/png"}, "scope-1")
+	secondRef, err := store.Store(
+		secondPath,
+		media.MediaMeta{Filename: "second.png", ContentType: "image/png"},
+		"scope-1",
+	)
 	require.NoError(t, err)
 
 	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{

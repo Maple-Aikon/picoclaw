@@ -833,7 +833,7 @@ func (m *Manager) CallTool(
 			// reconnect (covers cold start, FS lock, etc.).
 			//
 			// P0a (2026-11-16): the cancel is deferred, not called immediately.
-			// Cancelling the handshake ctx right after reconnectServer returns
+			// Canceling the handshake ctx right after reconnectServer returns
 			// would kill the process we just spawned.
 			reconnectCtx, reconnectCancel := context.WithTimeout(context.Background(), m.reconnectTimeout)
 			defer reconnectCancel()
@@ -883,7 +883,7 @@ func (m *Manager) CallTool(
 			//
 			// IMPORTANT: since P0a the subprocess is NOT bound to this ctx
 			// any more (connectServer uses exec.Command, not
-			// exec.CommandContext), so cancelling the handshake ctx can no
+			// exec.CommandContext), so canceling the handshake ctx can no
 			// longer kill the process. Deferring the cancel is therefore
 			// safe AND it releases the timer promptly.
 			reconnectCtx, reconnectCancel := context.WithTimeout(

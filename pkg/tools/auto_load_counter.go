@@ -48,6 +48,7 @@
 // production precedent in phase_policy_telemetry.go (local counter) +
 // callback.go (cross-package bridge). The counter TYPE lives here so
 // pkg/agent can reuse it without duplicating the logic.
+
 package tools
 
 import (

@@ -4,7 +4,7 @@
 //
 // Copyright (c) 2026 PicoClaw contributors
 
-// Package fileutil provides file manipulation utilities.
+// Package fileutil — provides file manipulation utilities.
 package fileutil
 
 import (

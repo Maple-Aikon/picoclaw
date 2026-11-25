@@ -255,13 +255,22 @@ func TestTurnState_ApplyPhaseAllowlist(t *testing.T) {
 			t.Fatalf("Checkpoint allowlist should NOT contain set_goal: got %v", names)
 		}
 		if sliceContains(names, "view_goal") {
-			t.Fatalf("Checkpoint allowlist should NOT contain view_goal (only goal_progress/complete_goal): got %v", names)
+			t.Fatalf(
+				"Checkpoint allowlist should NOT contain view_goal (only goal_progress/complete_goal): got %v",
+				names,
+			)
 		}
 		if sliceContains(names, "alpha") {
-			t.Fatalf("Checkpoint allowlist should NOT contain alpha (absolute phase, base tools excluded): got %v", names)
+			t.Fatalf(
+				"Checkpoint allowlist should NOT contain alpha (absolute phase, base tools excluded): got %v",
+				names,
+			)
 		}
 		if sliceContains(names, "beta") {
-			t.Fatalf("Checkpoint allowlist should NOT contain beta (absolute phase, base tools excluded): got %v", names)
+			t.Fatalf(
+				"Checkpoint allowlist should NOT contain beta (absolute phase, base tools excluded): got %v",
+				names,
+			)
 		}
 	})
 }

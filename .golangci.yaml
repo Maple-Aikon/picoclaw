@@ -144,6 +144,7 @@ linters:
           - maintidx
           - gocognit
           - gocyclo
+          - dupl
         path: _test\.go$
       - linters:
           - nolintlint

@@ -179,8 +179,8 @@ func (s *Store) readNewestArchive(sessionKey string) (*Goal, error) {
 		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, extGoal) {
 			continue
 		}
-		fi, err := e.Info()
-		if err != nil {
+		fi, err2 := e.Info()
+		if err2 != nil {
 			continue
 		}
 		if newest == nil || fi.ModTime().After(newest.ModTime()) {

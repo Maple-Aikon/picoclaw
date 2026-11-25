@@ -12,6 +12,7 @@
 //   - Hard abort between attempts returns error without LLM call
 //   - handleGoalRecovery smoke test: works end-to-end through wrapper
 //   - retryLLMForBlockedTool smoke test: works end-to-end through wrapper
+
 package agent
 
 import (
@@ -36,10 +37,10 @@ type recallTestProvider struct {
 		sync.Mutex
 		callCount int
 	}
-	errors        []error      // optional, per-call transient/non-transient errors
-	responses     []*providers.LLMResponse
-	abortOnCall   *int         // if non-nil and *abortOnCall == idx, request hard abort after returning
-	abortTurnState *turnState  // required when abortOnCall != nil — points to the ts to abort
+	errors         []error // optional, per-call transient/non-transient errors
+	responses      []*providers.LLMResponse
+	abortOnCall    *int       // if non-nil and *abortOnCall == idx, request hard abort after returning
+	abortTurnState *turnState // required when abortOnCall != nil — points to the ts to abort
 }
 
 func (p *recallTestProvider) Chat(
@@ -86,9 +87,9 @@ func (p *recallTestProvider) callCountN() int {
 func TestRecallLLM_TransientRetriesThenSucceeds(t *testing.T) {
 	provider := &recallTestProvider{
 		errors: []error{
-			fmt.Errorf("connection refused: backend down"),  // attempt 0: transient
-			fmt.Errorf("timeout exceeded"),                  // attempt 1: transient
-			nil,                                              // attempt 2: use responses
+			fmt.Errorf("connection refused: backend down"), // attempt 0: transient
+			fmt.Errorf("timeout exceeded"),                 // attempt 1: transient
+			nil,                                            // attempt 2: use responses
 		},
 		responses: []*providers.LLMResponse{
 			nil, nil,
@@ -166,7 +167,7 @@ func TestRecallLLM_SetupFuncRunsOnce(t *testing.T) {
 	provider := &recallTestProvider{
 		errors: []error{
 			fmt.Errorf("connection reset by peer"), // transient
-			fmt.Errorf("timeout exceeded"),          // transient
+			fmt.Errorf("timeout exceeded"),         // transient
 		},
 		responses: []*providers.LLMResponse{
 			nil,
@@ -441,8 +442,8 @@ func TestRecallLLM_HardAbortMidRetry(t *testing.T) {
 	// checks the flag at the next attempt boundary (BEFORE the backoff sleep)
 	// and returns early without calling LLM a 2nd time.
 	abortAfter0 := 0
-	provider.abortOnCall = &abortAfter0   // fire after call index 0
-	provider.abortTurnState = ts          // point to the ts RecallLLM is using
+	provider.abortOnCall = &abortAfter0 // fire after call index 0
+	provider.abortTurnState = ts        // point to the ts RecallLLM is using
 
 	start := time.Now()
 	resp, err := pipeline.RecallLLM(
@@ -473,7 +474,10 @@ func TestRecallLLM_HardAbortMidRetry(t *testing.T) {
 		t.Fatalf("expected ~1s elapsed (1 backoff sleep), got %v — abort may have fired too early", elapsed)
 	}
 	if elapsed > 1500*time.Millisecond {
-		t.Fatalf("expected ~1s elapsed (1 backoff sleep, NOT 2), got %v — abort check may have fired after attempt 1", elapsed)
+		t.Fatalf(
+			"expected ~1s elapsed (1 backoff sleep, NOT 2), got %v — abort check may have fired after attempt 1",
+			elapsed,
+		)
 	}
 }
 
@@ -486,8 +490,8 @@ func TestRecallLLM_HardAbortMidRetry(t *testing.T) {
 func TestRecallLLM_TransientThenNonTransient(t *testing.T) {
 	provider := &recallTestProvider{
 		errors: []error{
-			fmt.Errorf("timeout exceeded"),          // attempt 0: transient (will retry)
-			fmt.Errorf("invalid API key, fatal"),    // attempt 1: non-transient (must propagate)
+			fmt.Errorf("timeout exceeded"),       // attempt 0: transient (will retry)
+			fmt.Errorf("invalid API key, fatal"), // attempt 1: non-transient (must propagate)
 		},
 		responses: []*providers.LLMResponse{
 			nil,
@@ -525,7 +529,7 @@ func TestRecallLLM_TransientThenNonTransient(t *testing.T) {
 // Test 10: Backoff context cancellation (sleep interrupted by ctx.Done)
 //
 // RecallLLM uses sleepWithContext between transient retries. If the supplied
-// ctx is cancelled mid-sleep, the backoff should return ctx.Canceled and the
+// ctx is canceled mid-sleep, the backoff should return ctx.Canceled and the
 // helper should propagate immediately.
 func TestRecallLLM_BackoffContextCancelled(t *testing.T) {
 	provider := &recallTestProvider{
@@ -573,6 +577,6 @@ func TestRecallLLM_BackoffContextCancelled(t *testing.T) {
 	}
 	// exactly 1 LLM call — backoff interrupted before attempt 1
 	if provider.callCountN() != 1 {
-		t.Fatalf("expected 1 LLM call (ctx cancelled before attempt 1), got %d", provider.callCountN())
+		t.Fatalf("expected 1 LLM call (ctx canceled before attempt 1), got %d", provider.callCountN())
 	}
 }

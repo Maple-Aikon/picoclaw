@@ -9,12 +9,13 @@
 // (handleGoalRecovery) and CallLLM (proceedPastLLM) already do.
 //
 // Phase 12.51a closes the gap:
-//   Site 1: onWrongTool("") arm routes through routeTextOnlyThroughRecovery
-//           helper which calls evaluateRecovery (mirrors handleGoalRecovery)
-//   Site 2: REMOVE tc=0 success-arm clear (Site 1 helper arms the recovery
-//           hint when next attempt is needed)
-//   Site 3: BoundedRetry wrapper Open-phase guard — exit BoundedRetry
-//           early for Open phase (next-iter carry), continue for restricted
+//
+//	Site 1: onWrongTool("") arm routes through routeTextOnlyThroughRecovery
+//	        helper which calls evaluateRecovery (mirrors handleGoalRecovery)
+//	Site 2: REMOVE tc=0 success-arm clear (Site 1 helper arms the recovery
+//	        hint when next attempt is needed)
+//	Site 3: BoundedRetry wrapper Open-phase guard — exit BoundedRetry
+//	        early for Open phase (next-iter carry), continue for restricted
 //
 // New helper recordPhaseStuckArchive in goal_phase_stuck_detection.go
 // bumps the phase-stuck counter to threshold (>=2) once per archive
@@ -22,16 +23,18 @@
 // recordPhaseStuckToolFail + recordPhaseStuckToolAllowedBlock.
 //
 // Tests:
-//   W0  — Set text-only → RecoveryNone (valid turn end, no retry, no counter)
-//   W1  — Checkpoint text-only → 3 attempts, goal_progress call wins (counter=2)
-//   W2  — Final text-only → 3 attempts, complete_goal call wins (counter=2)
-//   W3  — Open text-only → 1 attempt, next-iter carry (no archive)
-//   W4a — recordPhaseStuckArchive bumps counter to threshold (idempotent)
-//   W4b — goalArchiveRequested=true after exhausted
-//   W4c — counter>=2 precondition for AbortReason
-//   W5  — textEmpty filter: reasoning-only response NOT empty (no archive)
-//   W6  — Site 3 wrapper Open-phase guard
-//   W9-clear — Path 4 success-path clears pendingRecoveryMessage
+//
+//	W0  — Set text-only → RecoveryNone (valid turn end, no retry, no counter)
+//	W1  — Checkpoint text-only → 3 attempts, goal_progress call wins (counter=2)
+//	W2  — Final text-only → 3 attempts, complete_goal call wins (counter=2)
+//	W3  — Open text-only → 1 attempt, next-iter carry (no archive)
+//	W4a — recordPhaseStuckArchive bumps counter to threshold (idempotent)
+//	W4b — goalArchiveRequested=true after exhausted
+//	W4c — counter>=2 precondition for AbortReason
+//	W5  — textEmpty filter: reasoning-only response NOT empty (no archive)
+//	W6  — Site 3 wrapper Open-phase guard
+//	W9-clear — Path 4 success-path clears pendingRecoveryMessage
+
 package agent
 
 import (
@@ -104,7 +107,10 @@ func TestRouteTextOnlyThroughRecovery_Checkpoint_ThreeAttempts_ArchivesGoal(t *t
 		t.Errorf("expected goalArchiveRequested=true after exhaustion, got false")
 	}
 	if ts.goalProgressAttemptCount != 1 {
-		t.Errorf("expected goalProgressAttemptCount=1 after recordPhaseStuckArchive (max-1, no ratchet), got %d", ts.goalProgressAttemptCount)
+		t.Errorf(
+			"expected goalProgressAttemptCount=1 after recordPhaseStuckArchive (max-1, no ratchet), got %d",
+			ts.goalProgressAttemptCount,
+		)
 	}
 	if !ts.goalProgressArchiveFlag {
 		t.Errorf("expected goalProgressArchiveFlag=true after recordPhaseStuckArchive")
@@ -143,7 +149,10 @@ func TestRouteTextOnlyThroughRecovery_Final_ThreeAttempts_ArchivesGoal(t *testin
 		t.Errorf("expected goalArchiveRequested=true, got false")
 	}
 	if ts.completeGoalAttemptCount != 1 {
-		t.Errorf("expected completeGoalAttemptCount=1 after recordPhaseStuckArchive (max-1, no ratchet), got %d", ts.completeGoalAttemptCount)
+		t.Errorf(
+			"expected completeGoalAttemptCount=1 after recordPhaseStuckArchive (max-1, no ratchet), got %d",
+			ts.completeGoalAttemptCount,
+		)
 	}
 	if !ts.completeGoalArchiveFlag {
 		t.Errorf("expected completeGoalArchiveFlag=true after recordPhaseStuckArchive")
@@ -200,7 +209,10 @@ func TestRecordPhaseStuckArchive_BumpsCounterToThreshold(t *testing.T) {
 	// Phase 12.52a split: archive sets max(1) — the REAL per-failure count
 	// stays honest (no ratchet to 2); the archive signal moves to the flag.
 	if ts.goalProgressAttemptCount != 1 {
-		t.Errorf("expected goalProgressAttemptCount=1 after recordPhaseStuckArchive(Checkpoint), got %d", ts.goalProgressAttemptCount)
+		t.Errorf(
+			"expected goalProgressAttemptCount=1 after recordPhaseStuckArchive(Checkpoint), got %d",
+			ts.goalProgressAttemptCount,
+		)
 	}
 	if !ts.goalProgressArchiveFlag {
 		t.Errorf("expected goalProgressArchiveFlag=true after recordPhaseStuckArchive(Checkpoint)")
@@ -239,7 +251,10 @@ func TestRecordPhaseStuckArchive_BumpsCounterToThreshold(t *testing.T) {
 	ts.completeGoalAttemptCount = 0
 	ts.recordPhaseStuckArchive(GoalPhaseFinal, "final err")
 	if ts.completeGoalAttemptCount != 1 {
-		t.Errorf("expected completeGoalAttemptCount=1 after recordPhaseStuckArchive(Final), got %d", ts.completeGoalAttemptCount)
+		t.Errorf(
+			"expected completeGoalAttemptCount=1 after recordPhaseStuckArchive(Final), got %d",
+			ts.completeGoalAttemptCount,
+		)
 	}
 	if !ts.completeGoalArchiveFlag {
 		t.Errorf("expected completeGoalArchiveFlag=true after recordPhaseStuckArchive(Final)")
@@ -341,7 +356,10 @@ func TestRouteTextOnlyThroughRecovery_Checkpoint_ArchiveMessageNotBareConstant(t
 	// if no richer per-fail msg was stamped).
 	bareConstant := GoalPhaseCheckpointStuckAbortReason
 	if ts.lastPhaseStuckError == bareConstant {
-		t.Errorf("F02 regression: lastPhaseStuckError is bare StuckBucket constant %q (OnExhausted stamped it unconditionally before recordPhaseStuckArchive could write). The recordPhaseStuckArchive msg should win.", bareConstant)
+		t.Errorf(
+			"F02 regression: lastPhaseStuckError is bare StuckBucket constant %q (OnExhausted stamped it unconditionally before recordPhaseStuckArchive could write). The recordPhaseStuckArchive msg should win.",
+			bareConstant,
+		)
 	}
 }
 
@@ -422,7 +440,10 @@ func TestRouteTextOnlyThroughRecovery_ReasoningOnlyNotEmpty(t *testing.T) {
 		t.Errorf("expected goalArchiveRequested=true after 3 text-only attempts, got false")
 	}
 	if ts.goalProgressAttemptCount != 1 {
-		t.Errorf("expected goalProgressAttemptCount=1 after exhausted reasoning-only at Checkpoint (max-1), got %d", ts.goalProgressAttemptCount)
+		t.Errorf(
+			"expected goalProgressAttemptCount=1 after exhausted reasoning-only at Checkpoint (max-1), got %d",
+			ts.goalProgressAttemptCount,
+		)
 	}
 	if !ts.goalProgressArchiveFlag {
 		t.Errorf("expected goalProgressArchiveFlag=true after exhausted reasoning-only at Checkpoint")
@@ -431,7 +452,10 @@ func TestRouteTextOnlyThroughRecovery_ReasoningOnlyNotEmpty(t *testing.T) {
 	// not empty-response path). If reasoning-only leaked to empty-response
 	// path, this would be 0.
 	if ts.textOnlySoftRetriesDone == 0 {
-		t.Errorf("expected textOnlySoftRetriesDone > 0 (reasoning-only should fire text-only retry, not empty-response), got %d", ts.textOnlySoftRetriesDone)
+		t.Errorf(
+			"expected textOnlySoftRetriesDone > 0 (reasoning-only should fire text-only retry, not empty-response), got %d",
+			ts.textOnlySoftRetriesDone,
+		)
 	}
 }
 

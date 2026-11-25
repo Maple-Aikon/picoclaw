@@ -14,6 +14,7 @@
 // This 3-way split keeps the data table canonical across modes (no manual
 // duplication if we ever add a 6th phase) while letting the lookup function
 // differ by mode.
+
 package tools
 
 import (

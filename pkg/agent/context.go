@@ -308,7 +308,12 @@ func (cb *ContextBuilder) BuildSystemPrompt(goalPhase string, postCompleteGoalRe
 // through to the hint contributors (formatIterCompass needs both dims to
 // render the dynamic header). Without these, the helper returns "" and
 // CHECKPOINT/FINAL hints fall back to the legacy static templates.
-func (cb *ContextBuilder) BuildSystemPromptWithSnapshot(goalPhase string, postCompleteGoalReport bool, iteration int, goalSnapshot string) string {
+func (cb *ContextBuilder) BuildSystemPromptWithSnapshot(
+	goalPhase string,
+	postCompleteGoalReport bool,
+	iteration int,
+	goalSnapshot string,
+) string {
 	return cb.BuildSystemPromptWithSnapshotFullKey(goalPhase, postCompleteGoalReport, iteration, goalSnapshot, 0, 0)
 }
 
@@ -316,7 +321,14 @@ func (cb *ContextBuilder) BuildSystemPromptWithSnapshot(goalPhase string, postCo
 // threads iteration-cap dims into the prompt build opts. Used when the
 // cache is bypassed (non-Open phases) but the hint contributors still
 // need the cap dims for the dynamic header.
-func (cb *ContextBuilder) BuildSystemPromptWithSnapshotFullKey(goalPhase string, postCompleteGoalReport bool, iteration int, goalSnapshot string, iterationCap int, maxIterationsCap int) string {
+func (cb *ContextBuilder) BuildSystemPromptWithSnapshotFullKey(
+	goalPhase string,
+	postCompleteGoalReport bool,
+	iteration int,
+	goalSnapshot string,
+	iterationCap int,
+	maxIterationsCap int,
+) string {
 	return renderPromptPartsLegacy(cb.buildSystemPromptParts(systemPromptBuildOptions{
 		IncludeSkillCatalog:    true,
 		IncludeToolUseRule:     true,
@@ -329,7 +341,11 @@ func (cb *ContextBuilder) BuildSystemPromptWithSnapshotFullKey(goalPhase string,
 	}))
 }
 
-func (cb *ContextBuilder) BuildSystemPromptParts(goalPhase string, postCompleteGoalReport bool, iteration int) []PromptPart {
+func (cb *ContextBuilder) BuildSystemPromptParts(
+	goalPhase string,
+	postCompleteGoalReport bool,
+	iteration int,
+) []PromptPart {
 	return cb.buildSystemPromptParts(systemPromptBuildOptions{
 		IncludeSkillCatalog:    true,
 		IncludeToolUseRule:     true,
@@ -579,7 +595,11 @@ func isCacheableGoalPhase(goalPhase string) bool {
 	return goalPhase == string(GoalPhaseOpen) || goalPhase == ""
 }
 
-func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompleteGoalReport bool, iteration int) string {
+func (cb *ContextBuilder) BuildSystemPromptWithCache(
+	goalPhase string,
+	postCompleteGoalReport bool,
+	iteration int,
+) string {
 	return cb.BuildSystemPromptWithCacheAndSnapshot(goalPhase, postCompleteGoalReport, iteration, "")
 }
 
@@ -594,7 +614,12 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache(goalPhase string, postCompl
 // buildSystemPromptForRequest → BuildSystemPromptWithCache) dropped the
 // GoalSnapshot. Threading it through here restores the wire path for
 // the Phase 12.33 phase-change rebuild hook.
-func (cb *ContextBuilder) BuildSystemPromptWithCacheAndSnapshot(goalPhase string, postCompleteGoalReport bool, iteration int, goalSnapshot string) string {
+func (cb *ContextBuilder) BuildSystemPromptWithCacheAndSnapshot(
+	goalPhase string,
+	postCompleteGoalReport bool,
+	iteration int,
+	goalSnapshot string,
+) string {
 	return cb.BuildSystemPromptWithCacheFullKey(goalPhase, postCompleteGoalReport, iteration, goalSnapshot, 0, 0)
 }
 
@@ -609,7 +634,14 @@ func (cb *ContextBuilder) BuildSystemPromptWithCacheAndSnapshot(goalPhase string
 // Legacy callers (cap=0) fall back to BuildSystemPromptWithCacheAndSnapshot
 // which uses only (goalPhase, postCompleteGoalReport, iteration,
 // goalSnapshot) as key dims — backward compat.
-func (cb *ContextBuilder) BuildSystemPromptWithCacheFullKey(goalPhase string, postCompleteGoalReport bool, iteration int, goalSnapshot string, iterationCap int, maxIterationsCap int) string {
+func (cb *ContextBuilder) BuildSystemPromptWithCacheFullKey(
+	goalPhase string,
+	postCompleteGoalReport bool,
+	iteration int,
+	goalSnapshot string,
+	iterationCap int,
+	maxIterationsCap int,
+) string {
 	// Phase 12.16.1: skip cache for non-Open phases. The tool allowlist is
 	// 1-2 lifecycle tools (set_goal, goal_progress, complete_goal) and the
 	// prompt body is dominated by constant hint text + a tiny tool section.
@@ -618,7 +650,14 @@ func (cb *ContextBuilder) BuildSystemPromptWithCacheFullKey(goalPhase string, po
 	// residual risk of stale-prompt leakage when an LLM transitions
 	// between goal phases mid-turn. Open phase remains cached.
 	if !isCacheableGoalPhase(goalPhase) {
-		return cb.BuildSystemPromptWithSnapshotFullKey(goalPhase, postCompleteGoalReport, iteration, goalSnapshot, iterationCap, maxIterationsCap)
+		return cb.BuildSystemPromptWithSnapshotFullKey(
+			goalPhase,
+			postCompleteGoalReport,
+			iteration,
+			goalSnapshot,
+			iterationCap,
+			maxIterationsCap,
+		)
 	}
 
 	// Try read lock first — fast path when cache is valid
@@ -760,7 +799,14 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 		// Phase 12.38 §4: pass iteration-cap dims through to the cache key
 		// so an OPEN cache slot built at cap=5 is invalidated when cap
 		// changes to 10 (e.g. via goal_progress extension at CHECKPOINT).
-		staticPrompt := cb.BuildSystemPromptWithCacheFullKey(req.GoalPhase, req.PostCompleteGoalReport, req.Iteration, req.GoalSnapshot, req.IterationCap, req.MaxIterationsCap)
+		staticPrompt := cb.BuildSystemPromptWithCacheFullKey(
+			req.GoalPhase,
+			req.PostCompleteGoalReport,
+			req.Iteration,
+			req.GoalSnapshot,
+			req.IterationCap,
+			req.MaxIterationsCap,
+		)
 		return staticPrompt, []providers.ContentBlock{
 			promptContentBlock(PromptPart{
 				ID:      "kernel.static",
@@ -1867,24 +1913,54 @@ func formatDynamicGoalPhaseBanner(req PromptBuildRequest) string {
 	var sb strings.Builder
 	switch phase {
 	case GoalPhaseSet:
-		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"SET\" phase_start_iter=\"%d\" max=\"%d\">\n", phaseStartIter, maxIter))
-		sb.WriteString("[HARD GUARD] Goal phase: SET. You MUST call `set_goal` to declare your objective before using any domain tools. All execution tools are locked.\n")
+		sb.WriteString(
+			fmt.Sprintf("<goal_phase phase=\"SET\" phase_start_iter=\"%d\" max=\"%d\">\n", phaseStartIter, maxIter),
+		)
+		sb.WriteString(
+			"[HARD GUARD] Goal phase: SET. You MUST call `set_goal` to declare your objective before using any domain tools. All execution tools are locked.\n",
+		)
 		sb.WriteString("</goal_phase>")
 	case GoalPhaseOpen:
 		nextCheckpoint := req.IterationCap
 		if nextCheckpoint <= 0 {
 			nextCheckpoint = 25
 		}
-		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"OPEN\" phase_start_iter=\"%d\" max=\"%d\" next_checkpoint=\"%d\">\n", phaseStartIter, maxIter, nextCheckpoint))
-		sb.WriteString(fmt.Sprintf("Goal phase: OPEN (phase started at iter %d, total %d turn iters). Next CHECKPOINT phase will be at iter %d.\n", phaseStartIter, maxIter, nextCheckpoint))
+		sb.WriteString(
+			fmt.Sprintf(
+				"<goal_phase phase=\"OPEN\" phase_start_iter=\"%d\" max=\"%d\" next_checkpoint=\"%d\">\n",
+				phaseStartIter,
+				maxIter,
+				nextCheckpoint,
+			),
+		)
+		sb.WriteString(
+			fmt.Sprintf(
+				"Goal phase: OPEN (phase started at iter %d, total %d turn iters). Next CHECKPOINT phase will be at iter %d.\n",
+				phaseStartIter,
+				maxIter,
+				nextCheckpoint,
+			),
+		)
 		sb.WriteString("</goal_phase>")
 	case GoalPhaseCheckpoint:
-		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"CHECKPOINT\" phase_start_iter=\"%d\" max=\"%d\">\n", phaseStartIter, maxIter))
-		sb.WriteString("[HARD STOP] Goal phase: CHECKPOINT. Iteration cap reached. Domain tools are locked. Call `goal_progress` with remaining steps to extend, or `complete_goal` to finalize.\n")
+		sb.WriteString(
+			fmt.Sprintf(
+				"<goal_phase phase=\"CHECKPOINT\" phase_start_iter=\"%d\" max=\"%d\">\n",
+				phaseStartIter,
+				maxIter,
+			),
+		)
+		sb.WriteString(
+			"[HARD STOP] Goal phase: CHECKPOINT. Iteration cap reached. Domain tools are locked. Call `goal_progress` with remaining steps to extend, or `complete_goal` to finalize.\n",
+		)
 		sb.WriteString("</goal_phase>")
 	case GoalPhaseFinal:
-		sb.WriteString(fmt.Sprintf("<goal_phase phase=\"FINAL\" phase_start_iter=\"%d\" max=\"%d\">\n", phaseStartIter, maxIter))
-		sb.WriteString("[HARD STOP] Goal phase: FINAL. This is the terminal iteration. Call `complete_goal` to submit your final report.\n")
+		sb.WriteString(
+			fmt.Sprintf("<goal_phase phase=\"FINAL\" phase_start_iter=\"%d\" max=\"%d\">\n", phaseStartIter, maxIter),
+		)
+		sb.WriteString(
+			"[HARD STOP] Goal phase: FINAL. This is the terminal iteration. Call `complete_goal` to submit your final report.\n",
+		)
 		sb.WriteString("</goal_phase>")
 	default:
 		return ""

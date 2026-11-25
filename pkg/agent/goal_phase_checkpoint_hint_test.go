@@ -61,7 +61,11 @@ func TestCheckpointHint_DecisionBodyRendersWithCompass(t *testing.T) {
 		"goal_progress",
 	} {
 		if !strings.Contains(got.Content, want) {
-			t.Errorf("checkpoint hint must contain %q (regression F8: decision body dropped); got:\n%s", want, got.Content)
+			t.Errorf(
+				"checkpoint hint must contain %q (regression F8: decision body dropped); got:\n%s",
+				want,
+				got.Content,
+			)
 		}
 	}
 	assertNoPhaseClaim(t, got.Content)

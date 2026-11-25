@@ -98,7 +98,11 @@ func stripGoalPhaseBanner(content string) string {
 // appends tool results), the messages are returned unchanged - there is no
 // user message to carry the banner, and inventing one would corrupt the
 // conversation shape.
-func refreshGoalPhaseBannerInMessages(messages []providers.Message, currentTurnStart int, banner string) []providers.Message {
+func refreshGoalPhaseBannerInMessages(
+	messages []providers.Message,
+	currentTurnStart int,
+	banner string,
+) []providers.Message {
 	if len(messages) == 0 {
 		return messages
 	}

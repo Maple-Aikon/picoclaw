@@ -27,9 +27,9 @@ import (
 // the mutex is cheap and future-proofs against fan-out.
 type SlidingTailBuffer struct {
 	mu          sync.Mutex
-	slidingTail string    // last 16 chars of the previous chunk (or carry-over across a [tool_use: detect)
-	toolUseSeen bool      // true when a [tool_use: leak has been detected and we're in suppression mode
-	chunkCount  int       // monotonic counter for diagnostics
+	slidingTail string // last 16 chars of the previous chunk (or carry-over across a [tool_use: detect)
+	toolUseSeen bool   // true when a [tool_use: leak has been detected and we're in suppression mode
+	chunkCount  int    // monotonic counter for diagnostics
 }
 
 // NewSlidingTailBuffer returns an empty buffer ready for use.

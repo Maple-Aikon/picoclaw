@@ -4,7 +4,7 @@
 //
 // Copyright (c) 2026 PicoClaw contributors
 
-// Package goal implements the long-running task lifecycle for PicoClaw.
+// Package goal — implements the long-running task lifecycle for PicoClaw.
 //
 // A Goal is a structured plan persisted as a Markdown file with YAML
 // frontmatter, located at <workspace>/memory/goal/<session>.md. When a goal

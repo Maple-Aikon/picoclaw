@@ -134,10 +134,10 @@ func TestLoadPromotionState_ValidFormat(t *testing.T) {
 // `(policy) → (policy, error)` is deferred to 12.51a (Path 4 wire fix).
 //
 // This test verifies the promotion latch INFRA wires correctly:
-//   1. Set env=1, FirstSeenAt=8d ago
-//   2. IsStrictRuntimeFailClosed() returns true
-//   3. PhasePolicyFor("bogus") still returns nil (signature unchanged yet)
-//   4. State shows PromotedAt > 0 (proves promoteLocked fired)
+//  1. Set env=1, FirstSeenAt=8d ago
+//  2. IsStrictRuntimeFailClosed() returns true
+//  3. PhasePolicyFor("bogus") still returns nil (signature unchanged yet)
+//  4. State shows PromotedAt > 0 (proves promoteLocked fired)
 //
 // Caller audit (11 sites need to handle err) ships in 12.51a/b per X-9
 // cross-check from main-turn-19 debug session.

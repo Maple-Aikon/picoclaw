@@ -64,12 +64,12 @@ func phaseChannelReq(phase string, iter int, snapshot string) PromptBuildRequest
 
 // phaseChannelReqCaps is phaseChannelReq with explicit cap dims - needed
 // by tests that assert on a specific "total N turn iters" string.
-func phaseChannelReqCaps(phase string, iter int, snapshot string, cap, maxCap int) PromptBuildRequest {
+func phaseChannelReqCaps(phase string, iter int, snapshot string, capacity2, maxCap int) PromptBuildRequest {
 	return PromptBuildRequest{
 		GoalPhase:        phase,
 		Iteration:        iter,
 		GoalSnapshot:     snapshot,
-		IterationCap:     cap,
+		IterationCap:     capacity2,
 		MaxIterationsCap: maxCap,
 		PhaseStartIter:   2,
 		CurrentMessage:   "do the thing",

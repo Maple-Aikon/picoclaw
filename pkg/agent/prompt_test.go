@@ -109,7 +109,11 @@ func TestBuildMessagesFromPrompt_IncludesSystemPromptOverlay(t *testing.T) {
 	// Layout B (Q1=B điều chỉnh 2026-08-22): dynamic context is prepended to
 	// user[0] inside `<dynamic_context>` — the user task must survive as suffix.
 	if !strings.HasSuffix(messages[1].Content, "do child task") {
-		t.Fatalf("messages[1].Content = %q, want suffix %q (dynamic block prepended)", messages[1].Content, "do child task")
+		t.Fatalf(
+			"messages[1].Content = %q, want suffix %q (dynamic block prepended)",
+			messages[1].Content,
+			"do child task",
+		)
 	}
 	if !strings.Contains(messages[1].Content, "<dynamic_context>") {
 		t.Fatalf("messages[1].Content = %q, want <dynamic_context> block in user[0]", messages[1].Content)
@@ -471,19 +475,31 @@ func TestContextBuilder_MCPServerDeferredAvailability_PhaseAware(t *testing.T) {
 		wantContains    []string
 		wantNotContains []string
 	}{
-		{"Open_default_text", GoalPhaseOpen,
-			[]string{"hidden behind tool discovery until unlocked"}, nil},
-		{"Set_phaseAware", GoalPhaseSet,
+		{
+			"Open_default_text", GoalPhaseOpen,
+			[]string{"hidden behind tool discovery until unlocked"},
+			nil,
+		},
+		{
+			"Set_phaseAware", GoalPhaseSet,
 			[]string{"will unlock at next iter", "OPEN phase"},
-			[]string{"until unlocked"}},
-		{"Checkpoint_phaseAware", GoalPhaseCheckpoint,
+			[]string{"until unlocked"},
+		},
+		{
+			"Checkpoint_phaseAware", GoalPhaseCheckpoint,
 			[]string{"locked at this phase", "next turn"},
-			[]string{"until unlocked"}},
-		{"Final_terminal", GoalPhaseFinal,
+			[]string{"until unlocked"},
+		},
+		{
+			"Final_terminal", GoalPhaseFinal,
 			[]string{"terminal phase", "will not unlock"},
-			[]string{"until unlocked"}},
-		{"Empty_fallsThroughToOpen", "",
-			[]string{"hidden behind tool discovery until unlocked"}, nil},
+			[]string{"until unlocked"},
+		},
+		{
+			"Empty_fallsThroughToOpen", "",
+			[]string{"hidden behind tool discovery until unlocked"},
+			nil,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -12,6 +12,7 @@
 //
 // D-F3 (legacy wrapper): finalizeGoalOnTurnEnd(reason) (count=0) must NOT
 // write the field — the 6 legacy call sites stay byte-identical.
+
 package agent
 
 import (
@@ -168,8 +169,8 @@ func TestGoalStuckAttemptCount_RoundTripLegacyParseAndWrapper(t *testing.T) {
 		context: newTurnContext(nil, nil, nil),
 	})
 	ts.sessionKey = sessionKey
-	if err := ts.finalizeGoalOnTurnEnd(GoalAbortReasonBexhausted + ":test"); err != nil {
-		t.Fatalf("finalize: %v", err)
+	if err2 := ts.finalizeGoalOnTurnEnd(GoalAbortReasonBexhausted + ":test"); err2 != nil {
+		t.Fatalf("finalize: %v", err2)
 	}
 	disk, err := st.Read(sessionKey)
 	if err != nil {
@@ -179,7 +180,10 @@ func TestGoalStuckAttemptCount_RoundTripLegacyParseAndWrapper(t *testing.T) {
 		t.Fatalf("wrapper: status = %q, want aborted", disk.Status)
 	}
 	if disk.StuckAttemptCount != 0 {
-		t.Errorf("wrapper: stuck_attempt_count = %d, want 0 (legacy wrapper must not write the field)", disk.StuckAttemptCount)
+		t.Errorf(
+			"wrapper: stuck_attempt_count = %d, want 0 (legacy wrapper must not write the field)",
+			disk.StuckAttemptCount,
+		)
 	}
 	raw, err := goal.Serialize(disk)
 	if err != nil {
@@ -229,7 +233,11 @@ func TestFinalizePhaseStuckArchive_PersistsCountMatchingCounter(t *testing.T) {
 		t.Errorf("abort_reason = %q, want %q", disk.AbortReason, GoalPhaseCheckpointStuckAbortReason)
 	}
 	if disk.StuckAttemptCount != ts.goalProgressAttemptCount {
-		t.Errorf("A6b: persisted count %d != in-memory counter %d (sources drifted)", disk.StuckAttemptCount, ts.goalProgressAttemptCount)
+		t.Errorf(
+			"A6b: persisted count %d != in-memory counter %d (sources drifted)",
+			disk.StuckAttemptCount,
+			ts.goalProgressAttemptCount,
+		)
 	}
 	// Same-turn stamp carries the count too.
 	if want := "BoundedRetry exhausted (attempts: 2)"; ts.lastPhaseStuckError != want {
@@ -270,6 +278,9 @@ func TestFinalizePhaseStuckArchive_IdempotentSecondCall(t *testing.T) {
 	finalizePhaseStuckArchive(ts, GoalPhaseCheckpoint, "second call")
 	disk := mustReadGoal(t, st, sessionKey)
 	if disk.StuckAttemptCount != 2 {
-		t.Errorf("idempotency: second archive with count 5 changed disk to %d, want 2 (status-guard no-op)", disk.StuckAttemptCount)
+		t.Errorf(
+			"idempotency: second archive with count 5 changed disk to %d, want 2 (status-guard no-op)",
+			disk.StuckAttemptCount,
+		)
 	}
 }

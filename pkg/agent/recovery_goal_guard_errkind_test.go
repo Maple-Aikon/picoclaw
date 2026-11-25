@@ -34,7 +34,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
-	"github.com/sipeed/picoclaw/pkg/tools/shared"
+	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
 
 // safetyGuardContent is the EXACT production message emitted by

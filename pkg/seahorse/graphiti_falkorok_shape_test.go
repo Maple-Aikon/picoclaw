@@ -17,7 +17,7 @@ import (
 // field of GET /health:
 //
 //	bool   — current producer: falkordb_supervisor.probe() returns a
-//	         bool, http_server.py serialises it directly.
+//	         bool, http_server.py serializes it directly.
 //	         Live payload: {"status":"ready","falkor_ok":true,...}
 //	string — older producer: probe() returned the ProbeState str-Enum
 //	         (ALIVE="alive"), which json.dumps renders as "alive".
@@ -140,7 +140,11 @@ func TestHealthGate_DualShape_FalkorOK(t *testing.T) {
 					// instead of failing the test.
 					atomic.AddInt32(&unexpectedPaths, 1)
 					w.WriteHeader(http.StatusAccepted)
-					_, _ = w.Write([]byte(`{"episode_id":"ep-cross-test","claimed_by":"daemon:test","deduplicated":false,"daemon_version":"0.7.2"}`))
+					_, _ = w.Write(
+						[]byte(
+							`{"episode_id":"ep-cross-test","claimed_by":"daemon:test","deduplicated":false,"daemon_version":"0.7.2"}`,
+						),
+					)
 					return
 				}
 				atomic.AddInt32(&hits, 1)

@@ -72,13 +72,13 @@ const (
 // least min observations, or until a generous deadline passes.
 //
 // Without this, the test can observe ZERO reads and pass vacuously.
-func waitForReads(mu *sync.Mutex, reads *int, min int) {
+func waitForReads(mu *sync.Mutex, reads *int, minimum2 int) {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		mu.Lock()
 		n := *reads
 		mu.Unlock()
-		if n >= min {
+		if n >= minimum2 {
 			return
 		}
 		if time.Now().After(deadline) {

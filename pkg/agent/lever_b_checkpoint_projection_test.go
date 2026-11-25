@@ -256,8 +256,12 @@ func TestLeverB_CheckpointHintDoesNotContradictWire(t *testing.T) {
 			"2 tools are now available",
 		} {
 			if strings.Contains(content, forbidden) {
-				t.Errorf("B7 violated: CHECKPOINT hint claims %q — after lever (b) the wire carries the full registry, "+
-					"so the hint may only talk about EXECUTABLE tools: %s", forbidden, content)
+				t.Errorf(
+					"B7 violated: CHECKPOINT hint claims %q — after lever (b) the wire carries the full registry, "+
+						"so the hint may only talk about EXECUTABLE tools: %s",
+					forbidden,
+					content,
+				)
 			}
 		}
 

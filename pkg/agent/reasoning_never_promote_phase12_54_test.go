@@ -67,7 +67,10 @@ func TestPhase12_54_SetReasoningOnly_FiresEmptyRecovery_NoPromote(t *testing.T) 
 			response, defaultResponse)
 	}
 	if provider.calls != 3 {
-		t.Fatalf("provider calls = %d, want 3 (1 initial + 2 same-iter RecallLLM retries; cap=3 evaluations on attempt 0..2 then archive)", provider.calls)
+		t.Fatalf(
+			"provider calls = %d, want 3 (1 initial + 2 same-iter RecallLLM retries; cap=3 evaluations on attempt 0..2 then archive)",
+			provider.calls,
+		)
 	}
 }
 
@@ -112,8 +115,8 @@ func TestPhase12_54_OpenReasoningOnly_SameIterRetryThenArchive(t *testing.T) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := goal.NewStore(ws).Write("phase-12-54-open-session", activeGoal); err != nil {
-		t.Fatalf("Write goal: %v", err)
+	if err2 := goal.NewStore(ws).Write("phase-12-54-open-session", activeGoal); err2 != nil {
+		t.Fatalf("Write goal: %v", err2)
 	}
 	if !ts.hasGoal() {
 		t.Fatal("setup error: hasGoal=false; goal file not seeded")
@@ -127,13 +130,18 @@ func TestPhase12_54_OpenReasoningOnly_SameIterRetryThenArchive(t *testing.T) {
 		t.Fatalf("reasoning leaked into final reply: %q", result.finalContent)
 	}
 	if !ts.goalArchiveRequested {
-		t.Fatalf("goalArchiveRequested = false; want true (OPEN reasoning-only must archive after 3 empty retries, NOT next-iter carry)")
+		t.Fatalf(
+			"goalArchiveRequested = false; want true (OPEN reasoning-only must archive after 3 empty retries, NOT next-iter carry)",
+		)
 	}
 	if ts.emptyResponseRecoveryCount != 3 {
 		t.Fatalf("emptyResponseRecoveryCount = %d, want 3", ts.emptyResponseRecoveryCount)
 	}
 	if provider.calls != 3 {
-		t.Fatalf("provider calls = %d, want 3 (1 initial + 2 same-iter RecallLLM retries; cap=3 evaluations then archive)", provider.calls)
+		t.Fatalf(
+			"provider calls = %d, want 3 (1 initial + 2 same-iter RecallLLM retries; cap=3 evaluations then archive)",
+			provider.calls,
+		)
 	}
 	if g, _ := goal.NewStore(ws).Read("phase-12-54-open-session"); g != nil && g.Status == goal.StatusActive {
 		t.Fatalf("goal still ACTIVE after archive: %+v", g)

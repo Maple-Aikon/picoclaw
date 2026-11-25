@@ -341,7 +341,7 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 
 	toolEndPayload, ok := events[8].Payload.(ToolExecEndPayload)
 	if !ok {
-		var kinds []string
+		kinds := make([]string, 0, len(events))
 		for i, e := range events {
 			kinds = append(kinds, fmt.Sprintf("[%d]%s", i, e.Kind))
 		}

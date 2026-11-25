@@ -53,9 +53,9 @@ func TestP76dFenceAudit(t *testing.T) {
 		}
 		content := string(raw)
 		hasFence := strings.HasPrefix(content, "---")
-		real := strings.TrimSpace(content)
+		realValue2 := strings.TrimSpace(content)
 		prod := extractBody(content)
-		realH2 := p76dCountH2(real)
+		realH2 := p76dCountH2(realValue2)
 		prodH2 := p76dCountH2(prod)
 		lostH2 := realH2 - prodH2
 		if hasFence {
@@ -66,7 +66,7 @@ func TestP76dFenceAudit(t *testing.T) {
 		}
 		noFence++
 		fmt.Printf("NO_FENCE entry=%-46s bytes=%7d realH2=%3d prodH2=%3d lostH2=%3d lostBytes=%6d%s",
-			name, len(real), realH2, prodH2, lostH2, len(real)-len(prod), p76dNL)
+			name, len(realValue2), realH2, prodH2, lostH2, len(realValue2)-len(prod), p76dNL)
 	}
 	fmt.Printf("=== P76d fence audit: noFence=%d of %d%s", noFence, len(names), p76dNL)
 }

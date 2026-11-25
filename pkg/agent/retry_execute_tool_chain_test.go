@@ -19,12 +19,13 @@
 // loop) are TODO for Tasks 6-7. This test exercises the stub end-to-end
 // through the real Pipeline + RecallLLM path with a recordingProvider so
 // we can verify:
-//   1. LLM was invoked exactly once with the recovery hint present in
-//      its message list (proves Step 1 + setupFunc plumbing),
-//   2. ts.iteration did NOT change (same-iteration contract),
-//   3. ts.pendingRecoveryMessage was re-armed with the phase-aware
-//      hint after a wrong-tool branch (proves Step 2 stub),
-//   4. A non-nil Control is returned (compile-shape contract).
+//  1. LLM was invoked exactly once with the recovery hint present in
+//     its message list (proves Step 1 + setupFunc plumbing),
+//  2. ts.iteration did NOT change (same-iteration contract),
+//  3. ts.pendingRecoveryMessage was re-armed with the phase-aware
+//     hint after a wrong-tool branch (proves Step 2 stub),
+//  4. A non-nil Control is returned (compile-shape contract).
+
 package agent
 
 import (
@@ -131,9 +132,14 @@ func TestRetryExecuteToolChain_TurnCtxIsContextContext(t *testing.T) {
 	var _ context.Context // ensure context is imported + reference is reachable
 	p := &Pipeline{}
 	ts := &turnState{turnCtx: &TurnContext{}}
+	if ts.turnCtx == nil {
+		t.Fatal("turnCtx must be non-nil")
+	}
 	_ = ts
 	_ = p
-	t.Log("helper signature `turnCtx context.Context` confirmed: callers from pipeline_llm.go:745 and turn_coord.go Path 4 pass outer ctx context.Context (NOT *TurnContext).")
+	t.Log(
+		"helper signature `turnCtx context.Context` confirmed: callers from pipeline_llm.go:745 and turn_coord.go Path 4 pass outer ctx context.Context (NOT *TurnContext).",
+	)
 }
 
 // =============================================================================
@@ -186,8 +192,8 @@ type fakeExecutor struct {
 	//   appendIsError: marks the appended message as an executor error.
 	//   appendToolName: sets ToolCallID so checkToolExecErrorRecovery can
 	//     extract a tool name. Defaults to "t1" when empty.
-	appendContent string
-	appendIsError bool
+	appendContent  string
+	appendIsError  bool
 	appendToolName string
 }
 
@@ -226,6 +232,7 @@ var _ toolExecutor = (*fakeExecutor)(nil)
 //  1. *Pipeline satisfies toolExecutor (compile-time, checked in retry_execute_tool_chain.go)
 //  2. *fakeExecutor satisfies toolExecutor (compile-time, just above)
 //  3. fakeExecutor.ExecuteTools captures arguments (runtime)
+//
 // =============================================================================
 // Test for Task 3 (Phase 12.28.1 Step 3 wiring): Pipeline exposes SetToolExecutor
 // to inject a custom toolExecutor. Default self-binding returns *Pipeline itself.
@@ -233,6 +240,7 @@ var _ toolExecutor = (*fakeExecutor)(nil)
 //  1. After SetToolExecutor(fake), toolExecLazy() returns the fake
 //  2. Without SetToolExecutor, toolExecLazy() returns *Pipeline (self-binding)
 //  3. *Pipeline satisfies toolExecutor via existing ExecuteTools method
+//
 // =============================================================================
 // Tests for Task 4 (Phase 12.28.1 Step 4 wiring): helper calls ExecuteTools
 // then checks exec.messages for tool errors.
@@ -436,7 +444,10 @@ func TestRetryExecuteToolChain_LLMCalledWithHint(t *testing.T) {
 	// Phase 12.52a: recordPhaseStuckArchive keeps the REAL attempt count
 	// (max(count,1), no ratchet to 2) and sets the archive flag.
 	if ts.goalProgressAttemptCount != 1 {
-		t.Errorf("expected goalProgressAttemptCount=1 after exhausted (real count), got %d", ts.goalProgressAttemptCount)
+		t.Errorf(
+			"expected goalProgressAttemptCount=1 after exhausted (real count), got %d",
+			ts.goalProgressAttemptCount,
+		)
 	}
 	if !ts.goalProgressArchiveFlag {
 		t.Errorf("expected goalProgressArchiveFlag=true after archive, got false")
@@ -448,12 +459,12 @@ func TestRetryExecuteToolChain_LLMCalledWithHint(t *testing.T) {
 // after Step 2 selects a valid tool (firstTool in allowedTools).
 //
 // What Task 6 verifies:
-//   1. valid tool selection (firstTool in allowlist) → helper invokes
-//      ExecuteTools via the toolExecutor interface
-//   2. ExecuteTools return value (ToolControl) propagates to outer Control:
-//        - ToolControlContinue → ControlToolLoop (caller continues tool loop)
-//        - ToolControlBreak    → ControlBreak (caller breaks)
-//   3. goalArchiveRequested stays false when no tool error fires
+//  1. valid tool selection (firstTool in allowlist) → helper invokes
+//     ExecuteTools via the toolExecutor interface
+//  2. ExecuteTools return value (ToolControl) propagates to outer Control:
+//     - ToolControlContinue → ControlToolLoop (caller continues tool loop)
+//     - ToolControlBreak    → ControlBreak (caller breaks)
+//  3. goalArchiveRequested stays false when no tool error fires
 //
 // recordingProvider has no scripted tool_calls by default — we manually
 // pre-seed exec.response to simulate LLM having returned a valid tool.
@@ -787,10 +798,10 @@ func (p *threeAttemptProvider) GetDefaultModel() string {
 // different tool that succeeds.
 func TestRetryExecuteToolChain_ToolResultError_RetriesWithNewHint(t *testing.T) {
 	provider := &twoAttemptProvider{
-		attempt0Tool:  "goal_progress",
-		attempt0Args:  map[string]any{"completed_steps": []string{"a"}, "remaining_steps": []string{"b"}},
-		attempt1Tool:  "goal_progress",
-		attempt1Args:  map[string]any{"completed_steps": []string{"a", "b"}, "remaining_steps": []string{"c"}},
+		attempt0Tool: "goal_progress",
+		attempt0Args: map[string]any{"completed_steps": []string{"a"}, "remaining_steps": []string{"b"}},
+		attempt1Tool: "goal_progress",
+		attempt1Args: map[string]any{"completed_steps": []string{"a", "b"}, "remaining_steps": []string{"c"}},
 	}
 	al, _, cleanup := newTurnCoordTestLoop(t, provider)
 	defer cleanup()
@@ -861,7 +872,7 @@ func TestRecallAndCheckTool_PopulatesNormalizedToolCalls(t *testing.T) {
 				Content: "OK, archiving goal.",
 				ToolCalls: []providers.ToolCall{
 					{
-						Name: "complete_goal",
+						Name:      "complete_goal",
 						Arguments: map[string]any{"summary": "goal done"},
 					},
 				},
@@ -894,7 +905,10 @@ func TestRecallAndCheckTool_PopulatesNormalizedToolCalls(t *testing.T) {
 	// THE REGRESSION ASSERTION: normalizedToolCalls must be populated so
 	// Pipeline.ExecuteTools can dispatch complete_goal at turn_coord.go:488.
 	if len(exec.normalizedToolCalls) != 1 {
-		t.Errorf("expected exec.normalizedToolCalls=1 (complete_goal), got %d — this is the Phase 12.28 wire bug where complete_goal is silently dropped", len(exec.normalizedToolCalls))
+		t.Errorf(
+			"expected exec.normalizedToolCalls=1 (complete_goal), got %d — this is the Phase 12.28 wire bug where complete_goal is silently dropped",
+			len(exec.normalizedToolCalls),
+		)
 	}
 	if len(exec.normalizedToolCalls) > 0 && exec.normalizedToolCalls[0].Name != "complete_goal" {
 		t.Errorf("expected normalizedToolCalls[0].Name=complete_goal, got %q", exec.normalizedToolCalls[0].Name)
@@ -974,6 +988,9 @@ func TestPhase12_28_2_ExecuteToolsRunsAtIterCap(t *testing.T) {
 	// turn_coord.go:480 — without the fix, this would silently drop
 	// the tool (live bug 18:33 ICT main-turn-3).
 	if len(exec.normalizedToolCalls) != 1 || exec.normalizedToolCalls[0].Name != "complete_goal" {
-		t.Errorf("normalizedToolCalls should be [complete_goal] for ExecuteTools dispatch, got %v", exec.normalizedToolCalls)
+		t.Errorf(
+			"normalizedToolCalls should be [complete_goal] for ExecuteTools dispatch, got %v",
+			exec.normalizedToolCalls,
+		)
 	}
 }

@@ -1714,12 +1714,14 @@ func TestCloneStringAnyMap_EmptyMapReturnsNonNil(t *testing.T) {
 func TestCloneProviderMessages_ReflectionWalk(t *testing.T) {
 	now := time.Now()
 	original := providers.Message{
-		Role:             "assistant",
-		Content:          "hello",
-		ModelName:        "m",
-		CreatedAt:        &now,
-		Media:            []string{"a.png"},
-		Attachments:      []providers.Attachment{{Type: "image", Ref: "r", URL: "u", Filename: "f", ContentType: "image/png"}},
+		Role:      "assistant",
+		Content:   "hello",
+		ModelName: "m",
+		CreatedAt: &now,
+		Media:     []string{"a.png"},
+		Attachments: []providers.Attachment{
+			{Type: "image", Ref: "r", URL: "u", Filename: "f", ContentType: "image/png"},
+		},
 		ReasoningContent: "think",
 		ReasoningDetails: []providers.ReasoningDetail{{Format: "f", Index: 1, Type: "t", Text: "x"}},
 		SystemParts:      []providers.ContentBlock{{Type: "text", Text: "sys"}},
@@ -1752,12 +1754,14 @@ func TestCloneProviderMessages_ReflectionWalk(t *testing.T) {
 	cloned.ToolCalls[0].ExtraContent.Google.ThoughtSignature = "mutated"
 
 	want := providers.Message{
-		Role:             "assistant",
-		Content:          "hello",
-		ModelName:        "m",
-		CreatedAt:        &now,
-		Media:            []string{"a.png"},
-		Attachments:      []providers.Attachment{{Type: "image", Ref: "r", URL: "u", Filename: "f", ContentType: "image/png"}},
+		Role:      "assistant",
+		Content:   "hello",
+		ModelName: "m",
+		CreatedAt: &now,
+		Media:     []string{"a.png"},
+		Attachments: []providers.Attachment{
+			{Type: "image", Ref: "r", URL: "u", Filename: "f", ContentType: "image/png"},
+		},
 		ReasoningContent: "think",
 		ReasoningDetails: []providers.ReasoningDetail{{Format: "f", Index: 1, Type: "t", Text: "x"}},
 		SystemParts:      []providers.ContentBlock{{Type: "text", Text: "sys"}},

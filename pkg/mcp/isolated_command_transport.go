@@ -39,15 +39,14 @@ type isolatedCommandTransport struct {
 	//
 	// The previous shape was a buffered channel (capacity 1) that every
 	// reader put the value back into. That shape WORKS - the channel
-	// serialises the hand-off, so N readers take turns and none of them
+	// serializes the hand-off, so N readers take turns and none of them
 	// deadlocks (measured: mutation 5 reverted the broadcast and R13
 	// still passed, which is how the claim was corrected).
 	//
 	// The broadcast is kept because it is simpler and has no window at
 	// all: the result is stored once and the channel is closed, so every
 	// reader sees the same value without touching a shared slot.
-	waitOnce sync.Once
-	waitCh   chan struct{}
+	waitCh chan struct{}
 	// waitErr holds the process exit error. It is written by the waiter
 	// goroutine before waitCh is closed and read by every waiter after
 	// waitCh is closed, so the close/receive pair provides the
@@ -85,7 +84,7 @@ type waitError struct {
 // waitResult waits for the process exit result, tolerating repeated calls.
 //
 // R10 (2026-11-16): a timeout of 0 means "wait forever". The previous
-// behaviour - a fixed 60s timeout - was shorter than the idle timeout
+// behavior - a fixed 60s timeout - was shorter than the idle timeout
 // (10m) and the max lifetime (2h), so the waiter gave up while the
 // process was still alive and the manager never learned that a reaped
 // server had died.

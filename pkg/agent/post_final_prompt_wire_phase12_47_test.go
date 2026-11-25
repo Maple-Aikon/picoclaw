@@ -4,6 +4,7 @@
 //	(1) the report hint fires (PART with PromptSourceGoalCompleteReportHint + "POST-FINAL")
 //	(2) ABSENCE assertions: SET/OPEN/CHECKPOINT/FINAL hints all ABSENT
 //	(3) cache bypass — bypass for non-Open, md5 differs per call
+
 package agent
 
 import (

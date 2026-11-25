@@ -87,7 +87,11 @@ func TestGoalCompleteReportHint_StructuredFiveSections_Phase12_20_1(t *testing.T
 	}
 	for _, s := range sections {
 		if !strings.Contains(got.Content, s.keyword) {
-			t.Errorf("hint missing section %q (expected keyword %q) — see Phase 12.20.1 5-section template", s.name, s.keyword)
+			t.Errorf(
+				"hint missing section %q (expected keyword %q) — see Phase 12.20.1 5-section template",
+				s.name,
+				s.keyword,
+			)
 		}
 	}
 }

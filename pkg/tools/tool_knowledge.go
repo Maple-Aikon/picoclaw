@@ -91,7 +91,9 @@ var ErrKnowledgeEmpty = errors.New("knowledge body must be non-empty")
 
 // ErrKnowledgeToolNameInvalid is returned when the LLM picks an unsafe
 // tool name (path traversal, slashes, etc.).
-var ErrKnowledgeToolNameInvalid = errors.New("tool name must be alphanumeric, dot, dash, or underscore (no slashes, no '..')")
+var ErrKnowledgeToolNameInvalid = errors.New(
+	"tool name must be alphanumeric, dot, dash, or underscore (no slashes, no '..')",
+)
 
 // NewToolKnowledgeStore resolves {workspace}/{dir} and ensures it exists.
 // Pass empty string for dir to use DefaultKnowledgeDir.

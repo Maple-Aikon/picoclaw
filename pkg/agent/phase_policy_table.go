@@ -15,16 +15,17 @@
 // cannot drift.
 //
 // Schema lock invariants (TestPhasePolicy_AgentSide_SchemaLock):
-//   1. Keys of agentPolicies == phases.AllTokens() (5 rows)
-//   2. Each row's Phase field matches the map key
-//   3. GateSkipText / DiscoveryRuleText / MCPAvailText are non-empty
-//   4. ToolExecHint for OPEN uses toolName gate
-//   5. EmptyAction == RecoveryNone ONLY at PostFinal (R5 lock)
+//  1. Keys of agentPolicies == phases.AllTokens() (5 rows)
+//  2. Each row's Phase field matches the map key
+//  3. GateSkipText / DiscoveryRuleText / MCPAvailText are non-empty
+//  4. ToolExecHint for OPEN uses toolName gate
+//  5. EmptyAction == RecoveryNone ONLY at PostFinal (R5 lock)
 //
 // Phase 12.49: this file has NO build tag — the data table + helpers are
 // canonical across modes. The `PhasePolicyFor` lookup function is in
 //   - phase_policy.go (default build, fail-OPEN)
 //   - phase_policy_strict.go (build tag `strict_phases`, panic)
+
 package agent
 
 import (
@@ -91,23 +92,23 @@ func (b StuckBucket) counterTarget(ts *turnState) *int {
 type TextOnlyMode int
 
 const (
-	TextOnlyNone         TextOnlyMode = iota
-	TextOnlyRestricted                // 2 soft + 1 hard same-iter
-	TextOnlyOpenCarry                 // next-iter carry via ts.pendingRecoveryMessage
-	TextOnlyOpenSilent                // direct text reply = valid turn end (Set)
+	TextOnlyNone       TextOnlyMode = iota
+	TextOnlyRestricted              // 2 soft + 1 hard same-iter
+	TextOnlyOpenCarry               // next-iter carry via ts.pendingRecoveryMessage
+	TextOnlyOpenSilent              // direct text reply = valid turn end (Set)
 )
 
 // AgentPhasePolicy is the per-phase policy row that drives sites 4-11.
 type AgentPhasePolicy struct {
-	Phase            GoalPhase
-	EmptyAction      RecoveryAction
-	TextOnlyMode     TextOnlyMode
-	ToolExecHint     string
-	ContextSuffix    string
-	StuckBucket      StuckBucket
-	GateSkipText     string
+	Phase             GoalPhase
+	EmptyAction       RecoveryAction
+	TextOnlyMode      TextOnlyMode
+	ToolExecHint      string
+	ContextSuffix     string
+	StuckBucket       StuckBucket
+	GateSkipText      string
 	DiscoveryRuleText string
-	MCPAvailText     string
+	MCPAvailText      string
 }
 
 // Hardcoded constants — single source of truth for gateway log keys.
@@ -118,57 +119,72 @@ const (
 // agentPolicies is the canonical phase-keyed policy table for pkg/agent.
 var agentPolicies = map[GoalPhase]*AgentPhasePolicy{
 	GoalPhaseSet: {
-		Phase:             GoalPhaseSet,
-		EmptyAction:       RecoveryRetrySameIteration,
-		TextOnlyMode:      TextOnlyOpenSilent,
-		ToolExecHint:      ToolExecErrorSetPhaseHint,
-		ContextSuffix:     " At the time of this retry, the turn was in the SET phase and the goal had not yet been seeded.",
-		StuckBucket:       StuckSet,
-		GateSkipText:      fmt.Sprintf("tool %%q is temporarily unavailable. set_goal is the only available tool — call it to define the goal. %s", DefaultGateSkipSuffix),
+		Phase:         GoalPhaseSet,
+		EmptyAction:   RecoveryRetrySameIteration,
+		TextOnlyMode:  TextOnlyOpenSilent,
+		ToolExecHint:  ToolExecErrorSetPhaseHint,
+		ContextSuffix: " At the time of this retry, the turn was in the SET phase and the goal had not yet been seeded.",
+		StuckBucket:   StuckSet,
+		GateSkipText: fmt.Sprintf(
+			"tool %%q is temporarily unavailable. set_goal is the only available tool — call it to define the goal. %s",
+			DefaultGateSkipSuffix,
+		),
 		DiscoveryRuleText: `5. **Tool Discovery** - At SET phase (iter 1), tool_search_tool_bm25 and tool_search_tool_regex are locked. Do not search; only call ` + `"set_goal"` + ` to seed your turn. Discovery will unlock at iter 2's OPEN phase.`,
 		MCPAvailText:      "hidden behind tool discovery; will unlock at next iter in OPEN phase",
 	},
 	GoalPhaseOpen: {
-		Phase:             GoalPhaseOpen,
-		EmptyAction:       RecoveryRetrySameIteration,
-		TextOnlyMode:      TextOnlyOpenCarry,
-		ToolExecHint:      ToolExecErrorOpenPhaseHint,
-		ContextSuffix:     " At the time of this retry, the turn was in the OPEN phase.",
-		StuckBucket:       StuckNone,
-		GateSkipText:      fmt.Sprintf("tool %%q is temporarily unavailable. Try a different tool, or call complete_goal to finalize the turn. %s", DefaultGateSkipSuffix),
+		Phase:         GoalPhaseOpen,
+		EmptyAction:   RecoveryRetrySameIteration,
+		TextOnlyMode:  TextOnlyOpenCarry,
+		ToolExecHint:  ToolExecErrorOpenPhaseHint,
+		ContextSuffix: " At the time of this retry, the turn was in the OPEN phase.",
+		StuckBucket:   StuckNone,
+		GateSkipText: fmt.Sprintf(
+			"tool %%q is temporarily unavailable. Try a different tool, or call complete_goal to finalize the turn. %s",
+			DefaultGateSkipSuffix,
+		),
 		DiscoveryRuleText: "",
 		MCPAvailText:      "hidden behind tool discovery until unlocked",
 	},
 	GoalPhaseCheckpoint: {
-		Phase:             GoalPhaseCheckpoint,
-		EmptyAction:       RecoveryRetrySameIteration,
-		TextOnlyMode:      TextOnlyRestricted,
-		ToolExecHint:      ToolExecErrorCheckpointPhaseHint,
-		ContextSuffix:     " At the time of this retry, the turn was in the CHECKPOINT phase.",
-		StuckBucket:       StuckCheckpoint,
-		GateSkipText:      fmt.Sprintf("tool %%q is temporarily unavailable. goal_progress keeps the goal ALIVE and restores the full toolset so you can keep working; complete_goal PERMANENTLY ARCHIVES the goal and it cannot be resumed. Use complete_goal only when the work is truly finished, or you must wait for user input. %s", DefaultGateSkipSuffix),
+		Phase:         GoalPhaseCheckpoint,
+		EmptyAction:   RecoveryRetrySameIteration,
+		TextOnlyMode:  TextOnlyRestricted,
+		ToolExecHint:  ToolExecErrorCheckpointPhaseHint,
+		ContextSuffix: " At the time of this retry, the turn was in the CHECKPOINT phase.",
+		StuckBucket:   StuckCheckpoint,
+		GateSkipText: fmt.Sprintf(
+			"tool %%q is temporarily unavailable. goal_progress keeps the goal ALIVE and restores the full toolset so you can keep working; complete_goal PERMANENTLY ARCHIVES the goal and it cannot be resumed. Use complete_goal only when the work is truly finished, or you must wait for user input. %s",
+			DefaultGateSkipSuffix,
+		),
 		DiscoveryRuleText: `5. **Tool Discovery** - At CHECKPOINT phase, tool_search_tool_bm25 and tool_search_tool_regex are locked. Do not search; only call ` + `"goal_progress"` + ` or ` + `"complete_goal"` + ` (the only 2 visible tools). Discovery will unlock at your next turn's OPEN phase.`,
 		MCPAvailText:      "locked at this phase; will unlock at next turn's OPEN phase",
 	},
 	GoalPhaseFinal: {
-		Phase:             GoalPhaseFinal,
-		EmptyAction:       RecoveryRetrySameIteration,
-		TextOnlyMode:      TextOnlyRestricted,
-		ToolExecHint:      ToolExecErrorFinalPhaseHint,
-		ContextSuffix:     " At the time of this retry, the turn was in the FINAL phase.",
-		StuckBucket:       StuckFinal,
-		GateSkipText:      fmt.Sprintf("tool %%q is temporarily unavailable. complete_goal is the only available tool — call it to finalize the turn. %s", DefaultGateSkipSuffix),
+		Phase:         GoalPhaseFinal,
+		EmptyAction:   RecoveryRetrySameIteration,
+		TextOnlyMode:  TextOnlyRestricted,
+		ToolExecHint:  ToolExecErrorFinalPhaseHint,
+		ContextSuffix: " At the time of this retry, the turn was in the FINAL phase.",
+		StuckBucket:   StuckFinal,
+		GateSkipText: fmt.Sprintf(
+			"tool %%q is temporarily unavailable. complete_goal is the only available tool — call it to finalize the turn. %s",
+			DefaultGateSkipSuffix,
+		),
 		DiscoveryRuleText: `5. **Tool Discovery** - At FINAL phase, tool_search_tool_bm25 and tool_search_tool_regex are locked. Do not search; only call ` + `"complete_goal"` + ` (the only visible tool). Discovery will not unlock this turn.`,
 		MCPAvailText:      "locked at this terminal phase; will not unlock this turn",
 	},
 	GoalPhasePostFinal: {
-		Phase:             GoalPhasePostFinal,
-		EmptyAction:       RecoveryNone,
-		TextOnlyMode:      TextOnlyNone,
-		ToolExecHint:      "",
-		ContextSuffix:     "",
-		StuckBucket:       StuckNone,
-		GateSkipText:      fmt.Sprintf("tool %%q is temporarily unavailable. No tools are available — output your final report text directly. %s", DefaultGateSkipSuffix),
+		Phase:         GoalPhasePostFinal,
+		EmptyAction:   RecoveryNone,
+		TextOnlyMode:  TextOnlyNone,
+		ToolExecHint:  "",
+		ContextSuffix: "",
+		StuckBucket:   StuckNone,
+		GateSkipText: fmt.Sprintf(
+			"tool %%q is temporarily unavailable. No tools are available — output your final report text directly. %s",
+			DefaultGateSkipSuffix,
+		),
 		DiscoveryRuleText: `5. **Tool Discovery** - At POST-FINAL phase, tool discovery is locked. Do not search; output the final report text directly.`,
 		MCPAvailText:      "locked at this terminal phase; will not unlock this turn",
 	},

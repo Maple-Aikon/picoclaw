@@ -113,8 +113,15 @@ func (al *AgentLoop) prepareInboundMessageForAgent(
 	// that bypasses processMessage. If neither fires, main loop never
 	// reads InboundChan (channel truly empty or main loop blocked earlier).
 	logPreview := utils.Truncate(msg.Content, 80)
-	logger.InfoCF("agent",
-		fmt.Sprintf("prepare_inbound entry channel=%s sender=%s session=%q content=%q", msg.Channel, msg.SenderID, msg.SessionKey, logPreview),
+	logger.InfoCF(
+		"agent",
+		fmt.Sprintf(
+			"prepare_inbound entry channel=%s sender=%s session=%q content=%q",
+			msg.Channel,
+			msg.SenderID,
+			msg.SessionKey,
+			logPreview,
+		),
 		map[string]any{
 			"channel":     msg.Channel,
 			"chat_id":     msg.ChatID,
@@ -128,7 +135,7 @@ func (al *AgentLoop) prepareInboundMessageForAgent(
 
 	msg = bus.NormalizeInboundMessage(msg)
 
-	hadAudio := false
+	var hadAudio bool
 	msg, hadAudio = al.transcribeAudioInMessage(ctx, msg)
 
 	// For audio messages the placeholder was deferred by the channel.

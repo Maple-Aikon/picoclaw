@@ -20,18 +20,27 @@ package tools
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestZZProbe1123Score(t *testing.T) {
-	path := os.Getenv("TK_SCORE_PATH")
+	explicit := os.Getenv("TK_SCORE_PATH")
+	path := explicit
 	if path == "" {
-		path = "/home/maple/.picoclaw/workspace/memory/tool_knowledge/exec.md"
+		// Default to the LIVE store instead of a hardcoded path for
+		// Maple's box: on a CI runner that path does not exist and the
+		// probe has nothing to score.
+		ws := liveStoreWorkspace(t)
+		path = filepath.Join(ws, DefaultKnowledgeDir, "exec.md")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
+		if explicit == "" {
+			t.Skipf("no live exec.md to score: %v", err)
+		}
 		t.Fatalf("read %s: %v", path, err)
 	}
 	body := extractBody(string(raw))

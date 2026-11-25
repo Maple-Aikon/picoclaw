@@ -29,7 +29,11 @@ func allocUniqueToolCallID(prefix string, seq *int64, occupied map[string]struct
 	for {
 		*seq++
 		if *seq < 0 {
-			logger.WarnCF("agent", "tool-call id seq wrapped (int64 overflow — unreachable in practice)", map[string]any{})
+			logger.WarnCF(
+				"agent",
+				"tool-call id seq wrapped (int64 overflow — unreachable in practice)",
+				map[string]any{},
+			)
 		}
 		id := fmt.Sprintf("%s%d", prefix, *seq)
 		if _, taken := occupied[id]; !taken {
@@ -68,7 +72,11 @@ func collectToolCallIDs(messages []providers.Message) map[string]struct{} {
 // deterministic (CQ-v10-F4). Idempotent: response tái xử lý lần 2 → ids lần 1
 // nằm trong existingIDs → collision → rewrite LẠI nhưng collision-free;
 // messages đã append không bị retroactive mutate (struct value copy).
-func (ts *turnState) rewriteToolCallIDs(calls []providers.ToolCall, existingIDs map[string]struct{}, now func() time.Time) []providers.ToolCall {
+func (ts *turnState) rewriteToolCallIDs(
+	calls []providers.ToolCall,
+	existingIDs map[string]struct{},
+	now func() time.Time,
+) []providers.ToolCall {
 	if len(calls) == 0 {
 		return calls
 	}
@@ -159,7 +167,11 @@ func sanitizeToolCallIDUniqueness(sanitized []providers.Message) []providers.Mes
 			seen[tc.ID] = true
 		}
 		if sameBlockDup {
-			logger.DebugCF("agent", "Dropping assistant message with duplicate non-empty tool_call_id (fail-safe, pairing ambiguous)", map[string]any{})
+			logger.DebugCF(
+				"agent",
+				"Dropping assistant message with duplicate non-empty tool_call_id (fail-safe, pairing ambiguous)",
+				map[string]any{},
+			)
 			j := i + 1
 			for ; j < len(sanitized) && sanitized[j].Role == "tool"; j++ {
 			}

@@ -325,10 +325,18 @@ drained:
 		t.Error("summary at the transport boundary must end byte-identical to the LLM-supplied summary (F22A)")
 	}
 	if utf8.RuneCountInString(got) <= utf8.RuneCountInString(full) {
-		t.Errorf("full summary must be present verbatim; got %d runes (summary alone is %d)", utf8.RuneCountInString(got), utf8.RuneCountInString(full))
+		t.Errorf(
+			"full summary must be present verbatim; got %d runes (summary alone is %d)",
+			utf8.RuneCountInString(got),
+			utf8.RuneCountInString(full),
+		)
 	}
 	if outbounds[0].Context.Channel != "cli" || outbounds[0].Context.ChatID != "test-chat" {
-		t.Errorf("outbound must target the turn's channel/chat, got %q/%q", outbounds[0].Context.Channel, outbounds[0].Context.ChatID)
+		t.Errorf(
+			"outbound must target the turn's channel/chat, got %q/%q",
+			outbounds[0].Context.Channel,
+			outbounds[0].Context.ChatID,
+		)
 	}
 	// Archived copy truncated to 1000 runes (owner decision 2026-08-03).
 	st := goal.NewStore(ts.agent.Workspace)

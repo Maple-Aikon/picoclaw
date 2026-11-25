@@ -22,7 +22,7 @@ func buildDigestWordSections(n, lines int) (string, []string) {
 	for i := 0; i < n; i++ {
 		b.WriteString("## Section ")
 		b.WriteString(itoaTest(i))
-		b.WriteString(string(rune(nlByte)))
+		b.WriteRune(rune(nlByte))
 		var sb strings.Builder
 		for j := 0; j < lines; j++ {
 			sb.WriteString("tok")
@@ -31,11 +31,11 @@ func buildDigestWordSections(n, lines int) (string, []string) {
 			sb.WriteString(itoaTest(j))
 			sb.WriteString("_alpha beta gamma delta epsilon zeta eta theta")
 			if j < lines-1 {
-				sb.WriteString(string(rune(nlByte)))
+				sb.WriteRune(rune(nlByte))
 			}
 		}
 		b.WriteString(sb.String())
-		b.WriteString(string(rune(nlByte)))
+		b.WriteRune(rune(nlByte))
 		bodies = append(bodies, sb.String())
 	}
 	return b.String(), bodies

@@ -31,11 +31,11 @@ func TestParseResponse_CacheFields(t *testing.T) {
 			},
 			StopReason: types.StopReasonEndTurn,
 			Usage: &types.TokenUsage{
-				InputTokens:            aws.Int32(100),
-				OutputTokens:           aws.Int32(20),
-				TotalTokens:            aws.Int32(120),
-				CacheReadInputTokens:   aws.Int32(80), // 80 of 100 input tokens served from cache
-				CacheWriteInputTokens:  aws.Int32(20), // 20 fresh tokens written to cache
+				InputTokens:           aws.Int32(100),
+				OutputTokens:          aws.Int32(20),
+				TotalTokens:           aws.Int32(120),
+				CacheReadInputTokens:  aws.Int32(80), // 80 of 100 input tokens served from cache
+				CacheWriteInputTokens: aws.Int32(20), // 20 fresh tokens written to cache
 			},
 		}
 

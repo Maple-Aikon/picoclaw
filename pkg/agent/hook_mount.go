@@ -157,10 +157,10 @@ func (al *AgentLoop) loadConfiguredHooks(ctx context.Context) (err error) {
 	builtinNames := enabledBuiltinHookNames(al.cfg.Hooks.Builtins)
 	processNames := enabledProcessHookNames(al.cfg.Hooks.Processes)
 	logger.InfoCF("agent", "load_hooks_entry", map[string]any{
-		"builtin_count":  len(builtinNames),
-		"process_count":  len(processNames),
-		"builtin_names":  strings.Join(builtinNames, ","),
-		"process_names":  strings.Join(processNames, ","),
+		"builtin_count": len(builtinNames),
+		"process_count": len(processNames),
+		"builtin_names": strings.Join(builtinNames, ","),
+		"process_names": strings.Join(processNames, ","),
 	})
 	defer func() {
 		logger.InfoCF("agent", "load_hooks_exit", map[string]any{

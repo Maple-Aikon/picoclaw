@@ -31,8 +31,8 @@ var crossPkgMissCount atomic.Int64
 // phase is non-empty.
 //
 // The handler:
-//   1. bumps the pkg/agent counter (telemetry)
-//   2. emits warn log (single source of truth for both packages)
+//  1. bumps the pkg/agent counter (telemetry)
+//  2. emits warn log (single source of truth for both packages)
 //
 // Site tag identifies the call site: "tool_policy" (from pkg/tools) or
 // "phase_policy" (from pkg/agent — local counter is handled there).

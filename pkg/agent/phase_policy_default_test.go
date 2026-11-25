@@ -5,6 +5,7 @@
 package agent
 
 import "testing"
+
 //
 // Verifies default (no `strict_phases` build tag) behavior unchanged:
 // PhasePolicyFor(GoalPhase("bogus")) returns nil (fail-OPEN semantics).
@@ -13,11 +14,11 @@ import "testing"
 
 func TestDefaultBuild_PhasePolicyFor_KnownPhasesReturnRows(t *testing.T) {
 	cases := map[GoalPhase]*AgentPhasePolicy{
-		GoalPhaseSet:       nil,
-		GoalPhaseOpen:      nil,
+		GoalPhaseSet:        nil,
+		GoalPhaseOpen:       nil,
 		GoalPhaseCheckpoint: nil,
-		GoalPhaseFinal:     nil,
-		GoalPhasePostFinal: nil,
+		GoalPhaseFinal:      nil,
+		GoalPhasePostFinal:  nil,
 	}
 	for gp := range cases {
 		p := PhasePolicyFor(gp)
