@@ -1075,18 +1075,31 @@ func TestCompaction_InvariantBreakpoint4AnchorRecalibration(t *testing.T) {
 
 	// Compaction must replace the oldest batch of messages with 1 summary
 	if len(afterItems) >= len(beforeItems) {
-		t.Errorf("expected item count reduction after compaction: before=%d, after=%d", len(beforeItems), len(afterItems))
+		t.Errorf(
+			"expected item count reduction after compaction: before=%d, after=%d",
+			len(beforeItems),
+			len(afterItems),
+		)
 	}
 
 	// First item must be the summary
 	if afterItems[0].SummaryID != res.SummariesCreated[0] {
-		t.Errorf("expected first context item to be the newly created summary %s, got %s", res.SummariesCreated[0], afterItems[0].SummaryID)
+		t.Errorf(
+			"expected first context item to be the newly created summary %s, got %s",
+			res.SummariesCreated[0],
+			afterItems[0].SummaryID,
+		)
 	}
 
 	// Ordinals must remain strictly monotonically increasing
 	for i := 1; i < len(afterItems); i++ {
 		if afterItems[i].Ordinal <= afterItems[i-1].Ordinal {
-		t.Errorf("ordinal inversion detected at index %d: %d <= %d", i, afterItems[i].Ordinal, afterItems[i-1].Ordinal)
+			t.Errorf(
+				"ordinal inversion detected at index %d: %d <= %d",
+				i,
+				afterItems[i].Ordinal,
+				afterItems[i-1].Ordinal,
+			)
 		}
 	}
 }

@@ -16,8 +16,8 @@ func TestTokens_AllLocked(t *testing.T) {
 		{"PhasePostFinal", PhasePostFinal, "post_final"},
 	}
 	for _, c := range cases {
-		if string(c.got) != c.want {
-			t.Errorf("%s = %q, want %q", c.name, string(c.got), c.want)
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
 		}
 	}
 }
@@ -40,10 +40,10 @@ func TestTokens_NoAlias(t *testing.T) {
 	}
 	want := map[string]bool{"set": true, "open": true, "checkpoint": true, "final": true, "post_final": true}
 	for _, tok := range AllTokens() {
-		if !want[string(tok)] {
-			t.Errorf("unexpected token %q in AllTokens()", string(tok))
+		if !want[tok] {
+			t.Errorf("unexpected token %q in AllTokens()", tok)
 		}
-		delete(want, string(tok))
+		delete(want, tok)
 	}
 	for k := range want {
 		t.Errorf("missing token %q in AllTokens()", k)
@@ -56,8 +56,8 @@ func TestTokens_NoAlias(t *testing.T) {
 // checks pkg/phases alone is internally consistent.
 func TestTokens_InternalConsistency(t *testing.T) {
 	for _, tok := range AllTokens() {
-		if !IsKnown(string(tok)) {
-			t.Errorf("AllTokens() returned %q but IsKnown=false", string(tok))
+		if !IsKnown(tok) {
+			t.Errorf("AllTokens() returned %q but IsKnown=false", tok)
 		}
 	}
 	if IsKnown("bogus") {

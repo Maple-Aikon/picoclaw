@@ -110,7 +110,6 @@ const (
 	KindMCPToolCallStart Kind = "mcp.tool.call.start"
 	// KindMCPToolCallEnd is emitted when an MCP tool call ends.
 	KindMCPToolCallEnd Kind = "mcp.tool.call.end"
-
 )
 
 var knownKinds = []Kind{

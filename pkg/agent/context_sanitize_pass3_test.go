@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/providers/anthropic_messages"
+	anthropicmessages "github.com/sipeed/picoclaw/pkg/providers/anthropic_messages"
 )
 
 // ---- T4: sanitize pass 3 — block-scoped FIFO + deterministic + idempotent ----
@@ -30,7 +30,8 @@ func callsAndResults(ids ...string) []providers.Message {
 	for _, id := range ids {
 		msg.ToolCalls = append(msg.ToolCalls, makeToolCall(id))
 	}
-	out := []providers.Message{msg}
+	out := make([]providers.Message, 1, 1+len(ids))
+	out[0] = msg
 	for _, id := range ids {
 		out = append(out, toolResultMsg(id))
 	}
@@ -219,7 +220,10 @@ func TestSanitizeToolCallIDUniqueness(t *testing.T) {
 
 	t.Run("l_mixed_layer1_and_dup", func(t *testing.T) {
 		h := []providers.Message{
-			{Role: "assistant", ToolCalls: []providers.ToolCall{makeToolCall("call_main-turn-1_1000_1"), makeToolCall("fix_0")}},
+			{
+				Role:      "assistant",
+				ToolCalls: []providers.ToolCall{makeToolCall("call_main-turn-1_1000_1"), makeToolCall("fix_0")},
+			},
 			toolResultMsg("call_main-turn-1_1000_1"),
 			toolResultMsg("fix_0"),
 			toolCallMsg("fix_0"),
@@ -263,7 +267,10 @@ func TestSanitizeToolCallIDUniqueness(t *testing.T) {
 		// history cũ (persist trước deploy) với dup cross-block → payload unique
 		// + pairing intact. (Pass 1 drop assistant-tool-call ở history start,
 		// nên history phải mở đầu bằng user message như production.)
-		h := []providers.Message{{Role: "user", Content: "hello"}}
+		// 1 seed message + 2 x callsAndResults("fix_0") (1 assistant
+		// + 1 tool result each).
+		h := make([]providers.Message, 0, 5)
+		h = append(h, providers.Message{Role: "user", Content: "hello"})
 		h = append(h, callsAndResults("fix_0")...)
 		h = append(h, callsAndResults("fix_0")...)
 		out := sanitizeHistoryForProvider(h)
@@ -343,12 +350,22 @@ func TestSanitizeThenAnthropicWire_SeahorseReplayShape(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		captured, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"m1","type":"message","role":"assistant","content":[{"type":"text","text":"done"}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":1,"output_tokens":1}}`))
+		_, _ = w.Write(
+			[]byte(
+				`{"id":"m1","type":"message","role":"assistant","content":[{"type":"text","text":"done"}],"stop_reason":"end_turn","model":"MiniMax-M3","usage":{"input_tokens":1,"output_tokens":1}}`,
+			),
+		)
 	}))
 	defer srv.Close()
 
 	p := anthropicmessages.NewProviderWithTimeout("test-key", srv.URL, "test", 10)
-	if _, err := p.Chat(context.Background(), sanitized, nil, "MiniMax-M3", map[string]any{"max_tokens": 1024}); err != nil {
+	if _, err := p.Chat(
+		context.Background(),
+		sanitized,
+		nil,
+		"MiniMax-M3",
+		map[string]any{"max_tokens": 1024},
+	); err != nil {
 		t.Fatalf("Chat() error: %v", err)
 	}
 	if len(captured) == 0 {
@@ -400,7 +417,11 @@ func TestSanitizeThenAnthropicWire_SeahorseReplayShape(t *testing.T) {
 			resultCount++
 			id, _ := block["tool_use_id"].(string)
 			if _, ok := wireToolUse[id]; !ok {
-				t.Fatalf("orphaned tool_result on the wire: tool_use_id=%q not found among tool_use blocks %v", id, keysOf(wireToolUse))
+				t.Fatalf(
+					"orphaned tool_result on the wire: tool_use_id=%q not found among tool_use blocks %v",
+					id,
+					keysOf(wireToolUse),
+				)
 			}
 		}
 	}

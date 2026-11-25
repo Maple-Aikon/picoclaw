@@ -12,6 +12,7 @@
 //
 // See plan file ~/.picoclaw/workspace/memory/plan/picoclaw-phase12.11-
 // same-iteration-recovery-boundedretry-20260724.md for design.
+
 package agent
 
 import (
@@ -129,8 +130,8 @@ func TestHandleGoalRecovery_SameIteration_NoIterBump(t *testing.T) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := goalStore.Write("test-session", activeGoal); err != nil {
-		t.Fatalf("Write goal: %v", err)
+	if err2 := goalStore.Write("test-session", activeGoal); err2 != nil {
+		t.Fatalf("Write goal: %v", err2)
 	}
 
 	// Sanity-check: confirm hasGoal/phase so a real test failure is
@@ -208,8 +209,8 @@ func TestHandleGoalRecovery_Exhausted_ArchivesGoal(t *testing.T) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := goalStore.Write("test-session", activeGoal); err != nil {
-		t.Fatalf("Write goal: %v", err)
+	if err2 := goalStore.Write("test-session", activeGoal); err2 != nil {
+		t.Fatalf("Write goal: %v", err2)
 	}
 
 	ctrl, err := pipeline.CallLLM(context.Background(), context.Background(), ts, exec, 1)
@@ -614,8 +615,8 @@ func TestHandleGoalRecovery_ToolCallOnRetry_StagesAndReturnsToolLoop(t *testing.
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := goalStore.Write("test-session", activeGoal); err != nil {
-		t.Fatalf("Write goal: %v", err)
+	if err2 := goalStore.Write("test-session", activeGoal); err2 != nil {
+		t.Fatalf("Write goal: %v", err2)
 	}
 	if !ts.hasGoal() {
 		t.Fatal("setup error: hasGoal=false; goal file not seeded")

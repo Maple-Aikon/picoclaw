@@ -20,10 +20,10 @@ func makeSeedGoalForSnapshot(t *testing.T, sessionKey string) string {
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 		Description: goal.Description{
-			Objective:        "verify multi-turn test",
-			SuccessCriteria:  []string{"step 1 done", "step 2 done"},
-			InScope:          []string{"file editing"},
-			Cadence:          "",
+			Objective:       "verify multi-turn test",
+			SuccessCriteria: []string{"step 1 done", "step 2 done"},
+			InScope:         []string{"file editing"},
+			Cadence:         "",
 		},
 	}
 	if err := store.Write(sessionKey, g); err != nil {

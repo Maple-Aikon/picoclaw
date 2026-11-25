@@ -62,7 +62,10 @@ func (f *phase1242AbortExecutor) ExecuteTools(
 // phase1242WireSetup builds a full turn with a seeded goal at Checkpoint
 // phase and a scripted LLM (attempt 0: blocked read_file; attempt 1:
 // valid complete_goal).
-func phase1242WireSetup(t *testing.T, setFlag func(exec *turnExecution)) (*AgentLoop, *turnState, *Pipeline, *restrictedPhaseToolBlockProvider) {
+func phase1242WireSetup(
+	t *testing.T,
+	setFlag func(exec *turnExecution),
+) (*AgentLoop, *turnState, *Pipeline, *restrictedPhaseToolBlockProvider) {
 	t.Helper()
 	provider := &restrictedPhaseToolBlockProvider{
 		responses: []*providers.LLMResponse{
@@ -160,7 +163,8 @@ func TestP1242_W12_AllResponsesHandledInRetryPathFinalizes(t *testing.T) {
 		t.Fatalf("W12: runTurn returned error (should finalize cleanly), got %v", err)
 	}
 	if result.status == TurnEndStatusError {
-		t.Errorf("W12: expected non-error finalize, got TurnEndStatusError (G10: allResponsesHandled misread as archive)")
+		t.Errorf(
+			"W12: expected non-error finalize, got TurnEndStatusError (G10: allResponsesHandled misread as archive)",
+		)
 	}
 }
-

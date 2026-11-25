@@ -21,13 +21,32 @@ func TestP1242_W1W9_ThreeErrorsArchiveCounterSurvives(t *testing.T) {
 
 	p := NewPipeline(al)
 	fake := &fakeSequenceExecutor{steps: []fakeExecutorStep{
-		{returnControl: ToolControlContinue, appendContent: "Tool execution failed: boom", appendIsError: true, appendToolName: "goal_progress"},
-		{returnControl: ToolControlContinue, appendContent: "Tool execution failed: boom", appendIsError: true, appendToolName: "goal_progress"},
+		{
+			returnControl:  ToolControlContinue,
+			appendContent:  "Tool execution failed: boom",
+			appendIsError:  true,
+			appendToolName: "goal_progress",
+		},
+		{
+			returnControl:  ToolControlContinue,
+			appendContent:  "Tool execution failed: boom",
+			appendIsError:  true,
+			appendToolName: "goal_progress",
+		},
 	}}
 	p.SetToolExecutor(fake)
 	ts, exec := setupRetryChainTestTurnState(t, al, p)
 
-	ctrl, err := p.retryExecuteToolChain(context.Background(), context.Background(), ts, exec, 2, "RETRY_HINT", []string{"goal_progress"}, "checkpoint")
+	ctrl, err := p.retryExecuteToolChain(
+		context.Background(),
+		context.Background(),
+		ts,
+		exec,
+		2,
+		"RETRY_HINT",
+		[]string{"goal_progress"},
+		"checkpoint",
+	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,12 +74,24 @@ func TestP1242_W2W15_WrongToolRepromptsThenExecutesOnce(t *testing.T) {
 	ts, exec := setupRetryChainTestTurnState(t, al, p)
 	al.SetGoalPhaseForTest(string(GoalPhaseCheckpoint))
 
-	ctrl, err := p.retryExecuteToolChain(context.Background(), context.Background(), ts, exec, 2, "RETRY_HINT", []string{"goal_progress", "complete_goal"}, "checkpoint")
+	ctrl, err := p.retryExecuteToolChain(
+		context.Background(),
+		context.Background(),
+		ts,
+		exec,
+		2,
+		"RETRY_HINT",
+		[]string{"goal_progress", "complete_goal"},
+		"checkpoint",
+	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if ctrl != ControlToolLoop {
-		t.Fatalf("W2: expected ControlToolLoop after re-prompt success, got %v (current code breaks after 1 wrong tool)", ctrl)
+		t.Fatalf(
+			"W2: expected ControlToolLoop after re-prompt success, got %v (current code breaks after 1 wrong tool)",
+			ctrl,
+		)
 	}
 	if fake.callCount != 1 {
 		t.Errorf("W15: executor callCount == %d, want 1 (execute exactly once, no double-execute)", fake.callCount)
@@ -86,7 +117,13 @@ func TestP1242_W2W15_WrongToolRepromptsThenExecutesOnce(t *testing.T) {
 // arms it via evaluateRecovery's RecoveryRetryNextIteration branch.
 func TestP1242_W3_TextOnlyAfterErrorIsSuccess(t *testing.T) {
 	provider := &phase12_36TestProvider{responses: []*providers.LLMResponse{
-		{Content: "", ToolCalls: []providers.ToolCall{{Name: "goal_progress", Arguments: map[string]any{"remaining_steps": []any{"x"}}}}, FinishReason: "stop"},
+		{
+			Content: "",
+			ToolCalls: []providers.ToolCall{
+				{Name: "goal_progress", Arguments: map[string]any{"remaining_steps": []any{"x"}}},
+			},
+			FinishReason: "stop",
+		},
 		{Content: "I will continue without tools", FinishReason: "stop"},
 	}}
 	al, _, cleanup := newTurnCoordTestLoop(t, provider)
@@ -94,7 +131,12 @@ func TestP1242_W3_TextOnlyAfterErrorIsSuccess(t *testing.T) {
 
 	p := NewPipeline(al)
 	fake := &fakeSequenceExecutor{steps: []fakeExecutorStep{
-		{returnControl: ToolControlContinue, appendContent: "Tool execution failed: boom", appendIsError: true, appendToolName: "goal_progress"},
+		{
+			returnControl:  ToolControlContinue,
+			appendContent:  "Tool execution failed: boom",
+			appendIsError:  true,
+			appendToolName: "goal_progress",
+		},
 	}}
 	p.SetToolExecutor(fake)
 	ts, exec := setupRetryChainTestTurnState(t, al, p)
@@ -102,7 +144,16 @@ func TestP1242_W3_TextOnlyAfterErrorIsSuccess(t *testing.T) {
 	// Phase 12.51a: use phase="open" (carry, not retry) to preserve W3's
 	// original test intent. Pre-12.51a used "checkpoint" which is now
 	// restricted-phase retry.
-	ctrl, err := p.retryExecuteToolChain(context.Background(), context.Background(), ts, exec, 2, "RETRY_HINT", []string{"goal_progress"}, "open")
+	ctrl, err := p.retryExecuteToolChain(
+		context.Background(),
+		context.Background(),
+		ts,
+		exec,
+		2,
+		"RETRY_HINT",
+		[]string{"goal_progress"},
+		"open",
+	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,18 +190,34 @@ func TestP1242_W4_AllowAllGateBlockedExhaustsToArchive(t *testing.T) {
 	al.SetGoalPhaseForTest(string(GoalPhaseCheckpoint))
 	ts.applyPhaseAllowlist(GoalPhaseCheckpoint)
 
-	ctrl, err := p.retryExecuteToolChain(context.Background(), context.Background(), ts, exec, 2, "RETRY_HINT", nil, "checkpoint")
+	ctrl, err := p.retryExecuteToolChain(
+		context.Background(),
+		context.Background(),
+		ts,
+		exec,
+		2,
+		"RETRY_HINT",
+		nil,
+		"checkpoint",
+	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if ctrl != ControlBreak {
-		t.Fatalf("W4: gate-blocked at allow-all must exhaust to ControlBreak, got %v (current code breaks after 1 wrong)", ctrl)
+		t.Fatalf(
+			"W4: gate-blocked at allow-all must exhaust to ControlBreak, got %v (current code breaks after 1 wrong)",
+			ctrl,
+		)
 	}
 	if !ts.goalArchiveRequested {
 		t.Errorf("W4: goalArchiveRequested not set after exhaustion")
 	}
 	if !strings.HasPrefix(ts.lastPhaseStuckError, "BoundedRetry exhausted") {
-		t.Errorf("W4: lastPhaseStuckError = %q, want %q (Phase 12.51a.1 F02: recordPhaseStuckArchive msg wins over OnExhausted bare constant)", ts.lastPhaseStuckError, "BoundedRetry exhausted")
+		t.Errorf(
+			"W4: lastPhaseStuckError = %q, want %q (Phase 12.51a.1 F02: recordPhaseStuckArchive msg wins over OnExhausted bare constant)",
+			ts.lastPhaseStuckError,
+			"BoundedRetry exhausted",
+		)
 	}
 }
 
@@ -167,28 +234,81 @@ func TestP1242_W4_AllowAllGateBlockedExhaustsToArchive(t *testing.T) {
 func TestP1242_W13W14_MixedSequenceAndIterBoundary(t *testing.T) {
 	provider := &phase12_36TestProvider{responses: []*providers.LLMResponse{
 		// iter1: attempt 0 tool call, attempt 1 text-only
-		{Content: "", ToolCalls: []providers.ToolCall{{Name: "goal_progress", Arguments: map[string]any{"remaining_steps": []any{"x"}}}}, FinishReason: "stop"},
+		{
+			Content: "",
+			ToolCalls: []providers.ToolCall{
+				{Name: "goal_progress", Arguments: map[string]any{"remaining_steps": []any{"x"}}},
+			},
+			FinishReason: "stop",
+		},
 		{Content: "ok, continuing", FinishReason: "stop"},
 		// iter2: 3 consecutive tool calls
-		{Content: "", ToolCalls: []providers.ToolCall{{Name: "goal_progress", Arguments: map[string]any{"remaining_steps": []any{"x"}}}}, FinishReason: "stop"},
-		{Content: "", ToolCalls: []providers.ToolCall{{Name: "goal_progress", Arguments: map[string]any{"remaining_steps": []any{"x"}}}}, FinishReason: "stop"},
-		{Content: "", ToolCalls: []providers.ToolCall{{Name: "goal_progress", Arguments: map[string]any{"remaining_steps": []any{"x"}}}}, FinishReason: "stop"},
+		{
+			Content: "",
+			ToolCalls: []providers.ToolCall{
+				{Name: "goal_progress", Arguments: map[string]any{"remaining_steps": []any{"x"}}},
+			},
+			FinishReason: "stop",
+		},
+		{
+			Content: "",
+			ToolCalls: []providers.ToolCall{
+				{Name: "goal_progress", Arguments: map[string]any{"remaining_steps": []any{"x"}}},
+			},
+			FinishReason: "stop",
+		},
+		{
+			Content: "",
+			ToolCalls: []providers.ToolCall{
+				{Name: "goal_progress", Arguments: map[string]any{"remaining_steps": []any{"x"}}},
+			},
+			FinishReason: "stop",
+		},
 	}}
 	al, _, cleanup := newTurnCoordTestLoop(t, provider)
 	defer cleanup()
 
 	p := NewPipeline(al)
 	fake := &fakeSequenceExecutor{steps: []fakeExecutorStep{
-		{returnControl: ToolControlContinue, appendContent: "Tool execution failed: boom", appendIsError: true, appendToolName: "goal_progress"},
-		{returnControl: ToolControlContinue, appendContent: "Tool execution failed: boom", appendIsError: true, appendToolName: "goal_progress"},
-		{returnControl: ToolControlContinue, appendContent: "Tool execution failed: boom", appendIsError: true, appendToolName: "goal_progress"},
-		{returnControl: ToolControlContinue, appendContent: "Tool execution failed: boom", appendIsError: true, appendToolName: "goal_progress"},
+		{
+			returnControl:  ToolControlContinue,
+			appendContent:  "Tool execution failed: boom",
+			appendIsError:  true,
+			appendToolName: "goal_progress",
+		},
+		{
+			returnControl:  ToolControlContinue,
+			appendContent:  "Tool execution failed: boom",
+			appendIsError:  true,
+			appendToolName: "goal_progress",
+		},
+		{
+			returnControl:  ToolControlContinue,
+			appendContent:  "Tool execution failed: boom",
+			appendIsError:  true,
+			appendToolName: "goal_progress",
+		},
+		{
+			returnControl:  ToolControlContinue,
+			appendContent:  "Tool execution failed: boom",
+			appendIsError:  true,
+			appendToolName: "goal_progress",
+		},
 	}}
 	p.SetToolExecutor(fake)
 	ts, exec := setupRetryChainTestTurnState(t, al, p)
 
 	// ---- iter1: error → text-only → success (Phase 12.51a Open carry) ----
-	ctrl1, err := p.retryExecuteToolChain(context.Background(), context.Background(), ts, exec, 2, "RETRY_HINT", []string{"goal_progress"}, "open")
+	ctrl1, err := p.retryExecuteToolChain(
+		context.Background(),
+		context.Background(),
+		ts,
+		exec,
+		2,
+		"RETRY_HINT",
+		[]string{"goal_progress"},
+		"open",
+	)
 	if err != nil {
 		t.Fatalf("iter1 unexpected error: %v", err)
 	}
@@ -206,7 +326,16 @@ func TestP1242_W13W14_MixedSequenceAndIterBoundary(t *testing.T) {
 	ts.toolExecRecoveryAttempts = nil
 
 	// ---- iter2: 3 consecutive errors → archive (even though cap not hit) ----
-	ctrl2, err := p.retryExecuteToolChain(context.Background(), context.Background(), ts, exec, 3, "RETRY_HINT", []string{"goal_progress"}, "checkpoint")
+	ctrl2, err := p.retryExecuteToolChain(
+		context.Background(),
+		context.Background(),
+		ts,
+		exec,
+		3,
+		"RETRY_HINT",
+		[]string{"goal_progress"},
+		"checkpoint",
+	)
 	if err != nil {
 		t.Fatalf("iter2 unexpected error: %v", err)
 	}
@@ -237,7 +366,16 @@ func TestP1242_W5_SuccessAtAttemptZero(t *testing.T) {
 	p.SetToolExecutor(fake)
 	ts, exec := setupRetryChainTestTurnState(t, al, p)
 
-	ctrl, err := p.retryExecuteToolChain(context.Background(), context.Background(), ts, exec, 2, "RETRY_HINT", []string{"goal_progress"}, "checkpoint")
+	ctrl, err := p.retryExecuteToolChain(
+		context.Background(),
+		context.Background(),
+		ts,
+		exec,
+		2,
+		"RETRY_HINT",
+		[]string{"goal_progress"},
+		"checkpoint",
+	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

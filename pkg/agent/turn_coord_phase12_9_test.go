@@ -24,8 +24,8 @@ func TestPhase12_9_PreLoopHook_ExtendsCapForFinalReport(t *testing.T) {
 	// Apply the pre-loop hook (mirrored from turn_coord.go:124-135).
 	preLoopHook := func() {
 		if ts.goalFinalized && !ts.postCompleteGoalReportSent {
-			if cap := ts.iteration + 1; cap > ts.iterationCap {
-				ts.iterationCap = cap
+			if capacity2 := ts.iteration + 1; capacity2 > ts.iterationCap {
+				ts.iterationCap = capacity2
 			}
 		}
 	}
@@ -52,8 +52,8 @@ func TestPhase12_9_PreLoopHook_NoOpWhenAlreadySent(t *testing.T) {
 	prevCap := ts.iterationCap
 	preLoopHook := func() {
 		if ts.goalFinalized && !ts.postCompleteGoalReportSent {
-			if cap := ts.iteration + 1; cap > ts.iterationCap {
-				ts.iterationCap = cap
+			if capacity2 := ts.iteration + 1; capacity2 > ts.iterationCap {
+				ts.iterationCap = capacity2
 			}
 		}
 	}
@@ -75,8 +75,8 @@ func TestPhase12_9_PreLoopHook_NoOpWithoutGoalFinalized(t *testing.T) {
 
 	preLoopHook := func() {
 		if ts.goalFinalized && !ts.postCompleteGoalReportSent {
-			if cap := ts.iteration + 1; cap > ts.iterationCap {
-				ts.iterationCap = cap
+			if capacity2 := ts.iteration + 1; capacity2 > ts.iterationCap {
+				ts.iterationCap = capacity2
 			}
 		}
 	}
@@ -181,7 +181,9 @@ func TestPhase12_9_PostBodyMarker_NoOpOnCompleteGoalIter(t *testing.T) {
 	}
 
 	if ts.postCompleteGoalReportSent {
-		t.Error("postCompleteGoalReportSent must NOT be set on the iter where complete_goal fires; that would prevent the final-report iter from running")
+		t.Error(
+			"postCompleteGoalReportSent must NOT be set on the iter where complete_goal fires; that would prevent the final-report iter from running",
+		)
 	}
 	if !ts.pendingFinalReportIter == ts.pendingFinalReportIter {
 		// sanity: pending should still be false
@@ -231,8 +233,8 @@ func TestPhase12_9_FullSequence_CompleteGoalAtCapThenFinalReport(t *testing.T) {
 	// THEN condition check).
 	preLoopHook := func() {
 		if ts.goalFinalized && !ts.postCompleteGoalReportSent {
-			if cap := ts.iteration + 1; cap > ts.iterationCap {
-				ts.iterationCap = cap
+			if capacity2 := ts.iteration + 1; capacity2 > ts.iterationCap {
+				ts.iterationCap = capacity2
 			}
 		}
 	}

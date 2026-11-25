@@ -8,11 +8,11 @@
 // archive the goal and stop.
 //
 // Triggers (per plan §5.2 + §8.3):
-//   1. EmptyTextResponse — Goal Phase 1, LLM returns text="" with no tool calls
-//   2. TextOnly2x        — Goal Phase 1, two consecutive text-only LLM responses
-//   3. ToolExecError     — executor returned IsError=true (not signature)
-//   4. BoundedRetryExhausted — any BoundedRetry loop hit cap
-//   5. ProviderTransient — HTTP 5xx/timeout/429 exhausted existing retry
+//  1. EmptyTextResponse — Goal Phase 1, LLM returns text="" with no tool calls
+//  2. TextOnly2x        — Goal Phase 1, two consecutive text-only LLM responses
+//  3. ToolExecError     — executor returned IsError=true (not signature)
+//  4. BoundedRetryExhausted — any BoundedRetry loop hit cap
+//  5. ProviderTransient — HTTP 5xx/timeout/429 exhausted existing retry
 //
 // Rules:
 //   - Recovery retries do NOT consume iteration slots (per §5.3)
@@ -162,7 +162,7 @@ const (
 	// without changing arguments. English per USER.md preference.
 	ToolExecErrorTransientHint = " The error looks transient (timeout, rate-limit, or network). Wait briefly and retry the SAME call — argument changes are unlikely to help."
 
-	// Phase 12.15: ToolExecErrorSetPhaseHint is appended when a tool call
+	// ToolExecErrorSetPhaseHint is appended when a tool call
 	// was rejected at GoalPhaseSet (iter 1, no active goal). The allowlist
 	// is `[set_goal]` only — every other tool call is blocked at the
 	// execution gate. Before Phase 12.15, GoalPhaseSet SKIPPED Trigger #3
@@ -172,7 +172,7 @@ const (
 	// top-level fields.
 	ToolExecErrorSetPhaseHint = " In the current goal phase (set), only `set_goal` is available — every other tool call is blocked. Call `set_goal` with top-level fields (name, objective, success_criteria[]) to start the goal: the tool name is `set_goal`, the field names are `name`, `objective`, `success_criteria[]` (array), and optional `in_scope[]`, `out_of_scope[]`, `cadence`. Do NOT wrap the arguments inside a `{\"raw\":\"...\"}` envelope — provide each field as a top-level key."
 
-	// Phase 12.15: ToolExecErrorFinalPhaseHint is appended when a tool call
+	// ToolExecErrorFinalPhaseHint is appended when a tool call
 	// was rejected at GoalPhaseFinal (post-complete_goal final-report iter).
 	// Allowlist is `[complete_goal]` only. If the LLM emits a broken tool
 	// call here (e.g. MiniMax-M3 `unknown({})` quirk), the message redirects
@@ -181,7 +181,7 @@ const (
 	// has already been published — no more iterations happen).
 	ToolExecErrorFinalPhaseHint = " In the current goal phase (final), only `complete_goal` is available — every other tool call is blocked. The goal is already finalized; call `complete_goal` with a non-empty `summary` (1-1000 chars) to close out the turn, or reply with the final user-facing report directly. The summary field accepts wait-state descriptions such as 'Waiting for user approval before proceeding with X' — use this when you need user approval/decision before continuing."
 
-	// Phase 12.18: ToolExecErrorCheckpointPhaseHint is appended when a tool
+	// ToolExecErrorCheckpointPhaseHint is appended when a tool
 	// call was rejected at GoalPhaseCheckpoint (iter == iterationCap, hit the
 	// cap). Allowlist is `[goal_progress, complete_goal]` only. The LLM has
 	// hit the iteration cap and must either extend (goal_progress) or wrap
@@ -206,7 +206,7 @@ const (
 	// end turn when goal is done via final summary).
 	ToolExecErrorCheckpointPhaseHint = " In the current goal phase (checkpoint), only `goal_progress` and `complete_goal` are available — every other tool call is blocked. Choose one of three paths: (1) save a checkpoint and keep working: call `goal_progress` with at least 1 item in `remaining_steps`; (2) end the turn to ask the user for approval/decision: call `complete_goal` with a summary like \"Waiting for user approval before continuing with X\"; (3) end the turn because the goal is done: call `complete_goal` with a concise summary (1-1000 chars) of what was accomplished."
 
-	// Phase 12.32: ToolExecErrorOpenPhaseHint is appended ONLY when a
+	// ToolExecErrorOpenPhaseHint is appended ONLY when a
 	// lifecycle tool (set_goal / goal_progress) is rejected at OPEN phase.
 	// Open is a RELATIVE phase — only 2 of 83 visible tools are blocked by
 	// the lifecycle gate, so always-append (like Set/Checkpoint/Final)
@@ -214,7 +214,7 @@ const (
 	// rather than retry the blocked lifecycle tool.
 	ToolExecErrorOpenPhaseHint = " `set_goal` is LOCKED at OPEN phase (it only fires at the SET phase / iter 1). `goal_progress` is CHECKPOINT-only (it only fires at a checkpoint). At OPEN, only `view_goal` and `complete_goal` are available for lifecycle operations. Pivot to `complete_goal` with a non-empty `summary` (1-1000 chars) when the work is done, or call other non-lifecycle tools. Do NOT retry the same blocked lifecycle tool."
 
-	// Phase 12.51b — Checkpoint/Final iter=cap escape hatch.
+	// ToolLimitCheckpointRetryMessage is the Phase 12.51b checkpoint/final iter=cap escape hatch.
 	// Defense-in-depth at the iter=cap boundary. State-agnostic per
 	// Phase 12.40 spirit: NO iteration-cap claims (claims go stale after
 	// extension/phase transition and poison history). Tool names + 3-path
@@ -306,8 +306,8 @@ func buildTextOnlyRetryMessageWithPhase(phase string, hard bool, restricted bool
 // Caps for each trigger. Per §5.2 + §5.3 — these are sub-attempt counts
 // inside one iteration, NOT iteration counts.
 const (
-	EmptyResponseRecoveryCap     = 3  // Phase 12.37: 3 same-iter retries per spec 9 (was 2; now soft-soft-hard)
-	// Phase 12 redesign: text-only retries fire 2x per iteration with escalation.
+	EmptyResponseRecoveryCap = 3 // Phase 12.37: 3 same-iter retries per spec 9 (was 2; now soft-soft-hard)
+	// TextOnlySoftRetryCap is the Phase 12 redesign text-only soft cap: text-only retries fire 2x per iteration with escalation.
 	// Soft prompt (TextOnlySoftRetryMessage) fires first, then hard prompt
 	// (TextOnlyHardRetryMessage). If both fire and LLM still produces
 	// text-only, archive the goal.
@@ -320,10 +320,10 @@ const (
 	// total same-iter attempts (spec 9). Open-phase text-only stays
 	// next-iter carry (spec 7) — bump-only (Phase 12.58): NO counters, NO
 	// archive; textOnlyStreak selects the carried message (soft → hard).
-	TextOnlySoftRetryCap         = 2  // restricted phase: 2 soft prompts per iter (spec 9)
-	TextOnlyHardRetryCap         = 1  // restricted phase: 1 hard prompt per iter (fires on 3rd text-only)
-	ToolExecErrorRetryCap         = 3  // per-tool retry up to 3 within same iteration
-	ProviderTransientRetryCap     = 3  // matches existing callLLMCore cap
+	TextOnlySoftRetryCap      = 2 // restricted phase: 2 soft prompts per iter (spec 9)
+	TextOnlyHardRetryCap      = 1 // restricted phase: 1 hard prompt per iter (fires on 3rd text-only)
+	ToolExecErrorRetryCap     = 3 // per-tool retry up to 3 within same iteration
+	ProviderTransientRetryCap = 3 // matches existing callLLMCore cap
 )
 
 // evaluateRecovery decides which recovery action to take based on the
@@ -380,7 +380,13 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 			// wait-then-retry (transient) vs diagnose-or-recomplete (permanent).
 			// Caller (checkToolExecErrorRecovery / pipeline) sets this from
 			// the tool result's error text + circuit-breaker state.
-			msg := buildToolExecErrorRetryMessage(ctx.ToolName, ctx.ToolExecError, ctx.IsTransient, ctx.ToolKnowledgeRegistry, ctx.Phase)
+			msg := buildToolExecErrorRetryMessage(
+				ctx.ToolName,
+				ctx.ToolExecError,
+				ctx.IsTransient,
+				ctx.ToolKnowledgeRegistry,
+				ctx.Phase,
+			)
 			return RecoveryRetrySameIteration, msg
 		}
 		// Phase 12.55 Q2/Q3: tool-exec exhaustion archives ONLY at
@@ -481,7 +487,14 @@ func evaluateRecovery(ts *turnState, ctx RecoveryContext) (RecoveryAction, strin
 			hard := ts.emptyResponseRecoveryCount >= EmptyResponseRecoveryCap
 			msg := buildEmptyResponseRetryMessageWithPhase(ctx.Phase, hard)
 			if IsAgentDebugEnabled() {
-				AgentDebugRecovery(ts.turnID, ts.sessionKey, ctx.Iteration, GoalPhase(ctx.Phase), "EmptyResponse", ts.emptyResponseRecoveryCount)
+				AgentDebugRecovery(
+					ts.turnID,
+					ts.sessionKey,
+					ctx.Iteration,
+					GoalPhase(ctx.Phase),
+					"EmptyResponse",
+					ts.emptyResponseRecoveryCount,
+				)
 			}
 			return RecoveryRetrySameIteration, msg
 		}
@@ -558,7 +571,7 @@ func agentIDFromTS(ts *turnState) string {
 //
 // Returns "" when the mapping cannot be found (e.g. the assistant message
 // was dropped by compaction). Callers MUST fall back to the call-id then —
-// that preserves the pre-Phase-12.62 behaviour instead of failing.
+// that preserves the pre-Phase-12.62 behavior instead of failing.
 func toolNameFromMessages(messages []providers.Message, callID string) string {
 	if callID == "" {
 		return ""
@@ -633,9 +646,10 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 		tsToolErrKind = ts.lastToolResult.ErrKind
 	}
 	const executorErrPrefix = "Tool execution failed:"
-	isExecutorErr := len(last.Content) >= len(executorErrPrefix) && last.Content[:len(executorErrPrefix)] == executorErrPrefix
+	isExecutorErr := len(last.Content) >= len(executorErrPrefix) &&
+		last.Content[:len(executorErrPrefix)] == executorErrPrefix
 
-	recoverable := false
+	var recoverable bool
 	switch {
 	case tsToolErrKind != "":
 		switch tsToolErrKind {
@@ -658,7 +672,7 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 	}
 	// Phase 12.62: resolve the REAL tool name from the assistant message
 	// that issued the call (tool-call IDs carry no tool name). Fall back to
-	// the call-id when the mapping is unavailable so behaviour degrades to
+	// the call-id when the mapping is unavailable so behavior degrades to
 	// the pre-Phase-12.62 path instead of breaking recovery.
 	toolName := toolNameFromMessages(exec.messages, last.ToolCallID)
 	if toolName == "" {
@@ -741,7 +755,12 @@ func checkToolExecErrorRecovery(ts *turnState, exec *turnExecution) (string, str
 //
 // Returns just the standard message when registry is nil or no knowledge
 // exists for the tool. Never returns an empty string.
-func buildToolExecErrorRetryMessage(toolName, errMsg string, isTransient bool, registry *tools.ToolRegistry, phase string) string {
+func buildToolExecErrorRetryMessage(
+	toolName, errMsg string,
+	isTransient bool,
+	registry *tools.ToolRegistry,
+	phase string,
+) string {
 	base := fmt.Sprintf(ToolExecErrorRetryMessage, toolName, errMsg)
 	if isTransient {
 		base += ToolExecErrorTransientHint

@@ -21,11 +21,11 @@ func makeActiveGoalInWorkspace(t *testing.T, sessionKey string) string {
 	g := &goal.Goal{
 		Name: "phase6-finalize-test",
 		Description: goal.Description{
-			Objective:        "test objective",
-			SuccessCriteria:  []string{"pass all phase 6 tests"},
-			InScope:          []string{"hook 1-4"},
-			OutOfScope:       []string{"phase 7"},
-			Cadence:          "as_needed",
+			Objective:       "test objective",
+			SuccessCriteria: []string{"pass all phase 6 tests"},
+			InScope:         []string{"hook 1-4"},
+			OutOfScope:      []string{"phase 7"},
+			Cadence:         "as_needed",
 		},
 		Status:    goal.StatusActive,
 		CreatedAt: now,

@@ -63,11 +63,14 @@ const (
 // telegramFormatMode selects how outbound text is rendered.
 //
 // formatModeHTML  — use_markdown_v2=false (default): markdown is converted to
-//                   Telegram HTML (markdownToTelegramHTML) and sent with
-//                   parse_mode=HTML.
+//
+//	Telegram HTML (markdownToTelegramHTML) and sent with
+//	parse_mode=HTML.
+//
 // formatModeRich  — use_markdown_v2=true: Telegram Rich Messages (Rich
-//                   Markdown, GFM-compatible). LLM markdown passes through
-//                   unconverted via sendRichMessage — no escaping, no expansion.
+//
+//	Markdown, GFM-compatible). LLM markdown passes through
+//	unconverted via sendRichMessage — no escaping, no expansion.
 type telegramFormatMode int
 
 const (
@@ -1926,7 +1929,7 @@ func (s *telegramStreamer) pushDraftThrottled(ctx context.Context, content strin
 		return nil
 	}
 
-		if s.mode.isRich() {
+	if s.mode.isRich() {
 		s.draftTouched = true
 		if err := s.bot.SendRichMessageDraft(ctx, &telego.SendRichMessageDraftParams{
 			ChatID:          s.chatID,
@@ -1945,7 +1948,6 @@ func (s *telegramStreamer) pushDraftThrottled(ctx context.Context, content strin
 		return nil
 	}
 
-		
 	htmlContent := markdownToTelegramHTML(content)
 	s.draftTouched = true
 
@@ -2048,7 +2050,7 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 		return nil
 	}
 
-		if s.mode.isRich() {
+	if s.mode.isRich() {
 		s.draftTouched = true
 		if err := s.bot.SendRichMessageDraft(ctx, &telego.SendRichMessageDraftParams{
 			ChatID:          s.chatID,
@@ -2067,7 +2069,7 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 		return nil
 	}
 
-htmlContent := markdownToTelegramHTML(content)
+	htmlContent := markdownToTelegramHTML(content)
 	s.draftTouched = true
 
 	err := s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
@@ -2110,7 +2112,7 @@ func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 		// pusher adapter.
 	}
 
-		if s.mode.isRich() {
+	if s.mode.isRich() {
 		if _, err := s.bot.SendRichMessage(ctx, &telego.SendRichMessageParams{
 			ChatID:          tu.ID(s.chatID),
 			MessageThreadID: s.threadID,

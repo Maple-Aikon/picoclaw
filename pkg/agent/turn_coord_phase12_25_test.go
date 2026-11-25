@@ -76,14 +76,18 @@ func TestPhase12_25_ArchiveAndReset_ClearsGoalFlags(t *testing.T) {
 
 	// Construct ts with the same workspace as al so goal.NewStore can find files.
 	ts := &turnState{
-		agent:            &AgentInstance{Workspace: al.cfg.WorkspacePath(), MaxIterations: 50, MaxIterationsCap: 200},
-		workspace:        al.cfg.WorkspacePath(),
-		sessionKey:       "phase12-25-test-session",
+		agent: &AgentInstance{
+			Workspace:        al.cfg.WorkspacePath(),
+			MaxIterations:    50,
+			MaxIterationsCap: 200,
+		},
+		workspace:                al.cfg.WorkspacePath(),
+		sessionKey:               "phase12-25-test-session",
 		toolExecRecoveryAttempts: make(map[string]int),
-		iteration:        2,
-		iterationCap:     50,
-		maxIterationsCap: 200,
-		turnID:           "test-turn",
+		iteration:                2,
+		iterationCap:             50,
+		maxIterationsCap:         200,
+		turnID:                   "test-turn",
 	}
 
 	// Seed a stale active goal on disk (simulates prior turn that did not transition).
@@ -133,14 +137,18 @@ func TestPhase12_25_ArchiveAndReset_ArchivesPriorGoal(t *testing.T) {
 	defer cleanup()
 
 	ts := &turnState{
-		agent:            &AgentInstance{Workspace: al.cfg.WorkspacePath(), MaxIterations: 50, MaxIterationsCap: 200},
-		workspace:        al.cfg.WorkspacePath(),
-		sessionKey:       "phase12-25-test-session",
+		agent: &AgentInstance{
+			Workspace:        al.cfg.WorkspacePath(),
+			MaxIterations:    50,
+			MaxIterationsCap: 200,
+		},
+		workspace:                al.cfg.WorkspacePath(),
+		sessionKey:               "phase12-25-test-session",
 		toolExecRecoveryAttempts: make(map[string]int),
-		iteration:        2,
-		iterationCap:     50,
-		maxIterationsCap: 200,
-		turnID:           "test-turn",
+		iteration:                2,
+		iterationCap:             50,
+		maxIterationsCap:         200,
+		turnID:                   "test-turn",
 	}
 
 	store := goal.NewStore(ts.workspace)
@@ -180,14 +188,18 @@ func TestPhase12_25_ArchiveAndReset_IdempotentWhenNoPriorGoal(t *testing.T) {
 	defer cleanup()
 
 	ts := &turnState{
-		agent:            &AgentInstance{Workspace: al.cfg.WorkspacePath(), MaxIterations: 50, MaxIterationsCap: 200},
-		workspace:        al.cfg.WorkspacePath(),
-		sessionKey:       "no-prior-goal-session",
+		agent: &AgentInstance{
+			Workspace:        al.cfg.WorkspacePath(),
+			MaxIterations:    50,
+			MaxIterationsCap: 200,
+		},
+		workspace:                al.cfg.WorkspacePath(),
+		sessionKey:               "no-prior-goal-session",
 		toolExecRecoveryAttempts: make(map[string]int),
-		iteration:        1,
-		iterationCap:     50,
-		maxIterationsCap: 200,
-		turnID:           "test-turn",
+		iteration:                1,
+		iterationCap:             50,
+		maxIterationsCap:         200,
+		turnID:                   "test-turn",
 	}
 
 	if err := archiveAndResetPriorTurnGoal(al, ts); err != nil {

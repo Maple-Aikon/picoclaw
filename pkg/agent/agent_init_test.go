@@ -12,6 +12,7 @@
 // ProjectionFrozen()==true after NewAgentLoop constructs the loop. RED because
 // no caller wires SetProjectionFrozen(true). GREEN after the wire is in place
 // at agent_init.go:442.
+
 package agent
 
 import (

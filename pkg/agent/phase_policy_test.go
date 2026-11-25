@@ -103,11 +103,11 @@ func TestPhasePolicy_AgentSide_EmptyActionOnlyRecoveryNoneAtPostFinal(t *testing
 func TestPhasePolicy_AgentSide_TextOnlyModeCanonical(t *testing.T) {
 	// Plan §3.3 site 5: each phase has a fixed TextOnlyMode.
 	want := map[GoalPhase]TextOnlyMode{
-		GoalPhaseSet:       TextOnlyOpenSilent,
-		GoalPhaseOpen:      TextOnlyOpenCarry,
+		GoalPhaseSet:        TextOnlyOpenSilent,
+		GoalPhaseOpen:       TextOnlyOpenCarry,
 		GoalPhaseCheckpoint: TextOnlyRestricted,
-		GoalPhaseFinal:     TextOnlyRestricted,
-		GoalPhasePostFinal: TextOnlyNone,
+		GoalPhaseFinal:      TextOnlyRestricted,
+		GoalPhasePostFinal:  TextOnlyNone,
 	}
 	for key, row := range agentPolicies {
 		if got := row.TextOnlyMode; got != want[key] {

@@ -179,8 +179,8 @@ func buildFakeServerBinary(t *testing.T, name, source string) string {
 		t.Fatalf("create temp dir for fake server: %v", err)
 	}
 	src := filepath.Join(dir, name+".go")
-	if err := os.WriteFile(src, []byte(source), 0o644); err != nil {
-		t.Fatalf("write fake server source: %v", err)
+	if err2 := os.WriteFile(src, []byte(source), 0o644); err2 != nil {
+		t.Fatalf("write fake server source: %v", err2)
 	}
 	bin := filepath.Join(dir, name)
 	build := exec.Command("go", "build", "-o", bin, src)
@@ -428,6 +428,9 @@ func TestR1e_ReconnectUsesIndependentContext(t *testing.T) {
 		cfg config.MCPServerConfig,
 	) (*ServerConnection, error) {
 		mu.Lock()
+		//nolint:fatcontext // the reconnect ctx is captured ON PURPOSE: the test must
+		// observe it after this literal returns, to prove it was not canceled with
+		// the caller ctx. That is exactly the property under test.
 		reconnectCtx = ctx
 		mu.Unlock()
 

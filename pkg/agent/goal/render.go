@@ -18,15 +18,16 @@ import (
 // LLM benefits from seeing it in full on every tool call.
 //
 // Layout:
-//   ## Goal: <name>
-//   **Status:** <status>
-//   **Objective:** <objective>
-//   **Success criteria:**
-//   - <criterion>
-//   ...
-//   **Scope (in):** <list>     (only if set)
-//   **Scope (out):** <list>    (only if set)
-//   **Cadence:** <text>         (only if set)
+//
+//	## Goal: <name>
+//	**Status:** <status>
+//	**Objective:** <objective>
+//	**Success criteria:**
+//	- <criterion>
+//	...
+//	**Scope (in):** <list>     (only if set)
+//	**Scope (out):** <list>    (only if set)
+//	**Cadence:** <text>         (only if set)
 func (g *Goal) RenderHeader() string {
 	if g == nil {
 		return ""
@@ -63,23 +64,23 @@ func (g *Goal) RenderHeader() string {
 // view_goal(start_line=N) on a follow-up call. The function is designed for
 // pagination with the same semantics as read_file:
 //
-//   startLine is 0-indexed (startLine=0 → first line).
-//   maxLines <= 0 means "no limit" (returns the whole body).
-//   hasMore is true when more lines exist beyond the returned window.
+//	startLine is 0-indexed (startLine=0 → first line).
+//	maxLines <= 0 means "no limit" (returns the whole body).
+//	hasMore is true when more lines exist beyond the returned window.
 //
 // Returns (body, totalLines, hasMore, error).
 //
 // body looks like:
 //
-//   ## Progress log (lines <from>-<to> of <total>)
+//	## Progress log (lines <from>-<to> of <total>)
 //
-//   N: ### Progress I — <timestamp>
-//   N+1: Completed: <steps>
-//   N+2: Blockers: <blockers>     (only if any)
-//   N+3: Remaining: <steps>
-//   N+4: Drift: <bool>
-//   N+5: Next action: <text>
-//   ...
+//	N: ### Progress I — <timestamp>
+//	N+1: Completed: <steps>
+//	N+2: Blockers: <blockers>     (only if any)
+//	N+3: Remaining: <steps>
+//	N+4: Drift: <bool>
+//	N+5: Next action: <text>
+//	...
 func (g *Goal) RenderProgress(startLine, maxLines int) (string, int, bool) {
 	if g == nil {
 		return "<no goal loaded>", 1, false

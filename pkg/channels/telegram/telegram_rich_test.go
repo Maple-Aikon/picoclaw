@@ -59,7 +59,12 @@ func TestSendRich_ShortMessage_SingleRichCall(t *testing.T) {
 	require.Len(t, caller.calls, 1, "rich short message must be exactly one API call")
 	assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
 	rm := richMessageOf(t, caller.calls[0])
-	assert.Equal(t, normalizeRichMarkdown(content), rm["markdown"], "rich_message.markdown must match normalized rich markdown")
+	assert.Equal(
+		t,
+		normalizeRichMarkdown(content),
+		rm["markdown"],
+		"rich_message.markdown must match normalized rich markdown",
+	)
 	_, hasParse := richBody(t, caller.calls[0])["parse_mode"]
 	assert.False(t, hasParse, "rich send must not set parse_mode")
 }

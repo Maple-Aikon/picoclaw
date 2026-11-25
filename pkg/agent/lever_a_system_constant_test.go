@@ -48,7 +48,7 @@ func joinAllContents(msgs []providers.Message) string {
 	var b strings.Builder
 	for _, m := range msgs {
 		b.WriteString(m.Content)
-		b.WriteString(string(rune(10)))
+		b.WriteRune(rune(10))
 	}
 	return b.String()
 }

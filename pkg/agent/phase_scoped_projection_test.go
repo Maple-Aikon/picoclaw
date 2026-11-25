@@ -169,7 +169,13 @@ func TestP1_NarrowPhasesProjectOnlyTheirAllowlist(t *testing.T) {
 
 			names := p1Names(reg.ToProviderDefs())
 			if len(names) != len(tc.want) {
-				t.Fatalf("C2-C5 violated: phase=%s projected %v (%d), want exactly %v", tc.phase, names, len(names), tc.want)
+				t.Fatalf(
+					"C2-C5 violated: phase=%s projected %v (%d), want exactly %v",
+					tc.phase,
+					names,
+					len(names),
+					tc.want,
+				)
 			}
 			for _, w := range tc.want {
 				if !p1Contains(names, w) {
@@ -499,7 +505,12 @@ func TestP1_ProjectionIsPhaseScopedNotGlobal(t *testing.T) {
 	reg.SetPhase("set")
 	setNames := p1Names(reg.ToProviderDefs())
 	if len(setNames) >= len(openNames) {
-		t.Fatalf("projection freeze looks off: set=%v (%d), open=%v (%d) — a narrow phase must project strictly fewer tools",
-			setNames, len(setNames), openNames, len(openNames))
+		t.Fatalf(
+			"projection freeze looks off: set=%v (%d), open=%v (%d) — a narrow phase must project strictly fewer tools",
+			setNames,
+			len(setNames),
+			openNames,
+			len(openNames),
+		)
 	}
 }

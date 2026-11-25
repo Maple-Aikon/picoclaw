@@ -39,6 +39,7 @@
 // The same failure can travel more than one of these paths. Counting
 // only one under-counts; counting at the build site over-counts.
 // Three injection points = exactly one increment per real injection.
+
 package agent
 
 import (

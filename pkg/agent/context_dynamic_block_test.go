@@ -10,19 +10,20 @@
 //   - User[0] gets a `<dynamic_context>` block prepended with the actual user content.
 //
 // Wire contract verified by these tests:
-//   1. Dynamic content MUST NOT appear in any system ContentBlock (system prefix stays identity-stable).
-//   2. Dynamic content MUST be prepended to user[0] when user[0] is added to messages.
-//   3. The dynamic block format MUST be `<dynamic_context>...</dynamic_context>` for round-trip parse stability.
-//   4. If `BuildMessagesFromPrompt` is called with no user message (CurrentMessage empty + no media),
-//      a stub user[0] is appended containing only the dynamic context.
-//   5. If the default system prompt is suppressed (`SuppressDefaultSystemPrompt=true`), NO dynamic block is
-//      built at all and the user message is unchanged — no `<dynamic_context>` wrapper added.
-//   6. PRODUCTION WIRE (auto-stash, C3 fact-check 2026-08-23): `buildDynamicContext` runs INTERNALLY and
-//      stashes into req.DynamicContext; no production caller sets the field. A default request therefore
-//      ALWAYS ships the dynamic block inside user[0] — guarded by
-//      TestBuildMessagesFromPrompt_AutoStashDynamicInUserZero.
+//  1. Dynamic content MUST NOT appear in any system ContentBlock (system prefix stays identity-stable).
+//  2. Dynamic content MUST be prepended to user[0] when user[0] is added to messages.
+//  3. The dynamic block format MUST be `<dynamic_context>...</dynamic_context>` for round-trip parse stability.
+//  4. If `BuildMessagesFromPrompt` is called with no user message (CurrentMessage empty + no media),
+//     a stub user[0] is appended containing only the dynamic context.
+//  5. If the default system prompt is suppressed (`SuppressDefaultSystemPrompt=true`), NO dynamic block is
+//     built at all and the user message is unchanged — no `<dynamic_context>` wrapper added.
+//  6. PRODUCTION WIRE (auto-stash, C3 fact-check 2026-08-23): `buildDynamicContext` runs INTERNALLY and
+//     stashes into req.DynamicContext; no production caller sets the field. A default request therefore
+//     ALWAYS ships the dynamic block inside user[0] — guarded by
+//     TestBuildMessagesFromPrompt_AutoStashDynamicInUserZero.
 //
 // Tests must FAIL before the production code change; pass after.
+
 package agent
 
 import (
@@ -116,8 +117,12 @@ func TestBuildMessagesFromPrompt_DynamicBlockInUserZero(t *testing.T) {
 	idxDyn := strings.Index(userContent, "<dynamic_context>")
 	idxUser := strings.Index(userContent, userMsg)
 	if idxDyn > idxUser {
-		t.Fatalf("expected dynamic block to be PREPENDED (idx < user content idx).\n  dynamic at %d, user at %d\n  full: %q",
-			idxDyn, idxUser, userContent)
+		t.Fatalf(
+			"expected dynamic block to be PREPENDED (idx < user content idx).\n  dynamic at %d, user at %d\n  full: %q",
+			idxDyn,
+			idxUser,
+			userContent,
+		)
 	}
 	_ = dynCtx // mark used
 }
@@ -131,8 +136,8 @@ func TestBuildMessagesFromPrompt_NoDynamicContextLeavesUserIntact(t *testing.T) 
 
 	userMsg := "Just a hello, no dynamic context provided"
 	req := PromptBuildRequest{
-		CurrentMessage:            userMsg,
-		DynamicContext:            "",     // explicitly empty
+		CurrentMessage:              userMsg,
+		DynamicContext:              "",   // explicitly empty
 		SuppressDefaultSystemPrompt: true, // no internal buildDynamicContext → no stash
 	}
 	msgs := cb.BuildMessagesFromPrompt(req)
@@ -172,7 +177,10 @@ func TestBuildMessagesFromPrompt_NoUserMessageStillIncludesDynamic(t *testing.T)
 	}
 
 	if !strings.Contains(userContent, "<dynamic_context>") {
-		t.Fatalf("expected stub user message to contain <dynamic_context> block when no CurrentMessage provided, got: %q", userContent)
+		t.Fatalf(
+			"expected stub user message to contain <dynamic_context> block when no CurrentMessage provided, got: %q",
+			userContent,
+		)
 	}
 	// Dynamic content is auto-stashed from buildDynamicContext (real time.Now()) —
 	// assert marker subtrings, never an exact time string.
@@ -241,7 +249,10 @@ func TestBuildMessagesFromPrompt_AutoStashDynamicInUserZero(t *testing.T) {
 
 	userContent := lastUserMessageContent(msgs)
 	if !strings.Contains(userContent, "<dynamic_context>") {
-		t.Fatalf("BUG: production wire produced NO <dynamic_context> block in user[0] — auto-stash missing. got: %q", userContent)
+		t.Fatalf(
+			"BUG: production wire produced NO <dynamic_context> block in user[0] — auto-stash missing. got: %q",
+			userContent,
+		)
 	}
 	if !strings.Contains(userContent, "## Current Time") {
 		t.Fatalf("BUG: user[0] lacks buildDynamicContext output (## Current Time). got: %q", userContent)

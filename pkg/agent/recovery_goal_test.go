@@ -53,7 +53,7 @@ func newPhase5TurnState(t *testing.T) *turnState {
 func TestEvaluateRecovery_EmptyText_PhaseOpen_InjectsOnce(t *testing.T) {
 	ts := newPhase5TurnState(t)
 	ctx := RecoveryContext{
-		Phase: string(GoalPhaseOpen),
+		Phase:        string(GoalPhaseOpen),
 		Iteration:    1,
 		TextEmpty:    true,
 		HasToolCalls: false,
@@ -62,7 +62,10 @@ func TestEvaluateRecovery_EmptyText_PhaseOpen_InjectsOnce(t *testing.T) {
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("expected RecoveryRetrySameIteration, got %v", action)
 	}
-	if !strings.HasPrefix(msg, EmptyResponseRecoveryMessage) { // Phase 12.38: suffix appended via buildEmptyResponseRetryMessageWithPhase
+	if !strings.HasPrefix(
+		msg,
+		EmptyResponseRecoveryMessage,
+	) { // Phase 12.38: suffix appended via buildEmptyResponseRetryMessageWithPhase
 		t.Fatalf("expected EMPTY_FINAL message, got %q", msg)
 	}
 	if ts.emptyResponseRecoveryCount == 0 {
@@ -74,7 +77,9 @@ func TestEvaluateRecovery_EmptyText_AlreadySent_NoRetry(t *testing.T) {
 	// Phase 12.37: pre-12.37 this tested "one-shot bool → None on second fire".
 	// New behavior: counter caps at EmptyResponseRecoveryCap (3) — count>=cap
 	// archives the goal. Phase 12.37 covered in recovery_goal_phase12_37_test.go.
-	t.Skip("Phase 12.37: behavior changed to count-based 3-shot cap; see TestEmptyResponse_CapExhausted_ArchivesGoal_Phase12_37")
+	t.Skip(
+		"Phase 12.37: behavior changed to count-based 3-shot cap; see TestEmptyResponse_CapExhausted_ArchivesGoal_Phase12_37",
+	)
 	ts := newPhase5TurnState(t)
 	ts.emptyResponseRecoveryCount = 1 // legacy placeholder, unreachable
 	ctx := RecoveryContext{Phase: string(GoalPhaseOpen), TextEmpty: true, HasToolCalls: false}
@@ -184,7 +189,11 @@ func TestEvaluateRecovery_ToolExecError_ExhaustCap_Archive(t *testing.T) {
 // top-level fields. Counter MUST increment so the per-tool cap is honored.
 func TestEvaluateRecovery_ToolExecError_LockPhase_RetriesWithHint(t *testing.T) {
 	ts := newPhase5TurnState(t)
-	ctx := RecoveryContext{Phase: string(GoalPhaseSet), ToolName: "view_goal", ToolExecError: "not allowed in set phase"}
+	ctx := RecoveryContext{
+		Phase:         string(GoalPhaseSet),
+		ToolName:      "view_goal",
+		ToolExecError: "not allowed in set phase",
+	}
 	action, msg := evaluateRecovery(ts, ctx)
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("Phase 12.15: Lock phase + tool error should retry, got %v", action)
@@ -206,7 +215,11 @@ func TestEvaluateRecovery_ToolExecError_FinalPhase_RetriesWithHint(t *testing.T)
 	ts := newPhase5TurnState(t)
 	// postCompleteGoalReportSent=false (default) — final-report iter still
 	// eligible for redirect hint.
-	ctx := RecoveryContext{Phase: string(GoalPhaseFinal), ToolName: "view_goal", ToolExecError: "not allowed in final phase"}
+	ctx := RecoveryContext{
+		Phase:         string(GoalPhaseFinal),
+		ToolName:      "view_goal",
+		ToolExecError: "not allowed in final phase",
+	}
 	action, msg := evaluateRecovery(ts, ctx)
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("Phase 12.15: Final phase + tool error should retry, got %v", action)
@@ -390,7 +403,11 @@ func TestCheckToolExecErrorRecovery_ExecutionGateFormat_TriggersRecovery(t *test
 		WithErrorKind(toolshared.ErrInvalidInput)
 	exec := &turnExecution{
 		messages: []providers.Message{
-			{Role: "tool", ToolCallID: "read_file", Content: `tool "read_file" is temporarily unavailable (allowed tools: [goal_progress complete_goal])`},
+			{
+				Role:       "tool",
+				ToolCallID: "read_file",
+				Content:    `tool "read_file" is temporarily unavailable (allowed tools: [goal_progress complete_goal])`,
+			},
 		},
 	}
 	tool, msg := checkToolExecErrorRecovery(ts, exec)
@@ -398,7 +415,10 @@ func TestCheckToolExecErrorRecovery_ExecutionGateFormat_TriggersRecovery(t *test
 		t.Fatalf("expected retry (no archive) on first execution-gate rejection, got tool=%q msg=%q", tool, msg)
 	}
 	if ts.toolExecRecoveryAttempts["read_file"] != 1 {
-		t.Fatalf("expected attempt count=1 for read_file (from ToolCallID), got %d", ts.toolExecRecoveryAttempts["read_file"])
+		t.Fatalf(
+			"expected attempt count=1 for read_file (from ToolCallID), got %d",
+			ts.toolExecRecoveryAttempts["read_file"],
+		)
 	}
 }
 
@@ -417,7 +437,11 @@ func TestCheckToolExecErrorRecovery_ExecutionGateFormat_NotTransient(t *testing.
 		WithErrorKind(toolshared.ErrInvalidInput)
 	exec := &turnExecution{
 		messages: []providers.Message{
-			{Role: "tool", ToolCallID: "read_file", Content: `tool "read_file" is temporarily unavailable (timeout waiting on allowed tools)`},
+			{
+				Role:       "tool",
+				ToolCallID: "read_file",
+				Content:    `tool "read_file" is temporarily unavailable (timeout waiting on allowed tools)`,
+			},
 		},
 	}
 	// Force Checkpoint phase so the recovery builder picks the
@@ -454,7 +478,7 @@ func TestCheckToolExecErrorRecovery_ExecutionGateFormat_NotTransient(t *testing.
 
 // TestBuildToolExecErrorRetryMessage_CheckpointPhase (Phase 12.18 + 12.38
 // + 12.40): Phase 12.38 replaced the "final iteration" wording with a
-// consequence-based hint (F37, F44''). Phase 12.40 (anh Maple spec) replaces
+// consequence-based hint (F37, F44”). Phase 12.40 (anh Maple spec) replaces
 // the consequence-based wording AGAIN: the hint must NOT claim anything
 // about the iteration cap ("iteration cap had been reached" poisons history
 // when the cap is extended CHECKPOINT→OPEN — main-turn-3 2026-08-02 18:41
@@ -477,7 +501,10 @@ func TestBuildToolExecErrorRetryMessage_CheckpointPhase(t *testing.T) {
 	}
 	// Phase 12.40: must NOT claim anything about the iteration cap.
 	if strings.Contains(got, "iteration cap") {
-		t.Fatalf("Checkpoint hint must NOT mention 'iteration cap' (Phase 12.40, poisons history after cap extension), got: %s", got)
+		t.Fatalf(
+			"Checkpoint hint must NOT mention 'iteration cap' (Phase 12.40, poisons history after cap extension), got: %s",
+			got,
+		)
 	}
 	// Phase 12.40: MUST name the 2 available tools + 3 decision paths.
 	for _, want := range []string{
@@ -511,7 +538,7 @@ func TestBuildToolExecErrorRetryMessage_CheckpointDecisionPaths(t *testing.T) {
 	// Negative: poison text (must be gone)
 	negativePhrases := []string{
 		"final iteration",
-		"iteration cap",          // Phase 12.40: no cap claims in recovery hint
+		"iteration cap", // Phase 12.40: no cap claims in recovery hint
 		"had been reached",
 	}
 	for _, n := range negativePhrases {
@@ -524,9 +551,9 @@ func TestBuildToolExecErrorRetryMessage_CheckpointDecisionPaths(t *testing.T) {
 		"goal_progress",
 		"complete_goal",
 		"checkpoint",
-		"remaining_steps",        // path (1) save checkpoint
-		"approval",               // path (2) end turn to ask user approval
-		"accomplished",           // path (3) end turn when goal is done
+		"remaining_steps", // path (1) save checkpoint
+		"approval",        // path (2) end turn to ask user approval
+		"accomplished",    // path (3) end turn when goal is done
 	}
 	for _, p := range positivePhrases {
 		if !strings.Contains(got, p) {
@@ -635,12 +662,16 @@ func TestBuildTextOnlyRetryMessage_NoToolRecommendation(t *testing.T) {
 		forbidden := []string{"set_goal", "goal_progress", "complete_goal", "must call"}
 		for _, f := range forbidden {
 			if strings.Contains(got, f) {
-				t.Fatalf("phase=%s (restricted): text-only message must NOT recommend specific tool %q (F30), got: %s", phase, f, got)
+				t.Fatalf(
+					"phase=%s (restricted): text-only message must NOT recommend specific tool %q (F30), got: %s",
+					phase,
+					f,
+					got,
+				)
 			}
 		}
 	}
 }
-
 
 // The OPEN-phase hint must fire ONLY when the failing tool is a lifecycle
 // tool (set_goal / goal_progress). Open phase is RELATIVE — only 2 of 83
@@ -783,7 +814,11 @@ func TestBuildToolExecErrorRetryMessage_TransientFlag(t *testing.T) {
 
 	// Transient message MUST include the hint suffix.
 	if !strings.Contains(baseTransient, ToolExecErrorTransientHint) {
-		t.Fatalf("transient message missing hint suffix\n got: %q\nwant suffix: %q", baseTransient, ToolExecErrorTransientHint)
+		t.Fatalf(
+			"transient message missing hint suffix\n got: %q\nwant suffix: %q",
+			baseTransient,
+			ToolExecErrorTransientHint,
+		)
 	}
 
 	// Base body MUST be present in both (only the hint differs).
@@ -854,12 +889,12 @@ func TestEvaluateRecovery_WirePathFromCurrentGoalPhase(t *testing.T) {
 		MaxIterationsCap: 200,
 	}
 	ts := &turnState{
-		agent:                   ai,
-		workspace:               ws,
-		sessionKey:              "wire-test-session",
-		iteration:               2, // Open phase requires 2 <= iter <= MaxIter
-		iterationCap:            50,
-		maxIterationsCap:        200,
+		agent:                    ai,
+		workspace:                ws,
+		sessionKey:               "wire-test-session",
+		iteration:                2, // Open phase requires 2 <= iter <= MaxIter
+		iterationCap:             50,
+		maxIterationsCap:         200,
 		toolExecRecoveryAttempts: make(map[string]int),
 	}
 	// Seed active goal on disk so ts.hasGoal() returns true (matches runtime gate
@@ -893,7 +928,10 @@ func TestEvaluateRecovery_WirePathFromCurrentGoalPhase(t *testing.T) {
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("wire-path recovery should fire on lowercase %q, got %v (msg=%q)", wirePhase, action, msg)
 	}
-	if !strings.HasPrefix(msg, EmptyResponseRecoveryMessage) { // Phase 12.38: suffix appended via buildEmptyResponseRetryMessageWithPhase
+	if !strings.HasPrefix(
+		msg,
+		EmptyResponseRecoveryMessage,
+	) { // Phase 12.38: suffix appended via buildEmptyResponseRetryMessageWithPhase
 		t.Fatalf("expected EmptyResponseRecoveryMessage, got %q", msg)
 	}
 }
@@ -919,7 +957,12 @@ func TestEvaluateRecovery_PostCompleteGoalReport_NoTrigger(t *testing.T) {
 		},
 		{
 			name: "tool_exec_error",
-			ctx:  RecoveryContext{Phase: string(GoalPhaseOpen), ToolExecError: "connection refused", ToolName: "web_search", Iteration: 3},
+			ctx: RecoveryContext{
+				Phase:         string(GoalPhaseOpen),
+				ToolExecError: "connection refused",
+				ToolName:      "web_search",
+				Iteration:     3,
+			},
 		},
 	}
 	for _, tc := range cases {
@@ -960,8 +1003,8 @@ func TestPostCompleteGoalReport_CapBypass(t *testing.T) {
 	// is set at END of body (post-body marker), not at the bypass site.
 	// Modeling the pre-loop hook:
 	if ts.goalFinalized && !ts.postCompleteGoalReportSent {
-		if cap := ts.iteration + 1; cap > ts.iterationCap {
-			ts.iterationCap = cap
+		if capacity2 := ts.iteration + 1; capacity2 > ts.iterationCap {
+			ts.iterationCap = capacity2
 		}
 	}
 
@@ -970,7 +1013,9 @@ func TestPostCompleteGoalReport_CapBypass(t *testing.T) {
 		t.Errorf("expected iterationCap=25 after cap-bypass, got %d", ts.iterationCap)
 	}
 	if ts.postCompleteGoalReportSent {
-		t.Error("postCompleteGoalReportSent should still be FALSE after pre-loop hook (set at post-body marker, not bypass site)")
+		t.Error(
+			"postCompleteGoalReportSent should still be FALSE after pre-loop hook (set at post-body marker, not bypass site)",
+		)
 	}
 
 	// Phase 12.9: at top of body, the transient pendingFinalReportIter
@@ -995,12 +1040,16 @@ func TestPostCompleteGoalReport_CapBypass(t *testing.T) {
 	// (because postCompleteGoalReportSent is now true).
 	prevCap := ts.iterationCap
 	if ts.goalFinalized && !ts.postCompleteGoalReportSent {
-		if cap := ts.iteration + 1; cap > ts.iterationCap {
-			ts.iterationCap = cap
+		if capacity2 := ts.iteration + 1; capacity2 > ts.iterationCap {
+			ts.iterationCap = capacity2
 		}
 	}
 	if ts.iterationCap != prevCap {
-		t.Errorf("pre-loop hook should be a no-op when postCompleteGoalReportSent=true; cap changed from %d to %d", prevCap, ts.iterationCap)
+		t.Errorf(
+			"pre-loop hook should be a no-op when postCompleteGoalReportSent=true; cap changed from %d to %d",
+			prevCap,
+			ts.iterationCap,
+		)
 	}
 }
 
@@ -1161,13 +1210,19 @@ func TestEvaluateRecovery_IterationBump_ResetsBothCounters(t *testing.T) {
 	}
 
 	// iter 13: empty response fires again (Fix #1)
-	actionEmpty, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseOpen), Iteration: 13, TextEmpty: true, HasToolCalls: false})
+	actionEmpty, _ := evaluateRecovery(
+		ts,
+		RecoveryContext{Phase: string(GoalPhaseOpen), Iteration: 13, TextEmpty: true, HasToolCalls: false},
+	)
 	if actionEmpty != RecoveryRetrySameIteration {
 		t.Fatalf("iter 13 empty: expected RetrySameIteration, got %v", actionEmpty)
 	}
 
 	// iter 13: tool exec error fires again (Fix #1b)
-	actionTool, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseOpen), Iteration: 13, ToolName: "view_goal"})
+	actionTool, _ := evaluateRecovery(
+		ts,
+		RecoveryContext{Phase: string(GoalPhaseOpen), Iteration: 13, ToolName: "view_goal"},
+	)
 	if actionTool != RecoveryRetrySameIteration {
 		t.Fatalf("iter 13 tool: expected RetrySameIteration, got %v", actionTool)
 	}
@@ -1183,7 +1238,8 @@ func TestEvaluateRecovery_IterationBump_ResetsBothCounters(t *testing.T) {
 // T-B1: complete_goal validation error — typed ErrInvalidInput from tool handler.
 func TestCheckToolExecErrorRecovery_FiresOnCompleteGoalValidation(t *testing.T) {
 	ts := newPhase5TurnState(t)
-	res := toolshared.ErrorResult("complete_goal: `summary` exceeds 500 characters (Unicode); shorten your final reply.").WithErrorKind(toolshared.ErrInvalidInput)
+	res := toolshared.ErrorResult("complete_goal: `summary` exceeds 500 characters (Unicode); shorten your final reply.").
+		WithErrorKind(toolshared.ErrInvalidInput)
 	ts.lastToolResult = res
 	exec := &turnExecution{
 		messages: []providers.Message{
@@ -1200,7 +1256,8 @@ func TestCheckToolExecErrorRecovery_FiresOnCompleteGoalValidation(t *testing.T) 
 // T-B2: goal_progress validation error — typed ErrInvalidInput.
 func TestCheckToolExecErrorRecovery_FiresOnGoalProgressValidation(t *testing.T) {
 	ts := newPhase5TurnState(t)
-	res := toolshared.ErrorResult("goal_progress: remaining_steps is required and must be non-empty.").WithErrorKind(toolshared.ErrInvalidInput)
+	res := toolshared.ErrorResult("goal_progress: remaining_steps is required and must be non-empty.").
+		WithErrorKind(toolshared.ErrInvalidInput)
 	ts.lastToolResult = res
 	exec := &turnExecution{
 		messages: []providers.Message{
@@ -1210,14 +1267,19 @@ func TestCheckToolExecErrorRecovery_FiresOnGoalProgressValidation(t *testing.T) 
 
 	tool, msg := checkToolExecErrorRecovery(ts, exec)
 	if tool == "" && msg == "" {
-		t.Fatalf("Phase 12.28.3: typed ErrInvalidInput on goal_progress should fire recovery (msg=%q tool=%q)", msg, tool)
+		t.Fatalf(
+			"Phase 12.28.3: typed ErrInvalidInput on goal_progress should fire recovery (msg=%q tool=%q)",
+			msg,
+			tool,
+		)
 	}
 }
 
 // T-B3: set_goal validation error — typed ErrInvalidInput (name regex violation).
 func TestCheckToolExecErrorRecovery_FiresOnSetGoalValidation(t *testing.T) {
 	ts := newPhase5TurnState(t)
-	res := toolshared.ErrorResult("set_goal: \"name\" must match ^[A-Za-z0-9_-]{1,64}$.").WithErrorKind(toolshared.ErrInvalidInput)
+	res := toolshared.ErrorResult("set_goal: \"name\" must match ^[A-Za-z0-9_-]{1,64}$.").
+		WithErrorKind(toolshared.ErrInvalidInput)
 	ts.lastToolResult = res
 	exec := &turnExecution{
 		messages: []providers.Message{
@@ -1237,7 +1299,8 @@ func TestCheckToolExecErrorRecovery_DoesNotFireOnUnrecoverableErrKind(t *testing
 	// Only ErrInvalidInput, ErrTransient, ErrTimeout, ErrDependencyDown
 	// (Phase 12.55 Q1) are recoverable. Unknown kinds should NOT trigger
 	// retry.
-	res := toolshared.ErrorResult("the upstream service is permanently down").WithErrorKind(toolshared.ErrDependencyDown)
+	res := toolshared.ErrorResult("the upstream service is permanently down").
+		WithErrorKind(toolshared.ErrDependencyDown)
 	ts.lastToolResult = res
 	exec := &turnExecution{
 		messages: []providers.Message{
@@ -1257,7 +1320,8 @@ func TestCheckToolExecErrorRecovery_DoesNotFireOnUnrecoverableErrKind(t *testing
 // T-B5: execution gate rejection — regression for Phase 12.18.
 // ts.lastToolResult.ErrKind == "" + content matches "tool \"X\" is not available"
 // should still fire (registry execution gate doesn't stamp ErrKind).
-func TestCheckToolExecErrorRecovery_StillMatchesExecutionGate(t *testing.T) {	ts := newPhase5TurnState(t)
+func TestCheckToolExecErrorRecovery_StillMatchesExecutionGate(t *testing.T) {
+	ts := newPhase5TurnState(t)
 	// Phase 12.46: the pre-check stamps ErrInvalidInput on gate blocks —
 	// this is the ONLY wire for gate rejections now (legacy prefix path
 	// removed with execute-then-error).
@@ -1265,7 +1329,11 @@ func TestCheckToolExecErrorRecovery_StillMatchesExecutionGate(t *testing.T) {	ts
 		WithErrorKind(toolshared.ErrInvalidInput)
 	exec := &turnExecution{
 		messages: []providers.Message{
-			{Role: "tool", ToolCallID: "write_file", Content: `tool "write_file" is not available in the current phase (allowed tools: [goal_progress, complete_goal])`},
+			{
+				Role:       "tool",
+				ToolCallID: "write_file",
+				Content:    `tool "write_file" is not available in the current phase (allowed tools: [goal_progress, complete_goal])`,
+			},
 		},
 	}
 
@@ -1341,7 +1409,8 @@ func TestCheckToolExecErrorRecovery_PrefixFallbackWhenLastToolResultNil(t *testi
 // registry execution gate rejection has empty ErrKind AND does NOT
 // necessarily match the "Tool execution failed:" prefix — only matches
 // the "tool \"X\" is not available" prefix.
-func TestCheckToolExecErrorRecovery_PrefixFallbackWhenErrKindEmpty(t *testing.T) {	ts := newPhase5TurnState(t)
+func TestCheckToolExecErrorRecovery_PrefixFallbackWhenErrKindEmpty(t *testing.T) {
+	ts := newPhase5TurnState(t)
 	// lastToolResult exists but has empty ErrKind — fall back to the
 	// legacy executor prefix "Tool execution failed:" (Phase 12.46: the
 	// gate-prefix fallback is gone; gate blocks are always typed).
@@ -1354,7 +1423,11 @@ func TestCheckToolExecErrorRecovery_PrefixFallbackWhenErrKindEmpty(t *testing.T)
 
 	tool, msg := checkToolExecErrorRecovery(ts, exec)
 	if msg == "" {
-		t.Fatalf("Phase 12.18 regression-proof: empty ErrKind + executor prefix should fire recovery (got msg=%q tool=%q)", msg, tool)
+		t.Fatalf(
+			"Phase 12.18 regression-proof: empty ErrKind + executor prefix should fire recovery (got msg=%q tool=%q)",
+			msg,
+			tool,
+		)
 	}
 }
 

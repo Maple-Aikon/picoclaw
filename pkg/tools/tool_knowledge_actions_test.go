@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"strings"
@@ -63,7 +64,10 @@ func TestToolKnowledge_SaveActionIsRejected(t *testing.T) {
 		t.Errorf("rejection message must name both replace and append; got: %q", res.ForLLM)
 	}
 	if strings.Contains(res.ForLLM, "unknown action") {
-		t.Errorf("rejection must be an explicit migration hint, not a generic unknown-action error; got: %q", res.ForLLM)
+		t.Errorf(
+			"rejection must be an explicit migration hint, not a generic unknown-action error; got: %q",
+			res.ForLLM,
+		)
 	}
 
 	// Nothing may have been written.
@@ -251,15 +255,15 @@ SECOND-BODY-MARKER line two`
 		t.Fatalf("read before append: %v", err)
 	}
 
-	if _, _, err := s.Append("fs.read", second); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, _, err2 := s.Append("fs.read", second); err2 != nil {
+		t.Fatalf("Append: %v", err2)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read after append: %v", err)
 	}
 
-	if !strings.HasPrefix(string(after), string(before)) {
+	if !bytes.HasPrefix(after, before) {
 		t.Errorf("append changed the bytes already on disk\nbefore: %q\nafter:  %q", before, after)
 	}
 	if !strings.Contains(string(after), "FIRST-BODY-MARKER") {

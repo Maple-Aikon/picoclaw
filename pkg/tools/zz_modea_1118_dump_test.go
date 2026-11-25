@@ -1,7 +1,7 @@
 package tools
 
 // zz_modea_1118_dump_test.go — Mode A 2026-11-18: dump the REAL auto-load
-// payload for named entries, so the excerpt-allocation behaviour can be
+// payload for named entries, so the excerpt-allocation behavior can be
 // inspected by hand (which part of each section body survives).
 //
 // READ ONLY.

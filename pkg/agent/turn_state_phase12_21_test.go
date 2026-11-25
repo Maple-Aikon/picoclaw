@@ -32,7 +32,10 @@ func TestRecordPhaseStuckToolAllowedBlockInPhase_Checkpoint_IncrementsGoalProgre
 	enrichedMsg := `called tool "write_file" but only allowed tools are the phase-specific lifecycle tools`
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhaseCheckpoint, "write_file", enrichedMsg)
 	if ts.goalProgressAttemptCount != 1 {
-		t.Fatalf("goalProgressAttemptCount=%d want=1 — IsAllowed block at Checkpoint did NOT increment counter", ts.goalProgressAttemptCount)
+		t.Fatalf(
+			"goalProgressAttemptCount=%d want=1 — IsAllowed block at Checkpoint did NOT increment counter",
+			ts.goalProgressAttemptCount,
+		)
 	}
 	if !strings.Contains(ts.lastPhaseStuckError, "write_file") {
 		t.Errorf("lastPhaseStuckError missing tool name: %q", ts.lastPhaseStuckError)
@@ -48,7 +51,10 @@ func TestRecordPhaseStuckToolAllowedBlockInPhase_Set_IncrementsSetGoalCounter(t 
 	enrichedMsg := `called tool "web_search" but only allowed tools are the phase-specific lifecycle tools`
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhaseSet, "web_search", enrichedMsg)
 	if ts.setGoalAttemptCount != 1 {
-		t.Fatalf("setGoalAttemptCount=%d want=1 — IsAllowed block at Set did NOT increment counter", ts.setGoalAttemptCount)
+		t.Fatalf(
+			"setGoalAttemptCount=%d want=1 — IsAllowed block at Set did NOT increment counter",
+			ts.setGoalAttemptCount,
+		)
 	}
 	// Phase 12.43: enrichedMsg no longer contains phase enum literal.
 }
@@ -60,7 +66,10 @@ func TestRecordPhaseStuckToolAllowedBlockInPhase_Final_IncrementsCompleteGoalCou
 	enrichedMsg := `called tool "read_file" but only allowed tools are the phase-specific lifecycle tools`
 	recordPhaseStuckToolAllowedBlockInPhase(ts, GoalPhaseFinal, "read_file", enrichedMsg)
 	if ts.completeGoalAttemptCount != 1 {
-		t.Fatalf("completeGoalAttemptCount=%d want=1 — IsAllowed block at Final did NOT increment counter", ts.completeGoalAttemptCount)
+		t.Fatalf(
+			"completeGoalAttemptCount=%d want=1 — IsAllowed block at Final did NOT increment counter",
+			ts.completeGoalAttemptCount,
+		)
 	}
 	// Phase 12.43: enrichedMsg no longer contains phase enum literal.
 }
@@ -100,10 +109,21 @@ func TestRecordPhaseStuckToolAllowedBlockInPhase_TwiceTriggersStuckArchiveMessag
 	if ts.goalProgressAttemptCount != 2 {
 		t.Fatalf("goalProgressAttemptCount=%d want=2", ts.goalProgressAttemptCount)
 	}
-	got := computePhaseStuckAbortReasonForPhase(GoalPhaseCheckpoint, ts.setGoalAttemptCount, ts.setGoalArchiveFlag, ts.goalProgressAttemptCount, ts.goalProgressArchiveFlag, ts.completeGoalAttemptCount, ts.completeGoalArchiveFlag)
+	got := computePhaseStuckAbortReasonForPhase(
+		GoalPhaseCheckpoint,
+		ts.setGoalAttemptCount,
+		ts.setGoalArchiveFlag,
+		ts.goalProgressAttemptCount,
+		ts.goalProgressArchiveFlag,
+		ts.completeGoalAttemptCount,
+		ts.completeGoalArchiveFlag,
+	)
 	if got != GoalPhaseCheckpointStuckAbortReason {
-		t.Fatalf("computePhaseStuckAbortReasonForPhase=%q want=%q — 2 IsAllowed blocks at Checkpoint should escalate to stuck-message",
-			got, GoalPhaseCheckpointStuckAbortReason)
+		t.Fatalf(
+			"computePhaseStuckAbortReasonForPhase=%q want=%q — 2 IsAllowed blocks at Checkpoint should escalate to stuck-message",
+			got,
+			GoalPhaseCheckpointStuckAbortReason,
+		)
 	}
 }
 
@@ -114,11 +134,11 @@ func TestRecordPhaseStuckToolAllowedBlockInPhase_TwiceTriggersStuckArchiveMessag
 // reason even when count < 2 (recordPhaseStuckArchive max(1) semantic).
 func TestComputePhaseStuckAbortReasonForPhase_AllPhasesAtThreshold(t *testing.T) {
 	tests := []struct {
-		name       string
-		phase      GoalPhase
+		name            string
+		phase           GoalPhase
 		set, prog, comp int
-		archived   bool // applies to the phase-under-test's own counter
-		wantReason string
+		archived        bool // applies to the phase-under-test's own counter
+		wantReason      string
 	}{
 		{"Set_0", GoalPhaseSet, 0, 0, 0, false, ""},
 		{"Set_1", GoalPhaseSet, 1, 0, 0, false, ""},

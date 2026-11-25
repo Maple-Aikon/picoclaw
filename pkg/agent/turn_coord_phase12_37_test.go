@@ -15,7 +15,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
-
 // TestPhase12_37_GatePreCheckAtOpen_BlocksLifecycleTool wires an agent at
 // GoalPhaseOpen with a registered tool registry. Verifies that when LLM
 // emits `goal_progress` (a CHECKPOINT-only lifecycle tool blocked by

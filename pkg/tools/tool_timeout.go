@@ -7,10 +7,10 @@
 // longer has to `kill -9` picoclaw to recover.
 //
 // Precedence (Q1 final decisions, 2026-07-02):
-//   1. Per-tool override via typed struct field (ToolsConfig.<tool>.TimeoutSeconds)
-//   2. turnCtx deadline (caller-set, e.g. agent loop)
-//   3. ToolsConfig.TimeoutSeconds root default (120s)
-//   4. Fallback 120s when cfg is nil (khi config chưa load)
+//  1. Per-tool override via typed struct field (ToolsConfig.<tool>.TimeoutSeconds)
+//  2. turnCtx deadline (caller-set, e.g. agent loop)
+//  3. ToolsConfig.TimeoutSeconds root default (120s)
+//  4. Fallback 120s when cfg is nil (khi config chưa load)
 //
 // hasTimeout=false chỉ khi root timeout_seconds == 0 → feature off (Q4).
 package tools
@@ -118,7 +118,7 @@ type TimedOutKind string
 
 const (
 	TimedOutDeadlineExceeded TimedOutKind = "deadline_exceeded"
-	TimedOutParentCancelled TimedOutKind = "parent_cancelled"
+	TimedOutParentCancelled  TimedOutKind = "parent_canceled"
 )
 
 // ToolTimeoutStats tracks timeout counts per tool+kind. Storage is a sync.Map

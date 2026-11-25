@@ -214,7 +214,12 @@ func TestGoalPhaseSetHint_IterationHeaderReflectsReq(t *testing.T) {
 			}
 			wantHeader := fmt.Sprintf("Goal phase: SET (iter %d).", expectedIter)
 			if !strings.Contains(hint.Content, wantHeader) {
-				t.Errorf("hint header missing %q in iter=%d build; got:\n%s", wantHeader, tc.iter, hint.Content[:intMinHint(500, len(hint.Content))])
+				t.Errorf(
+					"hint header missing %q in iter=%d build; got:\n%s",
+					wantHeader,
+					tc.iter,
+					hint.Content[:intMinHint(500, len(hint.Content))],
+				)
 			}
 		})
 	}

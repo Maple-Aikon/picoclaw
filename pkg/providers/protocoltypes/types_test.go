@@ -17,6 +17,10 @@ func TestUsageInfoCacheFields(t *testing.T) {
 		CacheReadInputTokens: 75,
 	}
 
+	if u.PromptTokens != 100 || u.CompletionTokens != 50 || u.TotalTokens != 150 {
+		t.Errorf("token counts = %d/%d/%d, want 100/50/150",
+			u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+	}
 	if u.CacheReadInputTokens != 75 {
 		t.Errorf("CacheReadInputTokens = %d, want 75", u.CacheReadInputTokens)
 	}
@@ -54,10 +58,10 @@ func TestUsageInfoCacheFieldsOmitEmpty(t *testing.T) {
 // (the Bedrock path emits both CacheRead + CacheWrite when prompt caching hits).
 func TestUsageInfoCacheFieldsPopulated(t *testing.T) {
 	u := UsageInfo{
-		PromptTokens:         100,
-		CompletionTokens:     50,
-		TotalTokens:          150,
-		CacheReadInputTokens: 75,
+		PromptTokens:          100,
+		CompletionTokens:      50,
+		TotalTokens:           150,
+		CacheReadInputTokens:  75,
 		CacheWriteInputTokens: 25,
 	}
 

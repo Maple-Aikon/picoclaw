@@ -15,7 +15,9 @@ var (
 	// regexNoComma matches missing comma variant: [tool_use: name args: {...}]
 	regexNoComma = regexp.MustCompile(`(?s)\[tool_use:\s*([a-zA-Z0-9_.-]+)\s*args:\s*(\{.*?\})\]`)
 	// regexMarkdown matches codeblock-wrapped variant: ```json [tool_use: name, args: {...}] ```
-	regexMarkdown = regexp.MustCompile("(?s)```(?:json|text)?\\s*\\[tool_use:\\s*([a-zA-Z0-9_.-]+)\\s*,?\\s*args:\\s*(\\{.*?\\})\\]\\s*```")
+	regexMarkdown = regexp.MustCompile(
+		"(?s)```(?:json|text)?\\s*\\[tool_use:\\s*([a-zA-Z0-9_.-]+)\\s*,?\\s*args:\\s*(\\{.*?\\})\\]\\s*```",
+	)
 )
 
 // ExtractedPseudoToolCall represents a tool call parsed from raw assistant text
@@ -66,7 +68,7 @@ func ExtractPseudoToolCalls(content string) []ExtractedPseudoToolCall {
 
 // ConvertExtractedToToolCalls turns extracted pseudo-calls into providers.ToolCall structs
 func ConvertExtractedToToolCalls(extracted []ExtractedPseudoToolCall) []providers.ToolCall {
-	var toolCalls []providers.ToolCall
+	toolCalls := make([]providers.ToolCall, 0, len(extracted))
 	for i, ec := range extracted {
 		argsBytes, _ := json.Marshal(ec.Arguments)
 		toolCalls = append(toolCalls, providers.ToolCall{

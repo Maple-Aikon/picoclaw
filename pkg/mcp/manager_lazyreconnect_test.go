@@ -177,6 +177,9 @@ func TestR8c_LazyReconnectUsesAnIndependentContext(t *testing.T) {
 		cfg config.MCPServerConfig,
 	) (*ServerConnection, error) {
 		mu.Lock()
+		//nolint:fatcontext // the handshake ctx is captured ON PURPOSE: the test must
+		// observe it after this literal returns, to prove it was not canceled with
+		// the caller ctx. That is exactly the property under test.
 		handshakeCtx = ctx
 		mu.Unlock()
 
@@ -535,7 +538,7 @@ func TestR12_ProcessWaiterOutlivesAnyShortTimeout(t *testing.T) {
 	// A bounded wait on a LIVE process must still report "no result".
 	shortBudget := 100 * time.Millisecond
 	if _, ok := ict.waitResult(shortBudget); ok {
-		t.Fatal("a bounded wait on a LIVE process returned a result - the timeout is not honoured")
+		t.Fatal("a bounded wait on a LIVE process returned a result - the timeout is not honored")
 	}
 
 	// Kill the process; the Manager's waiter must observe the exit.
@@ -557,7 +560,7 @@ func TestR12_ProcessWaiterOutlivesAnyShortTimeout(t *testing.T) {
 // R13 - the exit result is available to concurrent waiters.
 //
 // The old shape was a buffered channel (capacity 1) that every reader put
-// the value back into. It WORKS: the channel serialises the hand-off, so
+// the value back into. It WORKS: the channel serializes the hand-off, so
 // N readers take turns and none of them deadlocks.
 //
 // This test was written when I believed that shape could deadlock. That

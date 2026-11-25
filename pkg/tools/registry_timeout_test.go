@@ -5,6 +5,7 @@
 //
 // All tests use small durations to keep CI fast; semantics are identical to the
 // production 120s default — only the numbers shrink.
+
 package tools
 
 import (
@@ -22,10 +23,10 @@ import (
 // first. Used to simulate a hung native tool that ignores cancellation (worst
 // case — orphan goroutine after timeout fires).
 type blockingTool struct {
-	name         string
+	name          string
 	blockDuration time.Duration
-	calls        atomic.Int64
-	lastCtx      atomic.Value // context.Context
+	calls         atomic.Int64
+	lastCtx       atomic.Value // context.Context
 }
 
 func (t *blockingTool) Name() string               { return t.name }
@@ -94,7 +95,7 @@ func TestExecuteWithContext_NativeToolTimeout(t *testing.T) {
 	}
 	if !strings.Contains(result.ForLLM, "timed out") &&
 		!strings.Contains(result.ForLLM, "exceeded timeout") &&
-		!strings.Contains(result.ForLLM, "cancelled before") {
+		!strings.Contains(result.ForLLM, "canceled before") {
 		t.Fatalf("expected timeout message, got: %q", result.ForLLM)
 	}
 	// 1s deadline + small overhead for goroutine scheduling — 2s upper bound.
@@ -114,7 +115,7 @@ func TestExecuteWithContext_PerToolOverride(t *testing.T) {
 	reg.Register(blocker)
 
 	cfg := &config.ToolsConfig{
-		TimeoutSeconds: 60,                                  // generous root default
+		TimeoutSeconds: 60,                                   // generous root default
 		I2C:            config.ToolConfig{TimeoutSeconds: 1}, // 1s override (fast for CI)
 	}
 	reg.SetToolsConfig(cfg)
@@ -257,13 +258,13 @@ func TestResolveToolTimeout_Precedence(t *testing.T) {
 			t.Fatalf("expected (%ds,true) fallback, got (%v,%v)", DefaultToolTimeoutSeconds, dur, ok)
 		}
 	})
-	t.Run("caller deadline honoured over root", func(t *testing.T) {
+	t.Run("caller deadline honored over root", func(t *testing.T) {
 		cfg := &config.ToolsConfig{TimeoutSeconds: 999}
 		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 		defer cancel()
 		dur, ok := resolveToolTimeout(ctx, "read_file", cfg)
 		if !ok || dur > 300*time.Millisecond {
-			t.Fatalf("expected ctx deadline honoured (<300ms), got (%v,%v)", dur, ok)
+			t.Fatalf("expected ctx deadline honored (<300ms), got (%v,%v)", dur, ok)
 		}
 	})
 }

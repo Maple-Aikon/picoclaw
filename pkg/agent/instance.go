@@ -28,7 +28,7 @@ type AgentInstance struct {
 	Workspace                 string
 	MaxIterations             int
 	MaxIterationsCap          int // Phase 10.1: absolute ceiling; goal_progress can self-extend iterationCap up to this value (was removed Phase 10, restored for goal mechanism).
-	MaxReplayAttempts         int   // Cap for AfterLLM hook replay retries within a single iteration; 0 = use default (5). Set to 1 to disable replay.
+	MaxReplayAttempts         int // Cap for AfterLLM hook replay retries within a single iteration; 0 = use default (5). Set to 1 to disable replay.
 	MaxTokens                 int
 	Temperature               float64
 	ThinkingLevel             ThinkingLevel

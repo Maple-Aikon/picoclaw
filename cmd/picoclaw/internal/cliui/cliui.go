@@ -1,4 +1,4 @@
-// Package cliui renders human-oriented CLI output: bordered panels and columns
+// Package cliui — renders human-oriented CLI output: bordered panels and columns
 // on wide interactive terminals. Layout (boxes/columns) is independent of ANSI
 // color: use --no-color or NO_COLOR to disable colors only; narrow or non-TTY
 // stdout falls back to plain line-oriented output.

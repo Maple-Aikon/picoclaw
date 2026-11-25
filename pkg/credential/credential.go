@@ -1,4 +1,4 @@
-// Package credential resolves API credential values for model_list entries.
+// Package credential — resolves API credential values for model_list entries.
 //
 // An API key is a form of authorization credential. This package centralizes
 // how raw credential strings—plaintext or file references—are resolved into

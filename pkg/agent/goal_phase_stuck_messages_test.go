@@ -11,7 +11,9 @@ import (
 // Phase 12.43 — assertNoPhaseClaim helper.
 // Per Phase 12.40 / 12.40.1 / 12.43 invariant: no phase claims in LLM-visible text.
 // Q11-A: 10 phrases → 3 patterns (skip-message variants + 2 stuck-message patterns).
-var phaseClaimRegex = regexp.MustCompile(`(?i)\b(at checkpoint|at final phase|open phase|current phase is set|Phase 12.35 gate pre-check at|Goal-(Set|Checkpoint|Final) phase stuck|the (Set|Checkpoint|Final) phase only allows)\b`)
+var phaseClaimRegex = regexp.MustCompile(
+	`(?i)\b(at checkpoint|at final phase|open phase|current phase is set|Phase 12.35 gate pre-check at|Goal-(Set|Checkpoint|Final) phase stuck|the (Set|Checkpoint|Final) phase only allows)\b`,
+)
 
 func assertNoPhaseClaim(t *testing.T, msg string) {
 	t.Helper()
@@ -112,25 +114,105 @@ func TestRecordPhaseStuckToolFail(t *testing.T) {
 // recordPhaseStuckArchive), the count stays a real per-failure count.
 func TestComputePhaseStuckAbortReason_RequiresPhaseAndCounter(t *testing.T) {
 	cases := []struct {
-		name              string
-		phase             GoalPhase
-		setGoalCount      int
-		setGoalArchived   bool
-		progressCount     int
-		progressArchived  bool
-		completeCount     int
-		completeArchived  bool
-		want              string
+		name             string
+		phase            GoalPhase
+		setGoalCount     int
+		setGoalArchived  bool
+		progressCount    int
+		progressArchived bool
+		completeCount    int
+		completeArchived bool
+		want             string
 	}{
 		{"Set phase + set_goal fail 1x → no", GoalPhaseSet, 1, false, 0, false, 0, false, ""},
-		{"Set phase + set_goal fail 2x → yes", GoalPhaseSet, 2, false, 0, false, 0, false, GoalPhaseSetStuckAbortReason},
-		{"Set phase + set_goal fail 3x → yes", GoalPhaseSet, 3, false, 0, false, 0, false, GoalPhaseSetStuckAbortReason},
-		{"Set phase + archived after 1 fail → yes (flag)", GoalPhaseSet, 1, true, 0, false, 0, false, GoalPhaseSetStuckAbortReason},
-		{"Set phase + archived with 0 fails → yes (flag only)", GoalPhaseSet, 0, true, 0, false, 0, false, GoalPhaseSetStuckAbortReason},
-		{"Checkpoint + goal_progress fail 2x → yes", GoalPhaseCheckpoint, 0, false, 2, false, 0, false, GoalPhaseCheckpointStuckAbortReason},
-		{"Checkpoint + goal_progress archived after 1 fail → yes", GoalPhaseCheckpoint, 0, false, 1, true, 0, false, GoalPhaseCheckpointStuckAbortReason},
-		{"Final + complete_goal fail 2x → yes", GoalPhaseFinal, 0, false, 0, false, 2, false, GoalPhaseFinalStuckAbortReason},
-		{"Final + complete_goal archived after 1 fail → yes", GoalPhaseFinal, 0, false, 0, false, 1, true, GoalPhaseFinalStuckAbortReason},
+		{
+			"Set phase + set_goal fail 2x → yes",
+			GoalPhaseSet,
+			2,
+			false,
+			0,
+			false,
+			0,
+			false,
+			GoalPhaseSetStuckAbortReason,
+		},
+		{
+			"Set phase + set_goal fail 3x → yes",
+			GoalPhaseSet,
+			3,
+			false,
+			0,
+			false,
+			0,
+			false,
+			GoalPhaseSetStuckAbortReason,
+		},
+		{
+			"Set phase + archived after 1 fail → yes (flag)",
+			GoalPhaseSet,
+			1,
+			true,
+			0,
+			false,
+			0,
+			false,
+			GoalPhaseSetStuckAbortReason,
+		},
+		{
+			"Set phase + archived with 0 fails → yes (flag only)",
+			GoalPhaseSet,
+			0,
+			true,
+			0,
+			false,
+			0,
+			false,
+			GoalPhaseSetStuckAbortReason,
+		},
+		{
+			"Checkpoint + goal_progress fail 2x → yes",
+			GoalPhaseCheckpoint,
+			0,
+			false,
+			2,
+			false,
+			0,
+			false,
+			GoalPhaseCheckpointStuckAbortReason,
+		},
+		{
+			"Checkpoint + goal_progress archived after 1 fail → yes",
+			GoalPhaseCheckpoint,
+			0,
+			false,
+			1,
+			true,
+			0,
+			false,
+			GoalPhaseCheckpointStuckAbortReason,
+		},
+		{
+			"Final + complete_goal fail 2x → yes",
+			GoalPhaseFinal,
+			0,
+			false,
+			0,
+			false,
+			2,
+			false,
+			GoalPhaseFinalStuckAbortReason,
+		},
+		{
+			"Final + complete_goal archived after 1 fail → yes",
+			GoalPhaseFinal,
+			0,
+			false,
+			0,
+			false,
+			1,
+			true,
+			GoalPhaseFinalStuckAbortReason,
+		},
 		{"Open phase + set_goal archived → no (wrong phase)", GoalPhaseOpen, 0, true, 0, false, 0, false, ""},
 		{"Checkpoint + set_goal archived → no (wrong tool)", GoalPhaseCheckpoint, 0, true, 0, false, 0, false, ""},
 	}

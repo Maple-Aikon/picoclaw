@@ -215,7 +215,7 @@ func publish[T any](
 			logger.InfoCF("bus",
 				fmt.Sprintf("bus_publish_ok stream=%s ch_cap=%d ch_len=%d", policy.stream, cap(ch), len(ch)),
 				map[string]any{
-					"stream":          policy.stream,
+					"stream":           policy.stream,
 					"channel_capacity": cap(ch),
 					"channel_depth":    len(ch),
 				},

@@ -47,8 +47,8 @@ func TestStrict_MustBeKnown_PanicsOnUnknown(t *testing.T) {
 	cases := []string{
 		"bogus",
 		"set ",
-		" open", // leading whitespace — currently stripped by callers
-		"Set",   // case mismatch — strictly different token
+		" open",       // leading whitespace — currently stripped by callers
+		"Set",         // case mismatch — strictly different token
 		"lock_legacy", // old GoalPhaseLock raw (must NEVER reach here per F4)
 	}
 	for _, c := range cases {

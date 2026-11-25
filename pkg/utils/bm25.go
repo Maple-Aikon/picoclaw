@@ -1,4 +1,4 @@
-// Package utils provides shared, reusable algorithms.
+// Package utils — provides shared, reusable algorithms.
 // This file implements a generic BM25 search engine.
 //
 // Usage:

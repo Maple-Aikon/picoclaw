@@ -18,10 +18,10 @@ import "strings"
 // (r.phase == "post_final" → false) is preserved verbatim per R4-F2.
 
 const (
-	lifeSetGoal       = "set_goal"
-	lifeGoalProgress  = "goal_progress"
-	lifeViewGoal      = "view_goal"
-	lifeCompleteGoal  = "complete_goal"
+	lifeSetGoal      = "set_goal"
+	lifeGoalProgress = "goal_progress"
+	lifeViewGoal     = "view_goal"
+	lifeCompleteGoal = "complete_goal"
 )
 
 // lifecycleToolNames is the canonical 4-tool set — single source for

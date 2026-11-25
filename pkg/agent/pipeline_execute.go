@@ -19,7 +19,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
-	"github.com/sipeed/picoclaw/pkg/tools/shared"
+	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -111,6 +111,7 @@ func inferSkillNamesFromToolCall(ts *turnState, toolName string, toolArgs map[st
 // Returns ToolControl indicating what the coordinator should do next:
 //   - ToolControlContinue: all tool results handled, pendingMessages or steering exists, continue turn
 //   - ToolControlBreak: tool loop exited, proceed to coordinator's hardAbort/finalContent/finalize
+//
 // gatePreCheckDeny implements the Phase 12.35 gate pre-check: when the LLM
 // calls a tool the runtime allowlist blocks (phase/lifecycle gate), synthesize
 // a typed-ErrInvalidInput ToolResult + tool message + feedback so the recovery
@@ -173,7 +174,12 @@ func (p *Pipeline) gatePreCheckDeny(
 			utils.FormatToolFeedbackMessage(
 				toolName,
 				toolFeedbackCardExplanationForRender(al.cfg, ts, exec.response, tc, *messages),
-				toolFeedbackArgsPreviewWithOptions(tc.Arguments, al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(), al.cfg.Agents.Defaults.ToolFeedback.PrettyPrint, al.cfg.Agents.Defaults.ToolFeedback.DisableEscapeHTML),
+				toolFeedbackArgsPreviewWithOptions(
+					tc.Arguments,
+					al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(),
+					al.cfg.Agents.Defaults.ToolFeedback.PrettyPrint,
+					al.cfg.Agents.Defaults.ToolFeedback.DisableEscapeHTML,
+				),
 				toolFeedbackIterContext(ts),
 				"",
 			),

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 )
+
 // TestPromptCacheStability_OpenPhase_CacheKeyReuse verifies the OPEN-phase
 // cache slot is correctly keyed after Phase 12.72 Fix #2. Calling
 // BuildSystemPrompt twice with the same (phase=OPEN, iter, cap, max-cap)
@@ -50,7 +51,11 @@ func TestPromptCacheStability_OpenPhase_CacheKeyReuse(t *testing.T) {
 	h2 := fmt.Sprintf("%x", sha256.Sum256([]byte(p2)))
 
 	if h1 != h2 {
-		t.Errorf("Phase 12.72 Fix #2: OPEN system prompt must be constant across iter (cache HIT); hash1=%s hash2=%s — iter dimension leaked back into system prompt.", h1, h2)
+		t.Errorf(
+			"Phase 12.72 Fix #2: OPEN system prompt must be constant across iter (cache HIT); hash1=%s hash2=%s — iter dimension leaked back into system prompt.",
+			h1,
+			h2,
+		)
 	}
 
 	// Phase 12.72 Fix #2: OPEN system prompt is now constant across iter
@@ -67,7 +72,11 @@ func TestPromptCacheStability_OpenPhase_CacheKeyReuse(t *testing.T) {
 	// header accidentally re-leaking into the system prompt.
 	h3 := fmt.Sprintf("%x", sha256.Sum256([]byte(p3)))
 	if h1 != h3 {
-		t.Errorf("Phase 12.72 Fix #2: OPEN system prompt must remain constant across cap change too (constant body, no dynamic header); hash1=%s hash3=%s — cap change leaked into system prompt.", h1, h3)
+		t.Errorf(
+			"Phase 12.72 Fix #2: OPEN system prompt must remain constant across cap change too (constant body, no dynamic header); hash1=%s hash3=%s — cap change leaked into system prompt.",
+			h1,
+			h3,
+		)
 	}
 
 	// maxCap change → snapshot path → also constant.
@@ -75,7 +84,11 @@ func TestPromptCacheStability_OpenPhase_CacheKeyReuse(t *testing.T) {
 		string(GoalPhaseOpen), false, 3, "", 25, 300)
 	h4 := fmt.Sprintf("%x", sha256.Sum256([]byte(p4)))
 	if h1 != h4 {
-		t.Errorf("Phase 12.72 Fix #2: OPEN system prompt must remain constant across maxCap change; hash1=%s hash4=%s — maxCap leaked into system prompt.", h1, h4)
+		t.Errorf(
+			"Phase 12.72 Fix #2: OPEN system prompt must remain constant across maxCap change; hash1=%s hash4=%s — maxCap leaked into system prompt.",
+			h1,
+			h4,
+		)
 	}
 }
 
@@ -106,6 +119,10 @@ func TestPromptCacheStability_DynamicContentExcluded(t *testing.T) {
 	h2 := fmt.Sprintf("%x", sha256.Sum256([]byte(p2)))
 
 	if h1 != h2 {
-		t.Errorf("BuildSystemPrompt output drifted between identical back-to-back callshash1=%shash2=%s— dynamic content (time/runtime) is leaking into the system prompt. Move it to user[0] turn-tail (wrapDynamicContext).", h1, h2)
+		t.Errorf(
+			"BuildSystemPrompt output drifted between identical back-to-back callshash1=%shash2=%s— dynamic content (time/runtime) is leaking into the system prompt. Move it to user[0] turn-tail (wrapDynamicContext).",
+			h1,
+			h2,
+		)
 	}
 }

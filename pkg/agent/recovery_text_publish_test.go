@@ -122,7 +122,10 @@ func TestTextOnlyPublishedBeforeOpenNextIterRecovery(t *testing.T) {
 	provider := &textOnlyPublishProvider{responses: []*providers.LLMResponse{
 		{ToolCalls: []providers.ToolCall{textOnlySetGoalToolCall()}, FinishReason: "tool_calls"},
 		{Content: "Open words: continuing with tools next.", FinishReason: "stop"},
-		{ToolCalls: []providers.ToolCall{textOnlyCompleteGoalToolCall("open-publish done")}, FinishReason: "tool_calls"},
+		{
+			ToolCalls:    []providers.ToolCall{textOnlyCompleteGoalToolCall("open-publish done")},
+			FinishReason: "tool_calls",
+		},
 		{Content: "final", FinishReason: "stop"},
 	}}
 	cfg := config.DefaultConfig()
@@ -295,7 +298,7 @@ func TestTextOnlyPublishedOnRetryAttemptInsideHandleGoalRecovery(t *testing.T) {
 	// Seed the goal AFTER SetupTurn (archive-on-start already ran).
 	goalStore := goal.NewStore(ws)
 	now := time.Now().UTC()
-	if err := goalStore.Write("session-1", &goal.Goal{
+	if err2 := goalStore.Write("session-1", &goal.Goal{
 		Name: "text-only-publish-goal",
 		Description: goal.Description{
 			Objective:       "Verify retry-attempt text publish",
@@ -304,8 +307,8 @@ func TestTextOnlyPublishedOnRetryAttemptInsideHandleGoalRecovery(t *testing.T) {
 		Status:    goal.StatusActive,
 		CreatedAt: now,
 		UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("seed goal: %v", err)
+	}); err2 != nil {
+		t.Fatalf("seed goal: %v", err2)
 	}
 
 	// Attempt 0 uses the caller's response (text-only).

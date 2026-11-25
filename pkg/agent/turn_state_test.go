@@ -139,7 +139,6 @@ func TestTurnState_RemainingIterations_ClampedToZero(t *testing.T) {
 	}
 }
 
-
 // --- Phase 10.1: ExtendIterationCap tests ---
 
 func TestTurnState_ExtendIterationCap_Basic(t *testing.T) {

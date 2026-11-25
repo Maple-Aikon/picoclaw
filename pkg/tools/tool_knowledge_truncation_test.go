@@ -78,8 +78,8 @@ func TestKnowledgeStore_Save_BodySurvivesRoundTrip(t *testing.T) {
 ` + strings.Repeat("filler line for the cap. ", 150) + `
 ` + marker
 
-	if _, _, err := s.Replace("web.fetch", body); err != nil {
-		t.Fatalf("Save: %v", err)
+	if _, _, err2 := s.Replace("web.fetch", body); err2 != nil {
+		t.Fatalf("Save: %v", err2)
 	}
 	got, err := s.Read("web.fetch")
 	if err != nil {

@@ -151,11 +151,14 @@ func TestTruncateRunes_AllMnStripped(t *testing.T) {
 		b.WriteString("x")
 	}
 	b.WriteString("e\u0301\u0301\u0301") // base + 3 combining marks = 4 runes
-	s := b.String()                     // 1001 runes
+	s := b.String()                      // 1001 runes
 	got := truncateRunes(s, 1000)
 	// 1000 runes cut → 997 x + e + 2 marks → both marks stripped → 998 runes.
 	if utf8.RuneCountInString(got) != 998 {
-		t.Fatalf("expected 998 runes (997 x + base e after stripping both trailing marks), got %d", utf8.RuneCountInString(got))
+		t.Fatalf(
+			"expected 998 runes (997 x + base e after stripping both trailing marks), got %d",
+			utf8.RuneCountInString(got),
+		)
 	}
 	last, _ := utf8.DecodeLastRuneInString(got)
 	if unicode.Is(unicode.Mn, last) {

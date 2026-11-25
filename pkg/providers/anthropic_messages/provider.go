@@ -73,7 +73,11 @@ func NewProviderWithTimeout(apiKey, apiBase, userAgent string, timeoutSeconds in
 // NewProviderWithTimeoutAndDefaultModel creates a provider with custom request
 // timeout and a provider-specific default model. When defaultModel is empty,
 // GetDefaultModel falls back to the package-level default.
-func NewProviderWithTimeoutAndDefaultModel(apiKey, apiBase, userAgent string, timeoutSeconds int, defaultModel string) *Provider {
+func NewProviderWithTimeoutAndDefaultModel(
+	apiKey, apiBase, userAgent string,
+	timeoutSeconds int,
+	defaultModel string,
+) *Provider {
 	p := NewProviderWithTimeout(apiKey, apiBase, userAgent, timeoutSeconds)
 	p.defaultModel = defaultModel
 	return p
@@ -104,7 +108,6 @@ func (p *Provider) Chat(
 			requestBody[key] = value
 		}
 	}
-
 
 	// Serialize to JSON
 	jsonBody, err := json.Marshal(requestBody)
@@ -442,8 +445,8 @@ type contentBlock struct {
 }
 
 type usageInfo struct {
-	InputTokens              int64 `json:"input_tokens"`
-	OutputTokens             int64 `json:"output_tokens"`
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
 	// Tier 1.1: surface provider cache telemetry so callers can compute
 	// cache_read/input ratio (T7.3 hit-rate gate). MiniMax-M3 emits both
 	// fields on every response; other Anthropic-compatible providers

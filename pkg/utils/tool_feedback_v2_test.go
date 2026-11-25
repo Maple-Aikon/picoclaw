@@ -33,12 +33,12 @@ reading plan
 	if got != want {
 		t.Errorf(
 			`mismatch
-` +
-			`got:  %q
-` +
-			`want: %q
-` +
-			`diff: %s`,
+`+
+				`got:  %q
+`+
+				`want: %q
+`+
+				`diff: %s`,
 			got, want, diffStrings(got, want),
 		)
 	}
@@ -63,12 +63,12 @@ searching docs
 	if got != want {
 		t.Errorf(
 			`mismatch
-` +
-			`got:  %q
-` +
-			`want: %q
-` +
-			`diff: %s`,
+`+
+				`got:  %q
+`+
+				`want: %q
+`+
+				`diff: %s`,
 			got, want, diffStrings(got, want),
 		)
 	}
@@ -95,12 +95,12 @@ running test
 	if got != want {
 		t.Errorf(
 			`mismatch
-` +
-			`got:  %q
-` +
-			`want: %q
-` +
-			`diff: %s`,
+`+
+				`got:  %q
+`+
+				`want: %q
+`+
+				`diff: %s`,
 			got, want, diffStrings(got, want),
 		)
 	}
@@ -127,12 +127,12 @@ recalling prior decisions
 	if got != want {
 		t.Errorf(
 			`mismatch
-` +
-			`got:  %q
-` +
-			`want: %q
-` +
-			`diff: %s`,
+`+
+				`got:  %q
+`+
+				`want: %q
+`+
+				`diff: %s`,
 			got, want, diffStrings(got, want),
 		)
 	}
@@ -153,12 +153,12 @@ func TestFormatToolFeedbackMessage_V2_PendingExplanationOnlyToolName(t *testing.
 	if got != want {
 		t.Errorf(
 			`mismatch
-` +
-			`got:  %q
-` +
-			`want: %q
-` +
-			`diff: %s`,
+`+
+				`got:  %q
+`+
+				`want: %q
+`+
+				`diff: %s`,
 			got, want, diffStrings(got, want),
 		)
 	}
@@ -172,11 +172,11 @@ func TestFormatToolFeedbackMessage_V2_PendingExplanationOnlyToolName(t *testing.
 
 func diffStrings(got, want string) string {
 	var b strings.Builder
-	min := len(got)
-	if len(want) < min {
-		min = len(want)
+	minimum2 := len(got)
+	if len(want) < minimum2 {
+		minimum2 = len(want)
 	}
-	for i := 0; i < min; i++ {
+	for i := 0; i < minimum2; i++ {
 		if got[i] != want[i] {
 			b.WriteString("first diff at byte ")
 			b.WriteString(strconv.Itoa(i))

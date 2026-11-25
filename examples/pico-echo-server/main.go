@@ -1,4 +1,4 @@
-// pico-echo-server is a minimal Pico Protocol WebSocket server for testing
+// Package main — pico-echo-server is a minimal Pico Protocol WebSocket server for testing
 // the pico_client channel. It accepts connections, prints received messages
 // to stdout, and forwards stdin lines as message.create to all connected clients.
 //

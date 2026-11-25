@@ -24,8 +24,8 @@ func TestResponseParser_AntiprimingRegexVariants(t *testing.T) {
 			expectedArg:  "ls -la",
 		},
 		{
-			name: "Markdown codeblock wrapper",
-			content: "I will call complete_goal\n```json\n[tool_use: complete_goal, args: {\"summary\":\"all done\"}]\n```",
+			name:         "Markdown codeblock wrapper",
+			content:      "I will call complete_goal\n```json\n[tool_use: complete_goal, args: {\"summary\":\"all done\"}]\n```",
 			expectedName: "complete_goal",
 			expectedArg:  "all done",
 		},

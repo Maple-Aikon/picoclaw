@@ -130,6 +130,7 @@ func TestToolFeedbackIterContext(t *testing.T) {
 		})
 	}
 }
+
 func TestToolFeedbackCardExplanationForRender(t *testing.T) {
 	// Build a ToolCall whose ExtraContent.ToolFeedbackExplanation is set,
 	// so when the helper does NOT suppress, it should return that text.
@@ -221,9 +222,9 @@ func TestToolFeedbackCardExplanationForRender_GoalObjectiveFallback(t *testing.T
 		sessionKey := "sk_v1_fallback_goal"
 		seedActiveGoalForFeedback(t, ws, sessionKey, "Deploy v0.5 to production")
 		ts := &turnState{
-			workspace:   ws,
-			sessionKey:  sessionKey,
-			agent:       &AgentInstance{Workspace: ws},
+			workspace:  ws,
+			sessionKey: sessionKey,
+			agent:      &AgentInstance{Workspace: ws},
 		}
 		// tc has no ExtraContent, response is nil, messages is empty.
 		tc := providers.ToolCall{Name: "exec", Arguments: map[string]any{"cmd": "ls"}}
@@ -239,9 +240,9 @@ func TestToolFeedbackCardExplanationForRender_GoalObjectiveFallback(t *testing.T
 		sessionKey := "sk_v1_fallback_user_wins"
 		seedActiveGoalForFeedback(t, ws, sessionKey, "Upgrade runtime")
 		ts := &turnState{
-			workspace:   ws,
-			sessionKey:  sessionKey,
-			agent:       &AgentInstance{Workspace: ws},
+			workspace:  ws,
+			sessionKey: sessionKey,
+			agent:      &AgentInstance{Workspace: ws},
 		}
 		tc := providers.ToolCall{Name: "exec", Arguments: map[string]any{}}
 		messages := []providers.Message{
@@ -260,9 +261,9 @@ func TestToolFeedbackCardExplanationForRender_GoalObjectiveFallback(t *testing.T
 	t.Run("no active goal + useful user message -> user message wins (ad-hoc task)", func(t *testing.T) {
 		ws := t.TempDir()
 		ts := &turnState{
-			workspace:   ws,
-			sessionKey:  "sk_v1_no_goal_user_msg",
-			agent:       &AgentInstance{Workspace: ws},
+			workspace:  ws,
+			sessionKey: "sk_v1_no_goal_user_msg",
+			agent:      &AgentInstance{Workspace: ws},
 		}
 		tc := providers.ToolCall{Name: "exec", Arguments: map[string]any{}}
 		messages := []providers.Message{
@@ -282,9 +283,9 @@ func TestToolFeedbackCardExplanationForRender_GoalObjectiveFallback(t *testing.T
 		sessionKey := "sk_v1_fallback_tc_wins"
 		seedActiveGoalForFeedback(t, ws, sessionKey, "Refactor the registry")
 		ts := &turnState{
-			workspace:   ws,
-			sessionKey:  sessionKey,
-			agent:       &AgentInstance{Workspace: ws},
+			workspace:  ws,
+			sessionKey: sessionKey,
+			agent:      &AgentInstance{Workspace: ws},
 		}
 		tc := providers.ToolCall{
 			ExtraContent: &providers.ExtraContent{
@@ -303,9 +304,9 @@ func TestToolFeedbackCardExplanationForRender_GoalObjectiveFallback(t *testing.T
 		longObjective := strings.Repeat("a", 250)
 		seedActiveGoalForFeedback(t, ws, sessionKey, longObjective)
 		ts := &turnState{
-			workspace:   ws,
-			sessionKey:  sessionKey,
-			agent:       &AgentInstance{Workspace: ws},
+			workspace:  ws,
+			sessionKey: sessionKey,
+			agent:      &AgentInstance{Workspace: ws},
 		}
 		tc := providers.ToolCall{Name: "exec", Arguments: map[string]any{}}
 		got := toolFeedbackCardExplanationForRender(cfg, ts, nil, tc, nil)
@@ -327,9 +328,9 @@ func TestToolFeedbackCardExplanationForRender_GoalObjectiveFallback(t *testing.T
 		sessionKey := "sk_v1_fallback_completed"
 		seedGoalForFeedback(t, ws, sessionKey, "Done task", goal.StatusCompleted)
 		ts := &turnState{
-			workspace:   ws,
-			sessionKey:  sessionKey,
-			agent:       &AgentInstance{Workspace: ws},
+			workspace:  ws,
+			sessionKey: sessionKey,
+			agent:      &AgentInstance{Workspace: ws},
 		}
 		tc := providers.ToolCall{Name: "exec", Arguments: map[string]any{}}
 		got := toolFeedbackCardExplanationForRender(cfg, ts, nil, tc, nil)
@@ -341,9 +342,9 @@ func TestToolFeedbackCardExplanationForRender_GoalObjectiveFallback(t *testing.T
 	t.Run("no goal file -> empty", func(t *testing.T) {
 		ws := t.TempDir()
 		ts := &turnState{
-			workspace:   ws,
-			sessionKey:  "sk_v1_no_goal",
-			agent:       &AgentInstance{Workspace: ws},
+			workspace:  ws,
+			sessionKey: "sk_v1_no_goal",
+			agent:      &AgentInstance{Workspace: ws},
 		}
 		tc := providers.ToolCall{Name: "exec", Arguments: map[string]any{}}
 		got := toolFeedbackCardExplanationForRender(cfg, ts, nil, tc, nil)

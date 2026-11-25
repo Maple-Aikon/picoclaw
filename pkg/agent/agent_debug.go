@@ -242,7 +242,13 @@ func AgentDebugLLMCall(turnID, sessionKey string, iter int, phase GoalPhase, too
 // cache_creation. The cache_* fields are required for the T7.3 cache
 // hit-rate gate (Tier 1.1) — production MiniMax-M3 always populates
 // them; nil usage defensively skips (rare provider-degenerate path).
-func AgentDebugLLMResponse(turnID, sessionKey string, iter int, phase GoalPhase, usage *providers.UsageInfo, toolSummaries []AgentDebugToolCall) {
+func AgentDebugLLMResponse(
+	turnID, sessionKey string,
+	iter int,
+	phase GoalPhase,
+	usage *providers.UsageInfo,
+	toolSummaries []AgentDebugToolCall,
+) {
 	if !agentDebugEnabled.Load() {
 		return
 	}
@@ -285,23 +291,38 @@ type AgentDebugToolCall struct {
 
 // AgentDebugToolExec logs a tool execution start. Called right before
 // the dispatcher invokes the tool.
-func AgentDebugToolExec(turnID, sessionKey string, iter int, phase GoalPhase, tool string, args map[string]any, attempt int) {
+func AgentDebugToolExec(
+	turnID, sessionKey string,
+	iter int,
+	phase GoalPhase,
+	tool string,
+	args map[string]any,
+	attempt int,
+) {
 	if !agentDebugEnabled.Load() {
 		return
 	}
 	agentDebugf("tool_exec", map[string]any{
-		"turn_id":     turnID,
-		"session_key": sessionKey,
-		"iter":        iter,
-		"phase":       string(phase),
-		"tool":        tool,
-		"attempt":     attempt,
+		"turn_id":      turnID,
+		"session_key":  sessionKey,
+		"iter":         iter,
+		"phase":        string(phase),
+		"tool":         tool,
+		"attempt":      attempt,
 		"args_summary": summarizeArgs(args),
 	})
 }
 
 // AgentDebugToolExecEnd logs a tool execution result.
-func AgentDebugToolExecEnd(turnID, sessionKey string, iter int, phase GoalPhase, tool string, isError bool, forLLMLen, durationMs int, attempt int) {
+func AgentDebugToolExecEnd(
+	turnID, sessionKey string,
+	iter int,
+	phase GoalPhase,
+	tool string,
+	isError bool,
+	forLLMLen, durationMs int,
+	attempt int,
+) {
 	if !agentDebugEnabled.Load() {
 		return
 	}

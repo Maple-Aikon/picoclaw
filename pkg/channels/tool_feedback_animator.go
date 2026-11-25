@@ -226,12 +226,16 @@ func (a *ToolFeedbackAnimator) run(chatID string, entry *toolFeedbackAnimationSt
 			cancel()
 			if err != nil {
 				if errors.Is(err, ErrRateLimit) {
-					logger.WarnCF("channels", "tool feedback animation rate limited; stopping animation", map[string]any{
-						"chat_id":     chatID,
-						"message_id":  entry.messageID,
-						"retry_after": RateLimitRetryAfter(err).String(),
-						"error":       err.Error(),
-					})
+					logger.WarnCF(
+						"channels",
+						"tool feedback animation rate limited; stopping animation",
+						map[string]any{
+							"chat_id":     chatID,
+							"message_id":  entry.messageID,
+							"retry_after": RateLimitRetryAfter(err).String(),
+							"error":       err.Error(),
+						},
+					)
 				} else {
 					logger.WarnCF("channels", "tool feedback animation edit failed; stopping animation", map[string]any{
 						"chat_id":    chatID,

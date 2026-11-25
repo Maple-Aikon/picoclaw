@@ -7,6 +7,7 @@
 //
 // Item B: applyFallbackForEmptyResponse reads the goal store ONCE
 // (single ReadAny) instead of twice (goal.Summary + phaseStuckFallbackMessage).
+
 package agent
 
 import (

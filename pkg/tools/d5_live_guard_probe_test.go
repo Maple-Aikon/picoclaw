@@ -37,8 +37,8 @@ func TestD5LiveGuardProbe(t *testing.T) {
 		t.Skipf("live config not readable at %s: %v", configPath, err)
 	}
 	cfg := &config.Config{}
-	if err := json.Unmarshal(raw, cfg); err != nil {
-		t.Skipf("live config not parseable at %s: %v", configPath, err)
+	if err2 := json.Unmarshal(raw, cfg); err2 != nil {
+		t.Skipf("live config not parseable at %s: %v", configPath, err2)
 	}
 
 	tool, err := NewExecToolWithConfig("", false, cfg)
@@ -102,6 +102,6 @@ func TestD5LiveGuardProbe(t *testing.T) {
 
 	t.Logf("total=%d blocked=%d allowed=%d mismatches=%d", len(cases), blocked, allowed, mismatch)
 	if mismatch > 0 {
-		t.Errorf("guard behaviour differs from expectation in %d case(s)", mismatch)
+		t.Errorf("guard behavior differs from expectation in %d case(s)", mismatch)
 	}
 }

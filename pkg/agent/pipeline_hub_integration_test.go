@@ -40,12 +40,14 @@ func (h *hubIntegrationTool) Name() string { return h.name }
 func (h *hubIntegrationTool) Description() string {
 	return "hub integration test tool: " + h.name
 }
+
 func (h *hubIntegrationTool) Parameters() map[string]any {
 	return map[string]any{
 		"type":       "object",
 		"properties": map[string]any{"value": map[string]any{"type": "string"}},
 	}
 }
+
 func (h *hubIntegrationTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
 	h.calls.Add(1)
 	h.lastArg.Store(args)
@@ -53,7 +55,7 @@ func (h *hubIntegrationTool) Execute(ctx context.Context, args map[string]any) *
 		select {
 		case <-time.After(h.delay):
 		case <-ctx.Done():
-			return tools.SilentResult("cancelled")
+			return tools.SilentResult("canceled")
 		}
 	}
 	if h.result != nil {
@@ -322,7 +324,7 @@ func TestPipeline_CallLLM_Hub_RetryAfterTransientError(t *testing.T) {
 
 // TestPipeline_CallLLM_Hub_StreamingContextCancel ensures the LLM hub handles
 // context cancellation gracefully (timeout / user-abort / channel-stop).
-// We pass a pre-cancelled context and expect processMessage to return
+// We pass a pre-canceled context and expect processMessage to return
 // without panic.
 func TestPipeline_CallLLM_Hub_StreamingContextCancel(t *testing.T) {
 	provider := &hubRecordingProvider{

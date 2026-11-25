@@ -11,6 +11,7 @@
 // F3 (MED): computePhaseStuckAbortReasonForPhase's new `archived || count >= 2`
 // branch had no direct test: (flag=true, count=0) must fire, and
 // (flag=false, count=1) must NOT fire.
+
 package agent
 
 import (
@@ -63,9 +64,10 @@ func TestRetryChainExhaustion_ArchivesGoalWithPhaseStuckReason(t *testing.T) {
 		t.Errorf("goal status = %q, want %q (goal must be finalized in-turn)", g.Status, goal.StatusAborted)
 	}
 	if g.AbortReason != GoalPhaseCheckpointStuckAbortReason {
-		t.Errorf("goal AbortReason = %q, want %q — phaseStuckFallbackMessage reads this field; a generic/stale reason means the stuck message never fires",
-			g.AbortReason, GoalPhaseCheckpointStuckAbortReason)
+		t.Errorf(
+			"goal AbortReason = %q, want %q — phaseStuckFallbackMessage reads this field; a generic/stale reason means the stuck message never fires",
+			g.AbortReason,
+			GoalPhaseCheckpointStuckAbortReason,
+		)
 	}
 }
-
-

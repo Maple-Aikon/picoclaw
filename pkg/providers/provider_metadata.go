@@ -468,7 +468,7 @@ var modelProviderOptionsByName = map[string]ModelProviderOption{
 		CreateAllowed:       true,
 		DefaultModelAllowed: true,
 		SupportsFetch:       false, // MiniMax has no /models endpoint for the Anthropic API
-		Priority:            41.5, // right below minimax (42)
+		Priority:            41.5,  // right below minimax (42)
 		CommonModels:        []string{"MiniMax-M3", "MiniMax-M2.5"},
 		Aliases:             []string{"minimax_anthropic"},
 		httpAPI:             true,

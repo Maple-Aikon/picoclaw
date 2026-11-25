@@ -128,11 +128,11 @@ func renderDigestAlloc(head string, plan []digestSectionPlan, byteCap int) (stri
 	for _, p := range plan {
 		if p.heading != "" {
 			b.WriteString(p.heading)
-			b.WriteString(string(rune(digestNL)))
+			b.WriteRune(rune(digestNL))
 		}
 		if p.hasBody {
 			b.WriteString(p.excerpt)
-			b.WriteString(string(rune(digestNL)))
+			b.WriteRune(rune(digestNL))
 		}
 	}
 	b.WriteString(truncationMarker)

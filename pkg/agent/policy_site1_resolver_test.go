@@ -78,7 +78,7 @@ func TestResolveAllowlist_OpenRelative_AddsLifecycle(t *testing.T) {
 	}
 
 	// With base declared → base ∪ BaseAdds.
-def2 := AgentContextDefinition{
+	def2 := AgentContextDefinition{
 		Agent: &AgentPromptDefinition{
 			Frontmatter: AgentFrontmatter{
 				Fields: map[string]any{"tools": true},

@@ -1204,7 +1204,7 @@ func TestBeginStream_FinalizeFlushesDraftThenSendsFinal(t *testing.T) {
 	// Finalize: [0] draft push "partial", [1] final message. No clear call —
 	// after a successful commit the buffer is marked committed, so the
 	// post-final Cancel is a no-op by design (wire-level clear is only
-	// emitted when a pushed draft exists and the stream is cancelled).
+	// emitted when a pushed draft exists and the stream is canceled).
 	require.Len(t, caller.calls, 2)
 	assert.Contains(t, caller.calls[0].URL, "sendMessageDraft")
 	assert.Contains(t, caller.calls[1].URL, "sendMessage")
@@ -1782,6 +1782,7 @@ func testMediaGroupMessage(mediaGroupID string) telego.Message {
 		MediaGroupID: mediaGroupID,
 	}
 }
+
 func TestSend_ToolFeedbackExplanationReplacesTrackedCard(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {

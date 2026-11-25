@@ -15,6 +15,7 @@
 // guard. Covers the allowlisted branch, the allow-all arm and the malformed
 // empty-name arm (all three ControlToolLoop sources). Text-only responses
 // append nothing.
+
 package agent
 
 import (
@@ -131,7 +132,10 @@ func assertNoOrphanedToolResults(t *testing.T, messages []providers.Message) {
 		}
 		if m.Role == "tool" {
 			if !declared[m.ToolCallID] {
-				t.Errorf("Phase 12.41: orphaned tool result: ToolCallID=%q has no preceding assistant tool_calls message", m.ToolCallID)
+				t.Errorf(
+					"Phase 12.41: orphaned tool result: ToolCallID=%q has no preceding assistant tool_calls message",
+					m.ToolCallID,
+				)
 			}
 		}
 	}
@@ -199,7 +203,9 @@ func TestPhase1241_RecallAndCheckTool_AppendsAssistantBeforeToolResult(t *testin
 	// exec.messages BEFORE ExecuteTools runs (else tool result is orphaned).
 	asstID := lastAssistantToolCallID(exec.messages)
 	if asstID == "" {
-		t.Fatal("Phase 12.41 BUG: recallAndCheckTool returned ControlToolLoop without appending an assistant tool_calls message")
+		t.Fatal(
+			"Phase 12.41 BUG: recallAndCheckTool returned ControlToolLoop without appending an assistant tool_calls message",
+		)
 	}
 	if asstID != "call_t1" {
 		t.Fatalf("expected assistant ToolCalls[0].ID=call_t1, got %q", asstID)
@@ -402,7 +408,9 @@ func TestPhase1241_RecallAndCheckTool_NoHistorySkipsPersistence(t *testing.T) {
 		if m.Role == "assistant" {
 			for _, tc := range m.ToolCalls {
 				if tc.ID == "call_t5" {
-					t.Fatal("Phase 12.41: NoHistory turn must not persist the assistant message (found call_t5 in persistedMessages)")
+					t.Fatal(
+						"Phase 12.41: NoHistory turn must not persist the assistant message (found call_t5 in persistedMessages)",
+					)
 				}
 			}
 		}
@@ -418,8 +426,18 @@ func TestPhase1241_RecallAndCheckTool_NoHistorySkipsPersistence(t *testing.T) {
 func TestPhase1241_RetryLLMForBlockedTool_HistoryComplete(t *testing.T) {
 	al, _, cleanup := newTurnCoordTestLoop(t, &sequenceProvider{
 		responses: []*providers.LLMResponse{
-			{Content: "", ToolCalls: []providers.ToolCall{{ID: "call_a", Name: "read_file", Arguments: map[string]any{"path": "x"}}}},
-			{Content: "", ToolCalls: []providers.ToolCall{{ID: "call_b", Name: "goal_progress", Arguments: map[string]any{"remaining_steps": []string{"x"}}}}},
+			{
+				Content: "",
+				ToolCalls: []providers.ToolCall{
+					{ID: "call_a", Name: "read_file", Arguments: map[string]any{"path": "x"}},
+				},
+			},
+			{
+				Content: "",
+				ToolCalls: []providers.ToolCall{
+					{ID: "call_b", Name: "goal_progress", Arguments: map[string]any{"remaining_steps": []string{"x"}}},
+				},
+			},
 		},
 	})
 	defer cleanup()
@@ -483,8 +501,18 @@ func TestPhase1241_RetryLLMForBlockedTool_HistoryComplete(t *testing.T) {
 func TestPhase1241_RetryExecuteToolChain_TwoAttemptsTwoAssistantTwoResults(t *testing.T) {
 	al, _, cleanup := newTurnCoordTestLoop(t, &sequenceProvider{
 		responses: []*providers.LLMResponse{
-			{Content: "", ToolCalls: []providers.ToolCall{{ID: "call_c1", Name: "complete_goal", Arguments: map[string]any{"summary": "done"}}}},
-			{Content: "", ToolCalls: []providers.ToolCall{{ID: "call_c2", Name: "complete_goal", Arguments: map[string]any{"summary": "done"}}}},
+			{
+				Content: "",
+				ToolCalls: []providers.ToolCall{
+					{ID: "call_c1", Name: "complete_goal", Arguments: map[string]any{"summary": "done"}},
+				},
+			},
+			{
+				Content: "",
+				ToolCalls: []providers.ToolCall{
+					{ID: "call_c2", Name: "complete_goal", Arguments: map[string]any{"summary": "done"}},
+				},
+			},
 		},
 	})
 	defer cleanup()

@@ -80,8 +80,11 @@ func TestExecTool_SafetyGuard_HasErrKind(t *testing.T) {
 			}
 			// The invariant under test.
 			if result.ErrKind != ErrInvalidInput {
-				t.Fatalf("safety-guard rejection must carry ErrKind=%q, got %q (empty ErrKind sends the recovery layer down the legacy prefix heuristic, which no guard message matches ⇒ recovery never fires ⇒ no lesson)",
-					ErrInvalidInput, result.ErrKind)
+				t.Fatalf(
+					"safety-guard rejection must carry ErrKind=%q, got %q (empty ErrKind sends the recovery layer down the legacy prefix heuristic, which no guard message matches ⇒ recovery never fires ⇒ no lesson)",
+					ErrInvalidInput,
+					result.ErrKind,
+				)
 			}
 		})
 	}
@@ -165,7 +168,7 @@ func TestExecTool_SafetyGuard_WorkspaceEscape_HasErrKind(t *testing.T) {
 //     and a pattern inside denyPatterns is bypassable by the custom
 //     allowlist.
 //
-// This test asserts the FIXED behaviour. The behaviour tests live in
+// This test asserts the FIXED behavior. The behavior tests live in
 // shell_guard_pattern_case_test.go (T1–T14).
 func TestExecTool_DenyPattern_HeredocRuleIsAlive(t *testing.T) {
 	pat := regexp.MustCompile(`<<\s*EOF`)

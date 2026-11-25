@@ -117,7 +117,14 @@ func buildPhaseChannel(req PromptBuildRequest) string {
 	if len(sections) == 0 {
 		return ""
 	}
-	return phaseChannelMarker + string(rune(10)) + strings.Join(sections, string(rune(10))+string(rune(10))) + string(rune(10)) + "</goal_phase_channel>"
+	return phaseChannelMarker + string(
+		rune(10),
+	) + strings.Join(
+		sections,
+		string(rune(10))+string(rune(10)),
+	) + string(
+		rune(10),
+	) + "</goal_phase_channel>"
 }
 
 // phaseToolDiscoveryNote renders the phase-scoped tool-discovery rule.
@@ -143,7 +150,7 @@ func phaseMCPNote(req PromptBuildRequest) string {
 	var b strings.Builder
 	for _, srv := range req.DeferredMCPServers {
 		fmt.Fprintf(&b, "MCP server `%s` is connected and contributes tools, currently %s.", srv, availability)
-		b.WriteString(string(rune(10)))
+		b.WriteRune(rune(10))
 	}
 	return strings.TrimRight(b.String(), string(rune(10)))
 }

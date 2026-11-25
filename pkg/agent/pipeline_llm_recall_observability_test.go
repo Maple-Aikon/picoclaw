@@ -7,6 +7,7 @@
 // events with tracePath "turn.llm.replay.recall" — distinct from the
 // main path "turn.llm.request"/"turn.llm.response" — plus drop-warning
 // on subscriber-full (A-F05/B-F05).
+
 package agent
 
 import (
@@ -127,7 +128,7 @@ func TestRecallLLM_EmitsRequestEvent(t *testing.T) {
 // T2 — response event: payload matches real response (emit at callErr==nil)
 func TestRecallLLM_EmitsResponseEvent(t *testing.T) {
 	resp := &providers.LLMResponse{
-		Content:    "hello world",
+		Content:      "hello world",
 		FinishReason: "stop",
 		ToolCalls: []providers.ToolCall{
 			{ID: "c1", Name: "read_file", Arguments: map[string]any{"path": "/tmp/x"}},
@@ -181,7 +182,15 @@ func TestRecallLLM_EmitsResponseEvent_HasReasoning(t *testing.T) {
 	ch, closeFn := subscribeRuntimeEventsForTest(t, al, 16, runtimeevents.KindAgentLLMResponse)
 	defer closeFn()
 
-	if _, err := pipeline.RecallLLM(context.Background(), context.Background(), ts, exec, 1, "test_helper", nil); err != nil {
+	if _, err := pipeline.RecallLLM(
+		context.Background(),
+		context.Background(),
+		ts,
+		exec,
+		1,
+		"test_helper",
+		nil,
+	); err != nil {
 		t.Fatalf("RecallLLM returned error: %v", err)
 	}
 
@@ -201,7 +210,7 @@ func TestRecallLLM_TransientRetries_EmitsRetryAndPerAttempt(t *testing.T) {
 		errors: []error{
 			fmt.Errorf("connection refused: backend down"), // attempt 0: transient
 			fmt.Errorf("timeout exceeded"),                 // attempt 1: transient
-			nil,                                             // attempt 2: success
+			nil,                                            // attempt 2: success
 		},
 		responses: []*providers.LLMResponse{
 			nil, nil,
@@ -226,7 +235,7 @@ func TestRecallLLM_TransientRetries_EmitsRetryAndPerAttempt(t *testing.T) {
 	events := drainEventsAfter(ch)
 
 	// Expected order: req, retry, req, retry, req, resp
-	var kinds []runtimeevents.Kind
+	kinds := make([]runtimeevents.Kind, 0, len(events))
 	for _, evt := range events {
 		kinds = append(kinds, evt.Kind)
 	}
@@ -376,7 +385,15 @@ func TestRecallLLM_DroppedEvents_Warns(t *testing.T) {
 
 	before := replayDropWarnTotal.Load()
 
-	if _, err := pipeline.RecallLLM(context.Background(), context.Background(), ts, exec, 1, "test_drop", nil); err != nil {
+	if _, err := pipeline.RecallLLM(
+		context.Background(),
+		context.Background(),
+		ts,
+		exec,
+		1,
+		"test_drop",
+		nil,
+	); err != nil {
 		t.Fatalf("RecallLLM returned error: %v", err)
 	}
 
@@ -395,9 +412,9 @@ func TestRecallLLM_DroppedEvents_Warns(t *testing.T) {
 func TestTurnWithEmptyResponse_EmitsReplayEvents(t *testing.T) {
 	provider := &recallTestProvider{
 		responses: []*providers.LLMResponse{
-			{Content: "", FinishReason: "stop"},                          // main path → empty → recovery
-			{Content: "recovered after recall", FinishReason: "stop"},    // RecallLLM attempt 0
-			{Content: "final answer", FinishReason: "stop"},              // main path next iter
+			{Content: "", FinishReason: "stop"},                       // main path → empty → recovery
+			{Content: "recovered after recall", FinishReason: "stop"}, // RecallLLM attempt 0
+			{Content: "final answer", FinishReason: "stop"},           // main path next iter
 		},
 	}
 	al, agent, cleanup := newTurnCoordTestLoop(t, provider)

@@ -52,8 +52,18 @@ func TestPhase12_39_Wire_Checkpoint_Iter5_NoExtendBy1(t *testing.T) {
 	// LEVER (a) - 2026-11-10: the CHECKPOINT affordance moved from the
 	// system prompt to the phase channel. The system prompt must NOT
 	// carry it any more (that is what keeps the prefix byte-constant).
-	mustNotContain(t, prompt, "Goal phase: checkpoint", "CHECKPOINT affordance must NOT be in the system prompt (lever (a))")
-	mustNotContain(t, prompt, "Only 2 lifecycle tools can actually be executed", "CHECKPOINT affordance must NOT be in the system prompt (lever (a))")
+	mustNotContain(
+		t,
+		prompt,
+		"Goal phase: checkpoint",
+		"CHECKPOINT affordance must NOT be in the system prompt (lever (a))",
+	)
+	mustNotContain(
+		t,
+		prompt,
+		"Only 2 lifecycle tools can actually be executed",
+		"CHECKPOINT affordance must NOT be in the system prompt (lever (a))",
+	)
 	assertPhaseChannelContains(t, cb, phaseChannelReqCaps(string(GoalPhaseCheckpoint), 5, "", 5, 15),
 		"Goal phase: checkpoint (iter 5 / total 15 turn iters)", "CHECKPOINT base header")
 	assertPhaseChannelContains(t, cb, phaseChannelReqCaps(string(GoalPhaseCheckpoint), 5, "", 5, 15),
@@ -74,7 +84,12 @@ func TestPhase12_39_Wire_Final_Iter15_LastIterMessage(t *testing.T) {
 	)
 	// LEVER (a) - 2026-11-10: the FINAL affordance moved to the phase channel.
 	mustNotContain(t, prompt, "Goal phase: final", "FINAL affordance must NOT be in the system prompt (lever (a))")
-	mustNotContain(t, prompt, "This is the last iter, call complete_goal", "FINAL affordance must NOT be in the system prompt (lever (a))")
+	mustNotContain(
+		t,
+		prompt,
+		"This is the last iter, call complete_goal",
+		"FINAL affordance must NOT be in the system prompt (lever (a))",
+	)
 	assertPhaseChannelContains(t, cb, phaseChannelReqCaps(string(GoalPhaseFinal), 15, "", 15, 15),
 		"Goal phase: final (iter 15 / total 15 turn iters)", "FINAL base header")
 	assertPhaseChannelContains(t, cb, phaseChannelReqCaps(string(GoalPhaseFinal), 15, "", 15, 15),
@@ -132,8 +147,18 @@ func TestPhase12_39_Wire_Checkpoint_BypassCache_EveryCall(t *testing.T) {
 	)
 	// LEVER (a) - 2026-11-10: the CHECKPOINT compass (which embeds the
 	// iter) moved to the phase channel.
-	mustNotContain(t, p1, "Goal phase: checkpoint", "CHECKPOINT affordance must NOT be in the system prompt (lever (a))")
-	mustNotContain(t, p2, "Goal phase: checkpoint", "CHECKPOINT affordance must NOT be in the system prompt (lever (a))")
+	mustNotContain(
+		t,
+		p1,
+		"Goal phase: checkpoint",
+		"CHECKPOINT affordance must NOT be in the system prompt (lever (a))",
+	)
+	mustNotContain(
+		t,
+		p2,
+		"Goal phase: checkpoint",
+		"CHECKPOINT affordance must NOT be in the system prompt (lever (a))",
+	)
 	assertPhaseChannelContains(t, cb, phaseChannelReqCaps(string(GoalPhaseCheckpoint), 5, "", 5, 15),
 		"Goal phase: checkpoint (iter 5 / total 15 turn iters)", "CHECKPOINT iter 5 header")
 	assertPhaseChannelContains(t, cb, phaseChannelReqCaps(string(GoalPhaseCheckpoint), 10, "", 10, 15),

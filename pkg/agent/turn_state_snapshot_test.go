@@ -85,8 +85,8 @@ func TestArchiveStaleGoalOnTurnStart(t *testing.T) {
 		t.Fatalf("pre Status=%q, want active", pre.Status)
 	}
 
-	if err := archiveStaleGoalOnTurnStart(al, "stale-session"); err != nil {
-		t.Fatalf("archiveStaleGoalOnTurnStart: %v", err)
+	if err2 := archiveStaleGoalOnTurnStart(al, "stale-session"); err2 != nil {
+		t.Fatalf("archiveStaleGoalOnTurnStart: %v", err2)
 	}
 
 	// Post-condition: file moved to archive/. Active file should not
@@ -150,7 +150,7 @@ func stubGoalCompleted(name string) *goal.Goal {
 	return &goal.Goal{
 		Name: name,
 		Description: goal.Description{
-			Objective:        "test objective",
+			Objective:       "test objective",
 			SuccessCriteria: []string{"test criterion"},
 		},
 		CreatedAt: now,
@@ -166,7 +166,7 @@ func stubGoalActive(name string) *goal.Goal {
 	return &goal.Goal{
 		Name: name,
 		Description: goal.Description{
-			Objective:        "test objective",
+			Objective:       "test objective",
 			SuccessCriteria: []string{"test criterion"},
 		},
 		CreatedAt: now,

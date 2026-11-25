@@ -886,7 +886,9 @@ func TestToolRegistry_Clone_CopiesProjectionFrozen(t *testing.T) {
 		t.Fatal("Clone() returned nil")
 	}
 	if !clone.ProjectionFrozen() {
-		t.Errorf("clone.ProjectionFrozen()=false, want true (Phase 12.72 Fix #3 — SubTurn/SubAgent must inherit frozen state)")
+		t.Errorf(
+			"clone.ProjectionFrozen()=false, want true (Phase 12.72 Fix #3 — SubTurn/SubAgent must inherit frozen state)",
+		)
 	}
 
 	// Toggling parent back to false must NOT affect clone (independent
@@ -1361,9 +1363,13 @@ func TestIsLifecycleToolAllowed_CaseAndWhitespaceTolerance(t *testing.T) {
 		{"  SET_GOAL  ", "set", true},
 		{"View_Goal", "open", true},
 		{"Goal_Progress", "checkpoint", true},
-		{"complete_goal", "final", true},       // phase already lowercase
-		{"set_goal", "Open", false},            // case mismatch on phase rejected (programmer bug)
-		{"  set_goal  ", "  open  ", false},    // phase is trimmed + lowercase-compared; spaces on phase input are also trimmed
+		{"complete_goal", "final", true}, // phase already lowercase
+		{"set_goal", "Open", false},      // case mismatch on phase rejected (programmer bug)
+		{
+			"  set_goal  ",
+			"  open  ",
+			false,
+		}, // phase is trimmed + lowercase-compared; spaces on phase input are also trimmed
 	}
 	for _, tc := range cases {
 		got := isLifecycleToolAllowed(tc.tool, tc.phase)

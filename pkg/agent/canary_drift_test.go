@@ -203,6 +203,7 @@ func TestPhaseStart_ToolsTotalMatchesRegistryCount(t *testing.T) {
 	t.Log("F3 swap verification: turn_coord.go:358 must call Tools.Count(), not len(ToProviderDefs())")
 	t.Log("Live verify: gateway.log grep 'event=phase_start tools_total=N' should show registry count")
 }
+
 // TestCanaryCheckToolsVisible_CheckpointPhase_Visible2IsHealthy — Phase 12.80.
 //
 // The ABSOLUTE phases still have exact constant expectations, because the

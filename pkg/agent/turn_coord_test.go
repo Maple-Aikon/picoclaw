@@ -1134,6 +1134,7 @@ func TestTurnState_SkillContextSnapshotsTrackLatestSuccessfulPath(t *testing.T) 
 		t.Fatalf("snapshots[1] = %+v, want sequence=2 trigger=%q", snapshots[1], skillContextTriggerContextRetryRebuild)
 	}
 }
+
 // =============================================================================
 // Recovery Trigger Tests
 // =============================================================================
@@ -1165,9 +1166,7 @@ func TestTurnCoord_RecoveryTrigger_ToolExecError(t *testing.T) {
 // TestTurnCoord_RecoveryTrigger_EmptyTextNotGoalPhase verifies that empty
 // text outside a goal phase is a silent no-op (no panic, no counter bump).
 func TestTurnCoord_RecoveryTrigger_EmptyTextNotGoalPhase(t *testing.T) {
-	ts := &turnState{
-		toolExecRecoveryAttempts: make(map[string]int),
-	}
+	ts := &turnState{}
 	action, _ := evaluateRecovery(ts, RecoveryContext{Phase: "", TextEmpty: true})
 	if action != RecoveryNone {
 		t.Fatalf("expected RecoveryNone for no-goal phase, got %v", action)
@@ -1187,9 +1186,7 @@ func TestTurnCoord_RecoveryTrigger_EmptyTextNotGoalPhase(t *testing.T) {
 // line 231), but Trigger #3 (tool-exec) now fires for Set phase so the
 // LLM gets a redirect hint to call set_goal.
 func TestTurnCoord_RecoveryTrigger_LockPhaseSilenced(t *testing.T) {
-	ts := &turnState{
-		toolExecRecoveryAttempts: make(map[string]int),
-	}
+	ts := &turnState{}
 	// Lock phase + empty text → fires Trigger #1 (Phase 12.37 GAP #2:
 	// all-phase empty trigger). Pre-12.37 was silent.
 	if a, _ := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseSet), TextEmpty: true}); a == RecoveryNone {
@@ -1198,9 +1195,15 @@ func TestTurnCoord_RecoveryTrigger_LockPhaseSilenced(t *testing.T) {
 	// Phase 12.15: Lock phase + tool error → fires RecoveryRetrySameIteration
 	// (Trigger #3 now eligible for Set). The message must include the
 	// ToolExecErrorSetPhaseHint redirecting the LLM to call set_goal.
-	if a, msg := evaluateRecovery(ts, RecoveryContext{Phase: string(GoalPhaseSet), ToolName: "view_goal", ToolExecError: "not allowed"}); a != RecoveryRetrySameIteration {
+	if a, msg := evaluateRecovery(
+		ts,
+		RecoveryContext{Phase: string(GoalPhaseSet), ToolName: "view_goal", ToolExecError: "not allowed"},
+	); a != RecoveryRetrySameIteration {
 		t.Fatalf("Lock phase + tool error should now retry (Phase 12.15), got %v", a)
-	} else if !strings.Contains(msg, "set_goal") {
+	} else if !strings.Contains(
+		msg,
+		"set_goal",
+	) {
 		t.Fatalf("Lock phase retry message must redirect to set_goal, got %q", msg)
 	}
 	if ts.toolExecRecoveryAttempts["view_goal"] != 1 {
@@ -1215,9 +1218,7 @@ func TestTurnCoord_RecoveryTrigger_ApplyActionState(t *testing.T) {
 	// We can't construct a Pipeline here without a full al stack, so we
 	// verify the field-setting logic by directly setting the same fields
 	// that applyRecoveryAction would set, and asserting the contract.
-	ts := &turnState{
-		toolExecRecoveryAttempts: make(map[string]int),
-	}
+	ts := &turnState{}
 
 	// RecoveryRetrySameIteration sets pendingRecoveryMessage only.
 	ts.pendingRecoveryMessage = EmptyResponseRecoveryMessage
@@ -1232,14 +1233,14 @@ func TestTurnCoord_RecoveryTrigger_ApplyActionState(t *testing.T) {
 	// for both soft and hard prompts (no more RecoveryForceComplete
 	// action). The retry just records the message and lets the LLM run
 	// again in the next iteration slot.
-	ts2 := &turnState{toolExecRecoveryAttempts: make(map[string]int)}
+	ts2 := &turnState{}
 	ts2.pendingRecoveryMessage = TextOnlyHardRetryMessage
 	if ts2.pendingRecoveryMessage == "" {
 		t.Fatalf("expected pendingRecoveryMessage set after hard text-only")
 	}
 
 	// RecoveryArchiveGoal sets goalArchiveRequested only.
-	ts3 := &turnState{toolExecRecoveryAttempts: make(map[string]int)}
+	ts3 := &turnState{}
 	ts3.goalArchiveRequested = true
 	if !ts3.goalArchiveRequested {
 		t.Fatalf("expected goalArchiveRequested=true after archive")
@@ -1274,7 +1275,6 @@ func TestRunTurnPanicRecovery_Hook2ArchivesGoal(t *testing.T) {
 	panic("simulated runTurn panic")
 
 	// Unreachable: panic should be caught by the defer above.
-	t.Fatalf("defer recover did not catch panic")
 }
 
 // TestRunTurnPanicRecovery_NoGoalArchive verifies that runTurn panic
@@ -1383,6 +1383,7 @@ func TestHook2_ThreeConcurrentPanics_AllArchiveGoal(t *testing.T) {
 		t.Fatalf("status = %q, want aborted", g.Status)
 	}
 }
+
 // Phase 12 live-verify: text-only 2x retry/iter with escalation.
 // Unit-level test against evaluateRecovery (no full runTurn needed,
 // which would require seeding a goal first). Verifies: text-only x1
@@ -1397,7 +1398,10 @@ func TestRunTurn_Phase12_TextOnly_BumpOnly_NoArchive(t *testing.T) {
 		t.Fatalf("1st text-only at Open: action=%v msg=%q (want RetryNextIteration + Open soft)", act1, msg1)
 	}
 	if ts.textOnlySoftRetriesDone != 0 {
-		t.Fatalf("after soft: soft_done=%d (want 0 — Open never increments counters, Phase 12.58)", ts.textOnlySoftRetriesDone)
+		t.Fatalf(
+			"after soft: soft_done=%d (want 0 — Open never increments counters, Phase 12.58)",
+			ts.textOnlySoftRetriesDone,
+		)
 	}
 
 	act2, msg2 := evaluateRecovery(ts, ctx)
@@ -1405,12 +1409,19 @@ func TestRunTurn_Phase12_TextOnly_BumpOnly_NoArchive(t *testing.T) {
 		t.Fatalf("2nd text-only at Open: action=%v msg=%q (want RetryNextIteration + Open hard)", act2, msg2)
 	}
 	if ts.textOnlyHardRetriesDone != 0 {
-		t.Fatalf("after hard: hard_done=%d (want 0 — Open never increments counters, Phase 12.58)", ts.textOnlyHardRetriesDone)
+		t.Fatalf(
+			"after hard: hard_done=%d (want 0 — Open never increments counters, Phase 12.58)",
+			ts.textOnlyHardRetriesDone,
+		)
 	}
 
 	act3, msg3 := evaluateRecovery(ts, ctx)
 	if act3 != RecoveryRetryNextIteration || msg3 != TextOnlyHardRetryOpenMessage {
-		t.Fatalf("3rd text-only: action=%v msg=%q (want RetryNextIteration + Open hard — bump-only, no archive)", act3, msg3)
+		t.Fatalf(
+			"3rd text-only: action=%v msg=%q (want RetryNextIteration + Open hard — bump-only, no archive)",
+			act3,
+			msg3,
+		)
 	}
 	if ts.textOnlyStreak != 3 {
 		t.Fatalf("streak=%d, want 3", ts.textOnlyStreak)

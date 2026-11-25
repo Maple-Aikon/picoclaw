@@ -35,16 +35,26 @@ func TestResolveAgentToolAllowlistWithPhase_AllPhases(t *testing.T) {
 		want  []string
 	}{
 		{"Lock overrides base", GoalPhaseLock, []string{"set_goal"}},
-		{"Open unions view_goal+complete_goal", GoalPhaseOpen,
-			[]string{"complete_goal", "read_file", "view_goal", "write_file"}},
-		{"Checkpoint is absolute (overrides base)", GoalPhaseCheckpoint,
-			[]string{"goal_progress", "complete_goal"}},
-		{"Final pins complete_goal only", GoalPhaseFinal,
-			[]string{"complete_goal"}},
-		{"PostFinal is empty non-nil (no tools at all)", GoalPhasePostFinal,
-			[]string{}},
-		{"Unknown phase degrades to base only", GoalPhase("gibberish"),
-			[]string{"read_file", "write_file"}},
+		{
+			"Open unions view_goal+complete_goal", GoalPhaseOpen,
+			[]string{"complete_goal", "read_file", "view_goal", "write_file"},
+		},
+		{
+			"Checkpoint is absolute (overrides base)", GoalPhaseCheckpoint,
+			[]string{"goal_progress", "complete_goal"},
+		},
+		{
+			"Final pins complete_goal only", GoalPhaseFinal,
+			[]string{"complete_goal"},
+		},
+		{
+			"PostFinal is empty non-nil (no tools at all)", GoalPhasePostFinal,
+			[]string{},
+		},
+		{
+			"Unknown phase degrades to base only", GoalPhase("gibberish"),
+			[]string{"read_file", "write_file"},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -163,9 +173,12 @@ func TestUnionAllowlist(t *testing.T) {
 		{"disjoint", []string{"a", "b"}, []string{"c"}, []string{"a", "b", "c"}},
 		{"overlap dedup", []string{"a", "b"}, []string{"b", "c"}, []string{"a", "b", "c"}},
 		{"empty strings dropped", []string{"", "a"}, []string{"b"}, []string{"a", "b"}},
-		{"result stable across order",
-			[]string{"z", "y", "x"}, []string{"y", "z"},
-			[]string{"x", "y", "z"}},
+		{
+			"result stable across order",
+			[]string{"z", "y", "x"},
+			[]string{"y", "z"},
+			[]string{"x", "y", "z"},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -331,11 +344,11 @@ func TestResolveAgentToolAllowlistWithPhase_NoToolsField_PreservesLifecycleOverr
 //
 // All four scenarios from the original bug report (Horus Protocol
 // 2026-07-30):
-//   1. iter < iterationCap < maxIterationsCap → GOAL-OPEN
-//   2. iter == iterationCap (within maxIterationsCap) → GOAL-CHECKPOINT
-//   3. iter == iterationCap == maxIterationsCap → GOAL-CHECKPOINT
-//      (NOT FINAL — cap variable equality alone is not enough)
-//   4. iter >= maxIterationsCap → GOAL-FINAL
+//  1. iter < iterationCap < maxIterationsCap → GOAL-OPEN
+//  2. iter == iterationCap (within maxIterationsCap) → GOAL-CHECKPOINT
+//  3. iter == iterationCap == maxIterationsCap → GOAL-CHECKPOINT
+//     (NOT FINAL — cap variable equality alone is not enough)
+//  4. iter >= maxIterationsCap → GOAL-FINAL
 func TestResolveGoalPhase_FinalUsesIterIndexNotCap(t *testing.T) {
 	cases := []struct {
 		name             string

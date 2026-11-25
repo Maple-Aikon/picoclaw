@@ -13,16 +13,16 @@ import (
 //
 // Definitions (see plan §3.5):
 //   - GoalPhaseLock:        no goal set yet — base allowlist is irrelevant,
-//                           only set_goal is exposed so the LLM picks the
-//                           goal before doing anything else.
+//     only set_goal is exposed so the LLM picks the
+//     goal before doing anything else.
 //   - GoalPhaseOpen:        goal is active and under normal execution —
-//                           view_goal + complete_goal are exposed alongside
-//                           the base allowlist (set_goal is NOT exposed to
-//                           prevent silent in-turn goal changes).
+//     view_goal + complete_goal are exposed alongside
+//     the base allowlist (set_goal is NOT exposed to
+//     prevent silent in-turn goal changes).
 //   - GoalPhaseCheckpoint:  goal iter cap reached and awaiting conclusion —
-//                           goal_progress + complete_goal are exposed so
-//                           the LLM can either finalize or surface progress
-//                           and request extension.
+//     goal_progress + complete_goal are exposed so
+//     the LLM can either finalize or surface progress
+//     and request extension.
 type GoalPhase string
 
 const (
@@ -57,7 +57,7 @@ const (
 	// only emits the final user-facing report text.
 	GoalPhasePostFinal GoalPhase = "post_final"
 
-	// Phase 11 NOTE: GoalPhaseLock is kept as a synonym of GoalPhaseSet for
+	// GoalPhaseLock is kept as a synonym of GoalPhaseSet for
 	// backward-compat with older tests/callers. New code should use
 	// GoalPhaseSet directly.
 	GoalPhaseLock GoalPhase = GoalPhaseSet
@@ -119,7 +119,7 @@ func currentGoalPhase(workspace, sessionKey string, iteration, iterationCap int,
 	return GoalPhaseOpen
 }
 
-// Phase 11 redesign: per-turn scope. ResolveGoalPhase now operates on the
+// ResolveGoalPhase operates on the
 // new 4-phase scheme (set / open / checkpoint / final). The iter==0
 // guard that mapped to GoalPhaseLock in earlier phases is GONE — fresh
 // turns now start at iter==0 with no active goal, which resolves to

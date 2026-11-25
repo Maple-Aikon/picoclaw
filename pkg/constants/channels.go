@@ -1,4 +1,4 @@
-// Package constants provides shared constants across the codebase.
+// Package constants — provides shared constants across the codebase.
 package constants
 
 // internalChannels defines channels that are used for internal communication

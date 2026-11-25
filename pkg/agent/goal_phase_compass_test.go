@@ -49,7 +49,10 @@ func TestFormatIterCompass_Open_Iter2_NextCheckpointAtCap5(t *testing.T) {
 		MaxIterationsCap: 15,
 	}, GoalPhaseOpen, false)
 	if got != "" {
-		t.Errorf("Phase 12.72 Fix #2: formatIterCompass(OPEN) must return \"\" (compass migrated to user[0]); got %q", got)
+		t.Errorf(
+			"Phase 12.72 Fix #2: formatIterCompass(OPEN) must return \"\" (compass migrated to user[0]); got %q",
+			got,
+		)
 	}
 }
 
@@ -205,7 +208,12 @@ func TestFormatIterCompass_Default_GoalPhaseSet_ReturnsBaseHeader(t *testing.T) 
 		IterationCap:     5,
 		MaxIterationsCap: 15,
 	}, GoalPhaseSet, false)
-	mustContain(t, got, "Goal phase: set (iter 1 / total 15 turn iters).", "default branch returns base header for unknown phase")
+	mustContain(
+		t,
+		got,
+		"Goal phase: set (iter 1 / total 15 turn iters).",
+		"default branch returns base header for unknown phase",
+	)
 }
 
 // T15 — default branch: unknown phase → same as T13 (any unknown phase renders base).
@@ -215,5 +223,10 @@ func TestFormatIterCompass_Default_UnknownPhase_ReturnsBaseHeader(t *testing.T) 
 		IterationCap:     5,
 		MaxIterationsCap: 15,
 	}, GoalPhase("unknown"), false)
-	mustContain(t, got, "Goal phase: unknown (iter 4 / total 15 turn iters).", "default branch returns base header for unknown phase")
+	mustContain(
+		t,
+		got,
+		"Goal phase: unknown (iter 4 / total 15 turn iters).",
+		"default branch returns base header for unknown phase",
+	)
 }

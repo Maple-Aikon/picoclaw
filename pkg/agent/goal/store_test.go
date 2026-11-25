@@ -138,8 +138,8 @@ func TestGoalStore_Write_PreservesCreatedAtOnSubsequentWrites(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	first.Description.Objective = "Updated objective"
-	if err := store.Write(testSessionKey, first); err != nil {
-		t.Fatalf("second write failed: %v", err)
+	if err2 := store.Write(testSessionKey, first); err2 != nil {
+		t.Fatalf("second write failed: %v", err2)
 	}
 	loaded, err := store.Read(testSessionKey)
 	if err != nil {
@@ -449,13 +449,12 @@ func TestGoalStore_Parse_BadFrontmatter(t *testing.T) {
 	}
 }
 
-
 // TestArchiveName_UniqueUnderSameSecond guards against the same-second rename race
 // where two turn-exit hooks fire Archive concurrently: filenames must collide no more.
 func TestArchiveName_UniqueUnderSameSecond(t *testing.T) {
 	now := time.Date(2026, 7, 20, 11, 34, 5, 123456789, time.UTC)
 	a := archiveName("sessA", now)
-	b := archiveName("sessA", now.Add(1 * time.Nanosecond))
+	b := archiveName("sessA", now.Add(1*time.Nanosecond))
 	// Both must remain valid .md filenames parseable by the same prefix scheme as prod.
 	if !strings.HasPrefix(a, "sessA-") || !strings.HasSuffix(a, ".md") {
 		t.Errorf("archiveName a malformed: %q", a)

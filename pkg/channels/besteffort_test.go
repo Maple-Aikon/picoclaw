@@ -124,7 +124,7 @@ func TestPreSend_PlaceholderEditRateLimited_WaitsBeforeFallingThrough(t *testing
 
 // TestPreSend_PlaceholderEditGenericFailure_FallsThroughImmediately pins
 // that ONLY a rate limit introduces a wait. Any other edit failure keeps
-// the pre-existing behaviour (fall through right away) so the patch does
+// the pre-existing behavior (fall through right away) so the patch does
 // not add latency to unrelated failures.
 func TestPreSend_PlaceholderEditGenericFailure_FallsThroughImmediately(t *testing.T) {
 	m := newTestManager()
@@ -191,7 +191,7 @@ func TestSendWithRetry_PlaceholderEditRateLimited_SendNotImmediate(t *testing.T)
 
 // TestBestEffortFailure_LogsWithoutRetrying checks the other half of the
 // task: the call sites that used to swallow their error entirely now log
-// it, while the "best effort, no retry" behaviour is preserved.
+// it, while the "best effort, no retry" behavior is preserved.
 //
 // The three log sources are checked in ONE test on purpose: enabling
 // file logging mutates package-level logger state.

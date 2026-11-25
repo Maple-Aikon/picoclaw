@@ -11,9 +11,11 @@ import (
 // zzNL is the newline byte. This file deliberately avoids escape
 // sequences inside string and rune literals so it survives JSON-decoding
 // round trips intact.
-const zzNL byte = 10
-const zzCR byte = 13
-const zzTAB byte = 9
+const (
+	zzNL  byte = 10
+	zzCR  byte = 13
+	zzTAB byte = 9
+)
 
 // TestZZLiveMeasure is a TEMPORARY measurement harness: it runs the REAL
 // production path (Read -> renderKnowledgeFile -> digestSections ->
@@ -40,7 +42,7 @@ func TestZZLiveMeasure(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 	nl := string(rune(zzNL))
-	cap := KnowledgeSizeCap
+	capacity2 := KnowledgeSizeCap
 	overCap := 0
 	zeroBody := 0
 	midWord := 0
@@ -64,7 +66,7 @@ func TestZZLiveMeasure(t *testing.T) {
 		}
 		body := extractBody(string(raw))
 		rendered := renderKnowledgeFile(name, body, time.Now().UTC())
-		if len(rendered) <= cap {
+		if len(rendered) <= capacity2 {
 			continue
 		}
 		overCap++
@@ -76,7 +78,7 @@ func TestZZLiveMeasure(t *testing.T) {
 		// pass cuts at the first horizontal rule INSIDE the markdown,
 		// which fakes 'not a prefix' and 'lost heading'.
 		out := digest
-		if len(out) > cap {
+		if len(out) > capacity2 {
 			overCapOut++
 		}
 
@@ -197,7 +199,11 @@ func TestZZLiveMeasure(t *testing.T) {
 	t.Logf("ORDER_MISMATCH=%d", orderMismatch)
 	t.Logf("OUTPUT_OVER_CAP=%d", overCapOut)
 	t.Logf("ONE_LINE_SECTIONS=%d (of %d body sections)", oneLineSections, bodySections)
-	t.Logf("TINY_SECTIONS(<=12B)=%d avg_excerpt_bytes=%.1f", tinySections, float64(excerptBytes)/float64(max(bodySections, 1)))
+	t.Logf(
+		"TINY_SECTIONS(<=12B)=%d avg_excerpt_bytes=%.1f",
+		tinySections,
+		float64(excerptBytes)/float64(max(bodySections, 1)),
+	)
 	if tinyWhere != "" {
 		t.Logf("TINY_EXAMPLE: %s", tinyWhere)
 	}

@@ -44,7 +44,10 @@ func TestDigestSections_NeverExceedsCap(t *testing.T) {
 	}{
 		{"many sections", renderKnowledgeFile("exec", buildManySectionBody(31, 900), time.Now())},
 		{"no frontmatter", buildManySectionBody(20, 500)},
-		{"horizontal rules inside", "## A\n" + strings.Repeat("y", 400) + "\n\n---\n" + "## B\n" + strings.Repeat("z", 400)},
+		{
+			"horizontal rules inside",
+			"## A\n" + strings.Repeat("y", 400) + "\n\n---\n" + "## B\n" + strings.Repeat("z", 400),
+		},
 		{"no h2 at all", strings.Repeat("plain text line\n", 500)},
 		{"single huge section", "## Only\n" + strings.Repeat("q", 9000)},
 	}

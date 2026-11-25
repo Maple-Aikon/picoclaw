@@ -139,7 +139,11 @@ func canaryExpectedToolsVisible(phase string) int {
 // the expectation is "every registered, non-TTL-expired tool" - which
 // the registry itself knows. In that case we return 0 to signal "no
 // numeric expectation" and let the caller skip the comparison.
-func canaryExpectedToolsVisibleForAgent(definition AgentContextDefinition, phase string, registry *tools.ToolRegistry) int {
+func canaryExpectedToolsVisibleForAgent(
+	definition AgentContextDefinition,
+	phase string,
+	registry *tools.ToolRegistry,
+) int {
 	if expected := canaryExpectedToolsVisible(phase); expected != 0 {
 		return expected
 	}

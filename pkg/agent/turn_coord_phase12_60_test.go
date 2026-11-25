@@ -67,7 +67,10 @@ func TestPhaseStuckFallbackMessage_BexhaustedPrefix(t *testing.T) {
 
 	// Active goal with a bexhausted-looking reason → still empty (only
 	// archived goals surface the stuck message).
-	if msg := al.phaseStuckFallbackMessage(ts, &goal.Goal{Status: goal.StatusActive, AbortReason: "bexhausted:goal_recovery"}); msg != "" {
+	if msg := al.phaseStuckFallbackMessage(
+		ts,
+		&goal.Goal{Status: goal.StatusActive, AbortReason: "bexhausted:goal_recovery"},
+	); msg != "" {
 		t.Fatalf("active goal: got %q, want empty", msg)
 	}
 }

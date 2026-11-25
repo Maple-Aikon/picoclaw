@@ -146,7 +146,9 @@ func TestPhaseChangeRebuild_SamePhase_IterChange_TriggersRebuild(t *testing.T) {
 			t.Errorf("expected lastBuiltPromptIteration = 26, got %d", ts.lastBuiltPromptIteration)
 		}
 		if result[0].Content == "ORIGINAL_SYSTEM_PROMPT" {
-			t.Errorf("expected messages[0] rebuilt for a non-cacheable phase on iter change, still ORIGINAL_SYSTEM_PROMPT")
+			t.Errorf(
+				"expected messages[0] rebuilt for a non-cacheable phase on iter change, still ORIGINAL_SYSTEM_PROMPT",
+			)
 		}
 		if len(result) != 2 {
 			t.Fatalf("expected 2 messages (rebuilt system + userMsg1), got %d", len(result))
@@ -263,7 +265,12 @@ func TestPhaseChangeRebuild_AllPhaseTransitions(t *testing.T) {
 				ts.maybeRebuildPromptForStateChange(messages, exec, nil, 1)
 
 				if ts.lastBuiltPromptPhase != string(current) {
-					t.Errorf("[%s] expected lastBuiltPromptPhase = %q, got %q", name, string(current), ts.lastBuiltPromptPhase)
+					t.Errorf(
+						"[%s] expected lastBuiltPromptPhase = %q, got %q",
+						name,
+						string(current),
+						ts.lastBuiltPromptPhase,
+					)
 				}
 			})
 		}

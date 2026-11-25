@@ -104,9 +104,9 @@ func BoundedRetry(
 	cfg RetryConfig,
 	attempt AttemptFunc,
 ) (RetryDecision, error) {
-	max := cfg.MaxAttempts
-	if max <= 0 {
-		max = defaultRetryMaxAttempts
+	limit2 := cfg.MaxAttempts
+	if limit2 <= 0 {
+		limit2 = defaultRetryMaxAttempts
 	}
 
 	onRetry := cfg.OnRetry
@@ -122,7 +122,7 @@ func BoundedRetry(
 	var lastErr error
 	var lastDecision RetryDecision
 
-	for i := 0; i < max; i++ {
+	for i := 0; i < limit2; i++ {
 		// Honor caller cancellation each iteration (cheap + correct).
 		if err := ctx.Err(); err != nil {
 			return lastDecision, err
@@ -130,8 +130,8 @@ func BoundedRetry(
 
 		rc := RetryContext{
 			Attempt:     i,
-			MaxAttempts: max,
-			Remaining:   max - i - 1,
+			MaxAttempts: limit2,
+			Remaining:   limit2 - i - 1,
 			Elapsed:     time.Since(start),
 		}
 
@@ -153,7 +153,7 @@ func BoundedRetry(
 		}
 
 		// decision == RetryDecisionRetry
-		if i+1 >= max {
+		if i+1 >= limit2 {
 			// Cap hit: signal exhaustion but do not loop again.
 			onExhausted(rc)
 			return decision, nil

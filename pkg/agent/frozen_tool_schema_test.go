@@ -13,9 +13,9 @@ type mockTool struct {
 	name string
 }
 
-func (m *mockTool) Name() string                     { return m.name }
-func (m *mockTool) Description() string              { return "mock tool for testing" }
-func (m *mockTool) Parameters() map[string]any       { return map[string]any{"type": "object"} }
+func (m *mockTool) Name() string               { return m.name }
+func (m *mockTool) Description() string        { return "mock tool for testing" }
+func (m *mockTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
 func (m *mockTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
 	return toolshared.NewToolResult("ok")
 }
@@ -46,12 +46,12 @@ func (m *mockTool) Execute(ctx context.Context, args map[string]any) *toolshared
 //
 // What it now asserts instead of "identical in every phase":
 //
-//	- OPEN (and the unset-phase backward-compat path) project ALL 5 tools,
-//	  byte-identical to the pre-P1 behavior;
-//	- CHECKPOINT projects ALL 5 tools too (lever (b)) — the wire matches
-//	  OPEN so the prompt-cache prefix does not move on the transition;
-//	- the remaining NARROW phases project exactly the tools their phase
-//	  allowlist permits — SET -> 1, FINAL -> 1.
+//   - OPEN (and the unset-phase backward-compat path) project ALL 5 tools,
+//     byte-identical to the pre-P1 behavior;
+//   - CHECKPOINT projects ALL 5 tools too (lever (b)) — the wire matches
+//     OPEN so the prompt-cache prefix does not move on the transition;
+//   - the remaining NARROW phases project exactly the tools their phase
+//     allowlist permits — SET -> 1, FINAL -> 1.
 func TestFrozenToolSchema_InvariantAcrossGoalPhases(t *testing.T) {
 	reg := tools.NewToolRegistry()
 	reg.SetProjectionFrozen(true)
@@ -137,7 +137,10 @@ func TestFrozenToolSchema_InvariantAcrossGoalPhases(t *testing.T) {
 	reg.SetPhase("CHECKPOINT")
 	defsCheckpoint := reg.ToProviderDefs()
 	if len(defsCheckpoint) != 5 {
-		t.Fatalf("CHECKPOINT phase must project the whole registry (5 tools) under lever (b), got %d", len(defsCheckpoint))
+		t.Fatalf(
+			"CHECKPOINT phase must project the whole registry (5 tools) under lever (b), got %d",
+			len(defsCheckpoint),
+		)
 	}
 	ckptNames := map[string]bool{}
 	for _, d := range defsCheckpoint {
@@ -163,10 +166,14 @@ func TestFrozenToolSchema_InvariantAcrossGoalPhases(t *testing.T) {
 	reg.SetAllowlist([]string{"goal_progress", "complete_goal"})
 	reg.SetPhase("CHECKPOINT")
 	if reg.IsAllowed("exec") {
-		t.Errorf("runtime execution gate failed: 'exec' must not be accessible at CHECKPOINT even though its schema is projected")
+		t.Errorf(
+			"runtime execution gate failed: 'exec' must not be accessible at CHECKPOINT even though its schema is projected",
+		)
 	}
 	if reg.IsAllowed("read_file") {
-		t.Errorf("runtime execution gate failed: 'read_file' must not be accessible at CHECKPOINT even though its schema is projected")
+		t.Errorf(
+			"runtime execution gate failed: 'read_file' must not be accessible at CHECKPOINT even though its schema is projected",
+		)
 	}
 	if !reg.IsAllowed("goal_progress") {
 		t.Errorf("runtime execution gate failed: 'goal_progress' must be accessible at CHECKPOINT")

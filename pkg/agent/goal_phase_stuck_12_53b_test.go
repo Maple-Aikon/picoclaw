@@ -106,7 +106,11 @@ func TestStuckBucketCounterTarget_PointerIdentity(t *testing.T) {
 		t.Fatalf("StuckSet.counterTarget = %p, want %p (setGoalAttemptCount)", got, &ts.setGoalAttemptCount)
 	}
 	if got := StuckCheckpoint.counterTarget(ts); got != &ts.goalProgressAttemptCount {
-		t.Fatalf("StuckCheckpoint.counterTarget = %p, want %p (goalProgressAttemptCount)", got, &ts.goalProgressAttemptCount)
+		t.Fatalf(
+			"StuckCheckpoint.counterTarget = %p, want %p (goalProgressAttemptCount)",
+			got,
+			&ts.goalProgressAttemptCount,
+		)
 	}
 	if got := StuckFinal.counterTarget(ts); got != &ts.completeGoalAttemptCount {
 		t.Fatalf("StuckFinal.counterTarget = %p, want %p (completeGoalAttemptCount)", got, &ts.completeGoalAttemptCount)
@@ -166,7 +170,11 @@ func TestFinalizePhaseStuckArchive_Open_DoesNotStampStuckAttemptCount(t *testing
 		t.Fatalf("status = %s, want aborted", onDisk.Status)
 	}
 	if onDisk.AbortReason != GoalAbortReasonBexhausted+":tool_exec" {
-		t.Fatalf("abortReason = %q, want %q (Open is not phase-stuck)", onDisk.AbortReason, GoalAbortReasonBexhausted+":tool_exec")
+		t.Fatalf(
+			"abortReason = %q, want %q (Open is not phase-stuck)",
+			onDisk.AbortReason,
+			GoalAbortReasonBexhausted+":tool_exec",
+		)
 	}
 	if onDisk.StuckAttemptCount != 0 {
 		t.Fatalf("StuckAttemptCount = %d, want 0 (no stuck bucket at Open)", onDisk.StuckAttemptCount)
@@ -259,7 +267,10 @@ func TestHandleGoalRecovery_WiresFinalizeWithCount(t *testing.T) {
 	block := body[start : start+end]
 
 	if got := strings.Count(block, "ts.finalizeGoalOnTurnEndWithCount(abortReason, stuckCount)"); got != 2 {
-		t.Fatalf("finalizeGoalOnTurnEndWithCount calls in handleGoalRecovery = %d, want 2 (OnExhausted + RecoveryArchiveGoal)", got)
+		t.Fatalf(
+			"finalizeGoalOnTurnEndWithCount calls in handleGoalRecovery = %d, want 2 (OnExhausted + RecoveryArchiveGoal)",
+			got,
+		)
 	}
 	if strings.Contains(block, "ts.finalizeGoalOnTurnEnd(") {
 		t.Error("bare finalizeGoalOnTurnEnd( still present in handleGoalRecovery — D-F1 not wired")

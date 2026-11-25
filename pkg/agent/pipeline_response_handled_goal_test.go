@@ -142,7 +142,10 @@ func TestRunAgentLoop_ResponseHandledToolWithActiveGoalDoesNotBreakLoop(t *testi
 
 	// Verify that provider was called at least 2 times (iteration 1: handled_user_tool, iteration 2: complete_goal)
 	if provider.calls < 2 {
-		t.Fatalf("expected provider.calls >= 2 (agent loop continued after ResponseHandled tool), got %d", provider.calls)
+		t.Fatalf(
+			"expected provider.calls >= 2 (agent loop continued after ResponseHandled tool), got %d",
+			provider.calls,
+		)
 	}
 
 	// Verify that the final response contains either the complete_goal summary or final content

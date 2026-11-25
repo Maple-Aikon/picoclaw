@@ -7,19 +7,20 @@
 // together through the turn coordination layer.
 //
 // Two tests:
-//   T9-1 (RetryLLMForBlockedTool_ExecutesToolBeforeCapExit)
-//        — Regression-proof for the dropped-tool bug fixed in Phase 12.28
-//        B1 (turn_coord.go:488). When retryLLMForBlockedTool returns
-//        ControlToolLoop at iter==cap, the freshly-picked tool MUST be
-//        carried through exec.response so the caller's ExecuteTools call
-//        dispatches it. Without Task 12.28's fix, the tool would be
-//        silently discarded (the old turn_coord only re-read exec.messages
-//        without calling ExecuteTools).
-//   T9-2 (RestrictedPhase_ExhaustionArchivesWithPhaseStuckReason)
-//        — Exhausted BoundedRetry at GoalPhaseCheckpoint sets
-//        goalArchiveRequested and stamps the phase-stuck abort reason
-//        so finalizeGoalOnTurnEnd can produce a phase-aware user-facing
-//        message instead of the generic toolLimitResponse.
+//
+//	T9-1 (RetryLLMForBlockedTool_ExecutesToolBeforeCapExit)
+//	     — Regression-proof for the dropped-tool bug fixed in Phase 12.28
+//	     B1 (turn_coord.go:488). When retryLLMForBlockedTool returns
+//	     ControlToolLoop at iter==cap, the freshly-picked tool MUST be
+//	     carried through exec.response so the caller's ExecuteTools call
+//	     dispatches it. Without Task 12.28's fix, the tool would be
+//	     silently discarded (the old turn_coord only re-read exec.messages
+//	     without calling ExecuteTools).
+//	T9-2 (RestrictedPhase_ExhaustionArchivesWithPhaseStuckReason)
+//	     — Exhausted BoundedRetry at GoalPhaseCheckpoint sets
+//	     goalArchiveRequested and stamps the phase-stuck abort reason
+//	     so finalizeGoalOnTurnEnd can produce a phase-aware user-facing
+//	     message instead of the generic toolLimitResponse.
 //
 // Note: Open-phase next-iter strategy + handleGoalRecovery is covered by
 // pipeline_llm_recovery_test.go (Phase 12.11/12.27). This file focuses
@@ -28,6 +29,7 @@
 //
 // See plan file ~/.picoclaw/workspace/memory/plan/picoclaw-phase12.28-
 // unify-same-iter-retry-chains-20260729.md §Task 9.
+
 package agent
 
 import (

@@ -52,7 +52,9 @@ func formatIterCompass(req PromptBuildRequest, phase GoalPhase, goalFinalized bo
 		return base + " Only 2 lifecycle tools can actually be executed: goal_progress and complete_goal."
 	case GoalPhaseFinal:
 		if goalFinalized {
-			return fmt.Sprintf("Goal phase: FINAL. Goal is finalized. complete_goal is idempotent — calling it again is safe.")
+			return fmt.Sprintf(
+				"Goal phase: FINAL. Goal is finalized. complete_goal is idempotent — calling it again is safe.",
+			)
 		}
 		return base + " This is the last iter, call complete_goal."
 	default:

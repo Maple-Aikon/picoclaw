@@ -147,8 +147,8 @@ func TestKnowledgeStore_List_Sorted(t *testing.T) {
 
 	tools := []string{"web.fetch", "fs.read", "shell.run"}
 	for _, name := range tools {
-		if _, _, err := s.Replace(name, "lesson for "+name); err != nil {
-			t.Fatalf("Save %s: %v", name, err)
+		if _, _, err2 := s.Replace(name, "lesson for "+name); err2 != nil {
+			t.Fatalf("Save %s: %v", name, err2)
 		}
 	}
 
@@ -212,12 +212,11 @@ func TestKnowledgeStore_ConcurrentSaveSameTool(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := 0; i < n; i++ {
-		i := i
 		go func() {
 			defer wg.Done()
 			body := "lesson from goroutine " + string(rune('a'+i%26))
-			if _, _, err := s.Replace("fs.read", body); err != nil {
-				t.Errorf("goroutine Save: %v", err)
+			if _, _, err2 := s.Replace("fs.read", body); err2 != nil {
+				t.Errorf("goroutine Save: %v", err2)
 			}
 		}()
 	}

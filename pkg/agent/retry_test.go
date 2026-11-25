@@ -215,7 +215,7 @@ func TestBoundedRetry_ContextCancellation(t *testing.T) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	if calls.Load() != 0 {
-		t.Errorf("calls = %d, want 0 (cancelled before first attempt)", calls.Load())
+		t.Errorf("calls = %d, want 0 (canceled before first attempt)", calls.Load())
 	}
 }
 

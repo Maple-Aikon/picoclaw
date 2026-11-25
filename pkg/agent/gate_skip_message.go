@@ -7,8 +7,8 @@ import "fmt"
 // When a tool call is blocked at the runtime allowlist gate (Phase 12.35
 // gate pre-check or registry.go denied path), the LLM-visible message
 // must:
-//   1. NOT contain phase/state claims (per Phase 12.40 / 12.40.1 invariant)
-//   2. NOT recommend a tool blocked at the same gate (would mislead LLM)
+//  1. NOT contain phase/state claims (per Phase 12.40 / 12.40.1 invariant)
+//  2. NOT recommend a tool blocked at the same gate (would mislead LLM)
 //
 // Each phase variant names ONLY the tools actually available at that
 // phase. The user-facing message routes to the LLM via tool result and

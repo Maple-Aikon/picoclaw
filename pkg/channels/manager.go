@@ -559,13 +559,17 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 				// then lands after the flood window instead of during it.
 				if errors.Is(err, ErrRateLimit) {
 					wait := rateLimitFallbackWait(err)
-					logger.WarnCF("channels", "placeholder edit rate limited; waiting before falling back to Send", map[string]any{
-						"channel":     name,
-						"chat_id":     chatID,
-						"message_id":  entry.id,
-						"retry_after": RateLimitRetryAfter(err).String(),
-						"wait":        wait.String(),
-					})
+					logger.WarnCF(
+						"channels",
+						"placeholder edit rate limited; waiting before falling back to Send",
+						map[string]any{
+							"channel":     name,
+							"chat_id":     chatID,
+							"message_id":  entry.id,
+							"retry_after": RateLimitRetryAfter(err).String(),
+							"wait":        wait.String(),
+						},
+					)
 					if !waitForRateLimit(ctx, err) {
 						// Context canceled during the wait: fall through so
 						// the normal Send path reports the failure. Returning

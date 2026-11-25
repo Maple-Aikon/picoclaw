@@ -15,6 +15,7 @@
 //   - R15 production canary alert is DEFERRED (anh Maple 2026-08-05 —
 //     self-reads logs). Promote to persistent counter + alert when ready
 //     (Phase 12.50+).
+
 package agent
 
 import (

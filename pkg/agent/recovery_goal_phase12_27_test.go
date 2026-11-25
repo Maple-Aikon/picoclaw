@@ -31,7 +31,10 @@ func TestTextOnlySoftRetry_Open_ReturnsRetryNextIter_NoCounter(t *testing.T) {
 		t.Fatalf("msg=%q, want TextOnlySoftRetryOpenMessage (exact)", msg)
 	}
 	if ts.textOnlySoftRetriesDone != 0 {
-		t.Fatalf("textOnlySoftRetriesDone=%d, want 0 (no counter increment at Open — bump-only, Phase 12.58)", ts.textOnlySoftRetriesDone)
+		t.Fatalf(
+			"textOnlySoftRetriesDone=%d, want 0 (no counter increment at Open — bump-only, Phase 12.58)",
+			ts.textOnlySoftRetriesDone,
+		)
 	}
 }
 
@@ -68,7 +71,10 @@ func TestTextOnlySoftRetry_Checkpoint_ReturnsRetrySameIter_WithCounter(t *testin
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("action=%v, want RecoveryRetrySameIteration (exact) — Checkpoint uses RecallLLM", action)
 	}
-	if !strings.HasPrefix(msg, TextOnlySoftRetryMessage) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
+	if !strings.HasPrefix(
+		msg,
+		TextOnlySoftRetryMessage,
+	) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
 		t.Fatalf("msg=%q, want TextOnlySoftRetryMessage (Checkpoint variant, NOT Open variant)", msg)
 	}
 	if ts.textOnlySoftRetriesDone != 1 {
@@ -103,14 +109,22 @@ func TestTextOnlySoftRetry_Set_NoRecovery_Phase12_46(t *testing.T) {
 // text-only pre-report uses RecallLLM (preserved from Phase 12.21).
 func TestTextOnlySoftRetry_Final_ReturnsRetrySameIter_WithCounter(t *testing.T) {
 	ts := newPhase5TurnState(t)
-	ctx := RecoveryContext{Phase: string(GoalPhaseFinal), TextEmpty: false, HasToolCalls: false, PostCompleteGoalReport: false}
+	ctx := RecoveryContext{
+		Phase:                  string(GoalPhaseFinal),
+		TextEmpty:              false,
+		HasToolCalls:           false,
+		PostCompleteGoalReport: false,
+	}
 
 	action, msg := evaluateRecovery(ts, ctx)
 
 	if action != RecoveryRetrySameIteration {
 		t.Fatalf("action=%v, want RecoveryRetrySameIteration (Final pre-report uses RecallLLM)", action)
 	}
-	if !strings.HasPrefix(msg, TextOnlySoftRetryMessage) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
+	if !strings.HasPrefix(
+		msg,
+		TextOnlySoftRetryMessage,
+	) { // Phase 12.38: suffix appended via buildTextOnlyRetryMessageWithPhase
 		t.Fatalf("msg=%q, want TextOnlySoftRetryMessage (Final pre-report uses standard variant)", msg)
 	}
 }
@@ -119,7 +133,12 @@ func TestTextOnlySoftRetry_Final_ReturnsRetrySameIter_WithCounter(t *testing.T) 
 // is silent (no recovery) — preserves Phase 12.21 behavior.
 func TestTextOnlySoftRetry_Final_PostReportSilent(t *testing.T) {
 	ts := newPhase5TurnState(t)
-	ctx := RecoveryContext{Phase: string(GoalPhaseFinal), TextEmpty: false, HasToolCalls: false, PostCompleteGoalReport: true}
+	ctx := RecoveryContext{
+		Phase:                  string(GoalPhaseFinal),
+		TextEmpty:              false,
+		HasToolCalls:           false,
+		PostCompleteGoalReport: true,
+	}
 
 	action, msg := evaluateRecovery(ts, ctx)
 
@@ -148,7 +167,10 @@ func TestPendingRecoveryMessage_CarryToNextIter_Open(t *testing.T) {
 
 	// Specific assertions (per §6.1.1 audit): exact equality, NOT != ""
 	if ts.pendingRecoveryMessage != TextOnlySoftRetryOpenMessage {
-		t.Fatalf("pendingRecoveryMessage=%q, want TextOnlySoftRetryOpenMessage (exact carry)", ts.pendingRecoveryMessage)
+		t.Fatalf(
+			"pendingRecoveryMessage=%q, want TextOnlySoftRetryOpenMessage (exact carry)",
+			ts.pendingRecoveryMessage,
+		)
 	}
 	if !strings.Contains(ts.pendingRecoveryMessage, "next iteration") {
 		t.Fatalf("msg should hint at next-iter injection, got %q", ts.pendingRecoveryMessage)
@@ -173,7 +195,12 @@ func TestTextOnly_Open_NoCountersAcrossIterations(t *testing.T) {
 			t.Fatalf("fire %d: action=%v, want RecoveryRetryNextIteration (exact)", i, action)
 		}
 		if ts.textOnlySoftRetriesDone != 0 || ts.textOnlyHardRetriesDone != 0 {
-			t.Fatalf("fire %d: soft=%d hard=%d, want 0/0 (Open never increments counters)", i, ts.textOnlySoftRetriesDone, ts.textOnlyHardRetriesDone)
+			t.Fatalf(
+				"fire %d: soft=%d hard=%d, want 0/0 (Open never increments counters)",
+				i,
+				ts.textOnlySoftRetriesDone,
+				ts.textOnlyHardRetriesDone,
+			)
 		}
 		if ts.textOnlyStreak != i {
 			t.Fatalf("fire %d: streak=%d, want %d", i, ts.textOnlyStreak, i)
@@ -237,7 +264,10 @@ func TestTextOnly_Open_ToolCallsBetween_NoArchive(t *testing.T) {
 // (turn reaches the iteration cap → toolLimitResponse fallback instead).
 func TestTextOnlyHardOpenMessage_NoArchiveClaim(t *testing.T) {
 	if strings.Contains(TextOnlyHardRetryOpenMessage, "archived") {
-		t.Fatalf("TextOnlyHardRetryOpenMessage must not threaten archiving (bump-only): %q", TextOnlyHardRetryOpenMessage)
+		t.Fatalf(
+			"TextOnlyHardRetryOpenMessage must not threaten archiving (bump-only): %q",
+			TextOnlyHardRetryOpenMessage,
+		)
 	}
 }
 
@@ -246,8 +276,8 @@ func TestTextOnlyHardOpenMessage_NoArchiveClaim(t *testing.T) {
 // surface — was silent pre-12.27, no test existed)
 //
 // Wire flow:
-//   1. Call 1: Set + text-only → counter increments (1) → RecoveryRetrySameIteration
-//   2. Call 2: Set + HasToolCalls → counters reset → RecoveryNone
+//  1. Call 1: Set + text-only → counter increments (1) → RecoveryRetrySameIteration
+//  2. Call 2: Set + HasToolCalls → counters reset → RecoveryNone
 func TestTextOnly_ToolCallResetsCounter_Set(t *testing.T) {
 	ts := newPhase5TurnState(t)
 

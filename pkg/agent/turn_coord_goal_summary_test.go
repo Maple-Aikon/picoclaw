@@ -45,7 +45,7 @@ func TestApplyFallbackForEmptyResponse_GoalSummaryPreferred(t *testing.T) {
 		context: newTurnContext(nil, nil, nil),
 	})
 	ts.goalFinalized = true
-	ts.assistantText = "" // LLM did not emit prose (the bug scenario)
+	ts.assistantText = ""                  // LLM did not emit prose (the bug scenario)
 	ts.sessionKey = "test-session-summary" // override since makeTestProcessOpts sets top-level only
 
 	got := al.applyFallbackForEmptyResponse(ts)

@@ -53,9 +53,11 @@ func (m *mockResultFactoryTool) Name() string { return m.name }
 func (m *mockResultFactoryTool) Description() string {
 	return "factory mock for soft-prompt tests"
 }
+
 func (m *mockResultFactoryTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
+
 func (m *mockResultFactoryTool) Execute(_ context.Context, _ map[string]any) *toolshared.ToolResult {
 	return m.factory()
 }
